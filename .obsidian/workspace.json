@@ -1,0 +1,317 @@
+{
+  "main": {
+    "id": "3c1b13a1c9eef078",
+    "type": "split",
+    "children": [
+      {
+        "id": "efb87bf90c045e6b",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "040d89215a1483fa",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Operon/Demo Workspace/Operon Basics Project.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Operon Basics Project"
+            }
+          },
+          {
+            "id": "23d0ed9e7287dfe3",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Operon/Demo Workspace/Set Up Your Obsidian Vault with Operon.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Set Up Your Obsidian Vault with Operon"
+            }
+          }
+        ],
+        "currentTab": 1
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "3fe2af4b193cb244",
+    "type": "split",
+    "children": [
+      {
+        "id": "1de98714771476e3",
+        "type": "tabs",
+        "dimension": 67.85714285714286,
+        "children": [
+          {
+            "id": "3a72c308b3dee032",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "945f85b61d58f831",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          }
+        ]
+      },
+      {
+        "id": "13963624be869a98",
+        "type": "tabs",
+        "dimension": 32.142857142857146,
+        "children": [
+          {
+            "id": "0aab9cdb0cf931d4",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 258.3000183105469
+  },
+  "right": {
+    "id": "0a18cf564cf56139",
+    "type": "split",
+    "children": [
+      {
+        "id": "75407f9e09477f7b",
+        "type": "tabs",
+        "dimension": 67.57709251101322,
+        "children": [
+          {
+            "id": "e6f364b053073407",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Untitled 1.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks"
+            }
+          },
+          {
+            "id": "90df206abb215514",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Operon/Demo Workspace/Operon Basics Project.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links"
+            }
+          },
+          {
+            "id": "314421f7121386f6",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "a585ba1524cfee3f",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "ec1f7eb461b53466",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Operon/Demo Workspace/Operon Basics Project.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline"
+            }
+          },
+          {
+            "id": "75ca24fffe40bb9a",
+            "type": "leaf",
+            "state": {
+              "type": "smart-connections-view",
+              "state": {},
+              "icon": "smart-connections",
+              "title": "Connections"
+            }
+          },
+          {
+            "id": "3c8a4bb8e26d904e",
+            "type": "leaf",
+            "state": {
+              "type": "copilot-agent-chat-view",
+              "state": {},
+              "icon": "copilot-agent",
+              "title": "Copilot Agent"
+            }
+          }
+        ],
+        "currentTab": 6
+      },
+      {
+        "id": "4fcaa85582409c59",
+        "type": "tabs",
+        "dimension": 32.42290748898679,
+        "children": [
+          {
+            "id": "6092f084db23a728",
+            "type": "leaf",
+            "state": {
+              "type": "calendar",
+              "state": {},
+              "icon": "calendar-with-checkmark",
+              "title": "Calendar"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 463.0999755859375
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false,
+      "realclaudian:Open Claudian": false,
+      "copilot:Open Copilot Agent Chat": false,
+      "omnisearch:Omnisearch": false,
+      "mouse-tooltip-translator:Open translation panel": false,
+      "mouse-tooltip-translator:Open vocabulary list": false,
+      "mouse-tooltip-translator:Translate page / Restore": false,
+      "operon:Create New Operon Task": false,
+      "operon:Operon Filter View": false,
+      "operon:Task Finder": false,
+      "operon:Operon Calendar": false,
+      "operon:Operon Kanban": false,
+      "operon:Operon Table": false,
+      "operon:Open Pinned Tasks": false,
+      "smart-connections:Smart Connections: Open random connection": false,
+      "smart-connections:Smart Connections: Open connections view": false,
+      "smart-connections:Toggle Footer Connections": false
+    }
+  },
+  "active": "3a72c308b3dee032",
+  "lastOpenFiles": [
+    "assets/src",
+    "assets/config/Weathers.md",
+    "assets/config/Roles.md",
+    "assets/config/Outfit_types.md",
+    "assets/config/list.md",
+    "assets/config/Eras.md",
+    "assets/config/Entities.md",
+    "assets/config/config.base",
+    "assets/config/categories.md",
+    "assets/config/Asset_types.md",
+    "assets/config",
+    "assets/chempunk/war_warden.jpg",
+    "assets/chempunk/war_ranger_underwear.jpg",
+    "assets/chempunk/war_executioner_underwear.jpg",
+    "assets/chempunk/mid_fortuneteller_underwear.png",
+    "assets/chempunk/low-errandman_functional-work_4-armor light_26051723.png",
+    "assets/chempunk/cook.jpg",
+    "assets/chempunk/bandit-robbery_chempunk_20260905_215000.jpg",
+    "assets/chempunk",
+    "assets/primitive.png",
+    "assets/blizzard.jpg",
+    "assets/biopunk.jpg",
+    "assets",
+    "Untitled.md",
+    "Operon/Demo Workspace/Set Up Your Obsidian Vault with Operon.md",
+    "Operon/Demo Workspace/Operon Command Palette.md",
+    "Operon/Demo Workspace/Operon Basics Project.md",
+    "Operon/Tables/Default table.table",
+    "Untitled 1.md",
+    "View.md",
+    "Untitled 3/Untitled 1.md",
+    "Untitled 1.base",
+    "Untitled 7",
+    "Untitled 6",
+    "Untitled 5",
+    "Untitled 4",
+    "gnfmgf.md",
+    "copilot/skills/obsidian-cli/SKILL.md",
+    "copilot/skills/json-canvas/SKILL.md",
+    "copilot/skills/json-canvas/references/EXAMPLES.md",
+    "copilot/skills/obsidian-bases/SKILL.md",
+    "copilot/skills/obsidian-bases/references/EXAMPLES.md",
+    "copilot/skills/obsidian-bases/references/FUNCTIONS_REFERENCE.md",
+    "copilot/skills/obsidian-markdown/SKILL.md",
+    "copilot/skills/obsidian-markdown/references/PROPERTIES.md",
+    "copilot/skills/obsidian-markdown/references/EMBEDS.md"
+  ]
+}

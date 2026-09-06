@@ -1,0 +1,239 @@
+{
+  "presetFields": [
+    {
+      "name": "Category",
+      "type": "Select",
+      "id": "asset-renamer-categories",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[bandit-robbery]]",
+          "1": "[[bayadere-regeisha]]",
+          "2": "[[black-smith]]",
+          "3": "[[character class]]",
+          "4": "[[cook]]",
+          "5": "[[fantasy-bard]]",
+          "6": "[[fightermartial-artist]]",
+          "7": "[[knight-lancelot]]",
+          "8": "[[knight-medival]]",
+          "9": "[[leather-outfit-medival]]",
+          "10": "[[lumberjack-fantasy]]",
+          "11": "[[machinist]]",
+          "12": "[[maid-mordern-early-20th-victorian-till-present]]",
+          "13": "[[medico-nursehealer]]",
+          "14": "[[merchants]]",
+          "15": "[[military-soldier-contemporary]]",
+          "16": "[[paladin]]",
+          "17": "[[priest-miko]]",
+          "18": "[[priestcleric-nun-habit-ancient-till-present]]",
+          "19": "[[queen-armor]]",
+          "20": "[[rangerarcher-fantasy]]",
+          "21": "[[rogueninjaassassin-fantasy]]",
+          "22": "[[samurai-warrior]]",
+          "23": "[[scholar-fantasy]]",
+          "24": "[[sorcererwizardmagewitch-fantasy]]",
+          "25": "[[summonerwarlocknecromancer-fantasy]]",
+          "26": "[[tamermonster-trainer]]",
+          "27": "[[taoistshamanasian-necromancer]]",
+          "28": "[[vagabondtravelerrounin]]",
+          "29": "[[viking]]",
+          "30": "[[wardenbutcherexecutioner-fantasy]]",
+          "31": "[[warrior-fantasy]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    },
+    {
+      "name": "Era",
+      "type": "Select",
+      "id": "asset-renamer-eras",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[Eras]]",
+          "1": "[[gothic]]",
+          "2": "[[steampunk]]",
+          "3": "[[dieselpunk]]",
+          "4": "[[atompunk]]",
+          "5": "[[chempunk]]",
+          "6": "[[biopunk]]",
+          "7": "[[urban]]",
+          "8": "[[punk]]",
+          "9": "[[retrofuture]]",
+          "10": "[[cyberpunk]]",
+          "11": "[[fantasy]]",
+          "12": "[[wuxia]]",
+          "13": "[[celestial]]",
+          "14": "[[primitive]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    },
+    {
+      "name": "Weather",
+      "type": "Select",
+      "id": "asset-renamer-weathers",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[Weather]]",
+          "1": "[[hidropunk]]",
+          "2": "[[desert]]",
+          "3": "[[blizzard]]",
+          "4": "[[postapoc]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    },
+    {
+      "name": "Role",
+      "type": "Select",
+      "id": "asset-renamer-roles",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[high_emperor]]",
+          "1": "[[high_sage]]",
+          "2": "[[high_hermit]]",
+          "3": "[[high_priest]]",
+          "4": "[[high_scholar]]",
+          "5": "[[high_landowner]]",
+          "6": "[[high_merchantlord]]",
+          "7": "[[high_masterartisan]]",
+          "8": "[[mid_candidate]]",
+          "9": "[[mid_physician]]",
+          "10": "[[mid_fortuneteller]]",
+          "11": "[[mid_painter]]",
+          "12": "[[mid_teacher]]",
+          "13": "[[mid_musician]]",
+          "14": "[[mid_monk]]",
+          "15": "[[mid_taoist]]",
+          "16": "[[mid_nun]]",
+          "17": "[[low_secretary]]",
+          "18": "[[low_runner]]",
+          "19": "[[low_weigher]]",
+          "20": "[[low_matchmaker]]",
+          "21": "[[low_errandman]]",
+          "22": "[[low_shaman]]",
+          "23": "[[low_bandit]]",
+          "24": "[[low_thief]]",
+          "25": "[[low_courtesan]]",
+          "26": "[[war_blade-dancer]]",
+          "27": "[[war_martial-artist]]",
+          "28": "[[war_knight-lancelot]]",
+          "29": "[[war_knight-medival]]",
+          "30": "[[war_ranger]]",
+          "31": "[[war_gunner]]",
+          "32": "[[war_paladin]]",
+          "33": "[[war_samurai-warrior]]",
+          "34": "[[war_viking]]",
+          "35": "[[war_warden]]",
+          "36": "[[war_executioner]]",
+          "37": "[[war_warrior]]",
+          "38": "[[war_vagabond]]",
+          "39": "[[war_assassin]]",
+          "40": "[[war_mage]]",
+          "41": "[[war_warlock]]",
+          "42": "[[war_tamer]]",
+          "43": "[[war_taoist]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    },
+    {
+      "name": "Asset_type",
+      "type": "Select",
+      "id": "asset-renamer-asset_types",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[1_conceptSheet]]",
+          "1": "[[2_productDemo]]",
+          "2": "[[3_oufit]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    },
+    {
+      "name": "Outfit_type",
+      "type": "Select",
+      "id": "asset-renamer-outfit_types",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[Group]]",
+          "1": "[[casual]]",
+          "2": "[[formal]]",
+          "3": "[[theme]]",
+          "4": "[[underwear]]",
+          "5": "[[functional]]",
+          "6": "[[battle]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    },
+    {
+      "name": "Entity",
+      "type": "Select",
+      "id": "asset-renamer-entities",
+      "path": "",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[Entity]]",
+          "1": "[[Eras]]",
+          "2": "[[Weathers]]",
+          "3": "[[Roles]]",
+          "4": "[[Asset_types]]",
+          "5": "[[Outfit_types]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      }
+    }
+  ],
+  "fileClassQueries": [],
+  "displayFieldsInContextMenu": true,
+  "globallyIgnoredFields": [],
+  "classFilesPath": null,
+  "isAutosuggestEnabled": true,
+  "fileClassAlias": "fileClass",
+  "settingsVersion": "5.0",
+  "firstDayOfWeek": 1,
+  "enableLinks": true,
+  "enableTabHeader": true,
+  "enableEditor": true,
+  "enableBacklinks": true,
+  "enableStarred": true,
+  "enableFileExplorer": true,
+  "enableSearch": true,
+  "enableProperties": true,
+  "tableViewMaxRecords": 20,
+  "frontmatterListDisplay": "asArray",
+  "fileClassExcludedFolders": [],
+  "showIndexingStatusInStatusBar": true,
+  "fileIndexingExcludedFolders": [],
+  "fileIndexingExcludedExtensions": [
+    ".excalidraw.md"
+  ],
+  "fileIndexingExcludedRegex": [],
+  "frontmatterOnly": false,
+  "showFileClassSelectInModal": true,
+  "chooseFileClassAtFileCreation": false,
+  "autoInsertFieldsAtFileClassInsertion": false,
+  "fileClassIcon": "package",
+  "isAutoCalculationEnabled": true,
+  "disableDataviewPrompt": false
+}
