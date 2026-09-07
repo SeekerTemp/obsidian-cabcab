@@ -15,6 +15,8 @@ Table LifeForm {
   id varchar [not null]
   cover varchar
   trait varchar
+  temp varchar
+  temp2 varchar
 }
 
 ```

@@ -124,3 +124,8 @@
 /* The pull direction can drop fields, so it does not look like the safe one. */
 .schema-sync-head button.schema-sync-danger { color: #9a6a3c; border-color: #dcc9ae; }
 .schema-sync-head button.schema-sync-danger:hover { color: #b94b3d; border-color: #d9a98f; }
+.schema-sync-choices { display: grid; gap: 10px; margin-top: 14px; }
+.schema-sync-choice { display: grid; gap: 4px; }
+.schema-sync-choice button { justify-self: start; }
+.schema-sync-choice small { color: var(--text-muted); line-height: 1.45; }
+.schema-sync-choice-footer { display: block; margin-top: 16px; color: var(--text-faint); }

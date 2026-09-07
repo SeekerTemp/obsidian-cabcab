@@ -20,6 +20,10 @@ fields:
   - string:
       type: string
       bind: false
+  - temp:
+      type: string
+  - temp2:
+      type: string
 ---
 
 # LifeForm Schema
@@ -37,6 +41,8 @@ Defines the base fields for any LifeForm note.
 | trait1 | string | - | no | no | - |
 | attachment | string | - | no | no | - |
 | string | string | - | no | no | - |
+| temp | string | - | no | yes | - |
+| temp2 | string | - | no | yes | - |
 
 <!-- schema-sync:notes -->
 

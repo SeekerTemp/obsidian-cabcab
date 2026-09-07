@@ -6,6 +6,10 @@ const { Plugin, ItemView, Modal, Notice, TFile, SuggestModal, MarkdownView, Plug
 const DEFAULT_SETTINGS = {
   requireEditUnlock: false,
   confirmDestructiveActions: true,
+  promptForUndeclaredProperties: true,
+  // schemaName -> [property names answered "leave it alone"]. Persisted, because
+  // a session-only memory would re-ask about every scratch property on restart.
+  ignoredProperties: {},
 };
 
 const SCHEMA_FOLDER = "data/schema";
@@ -47,6 +51,15 @@ function emptyValue(type) {
   if (type === "array") return [];
   if (type === "object") return {};
   return "";
+}
+
+function inferFieldType(value) {
+  if (Array.isArray(value)) return "array";
+  if (value === null || value === undefined) return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "object") return "object";
+  return "string";
 }
 
 function reorderFields(fields, fromName, toName) {
@@ -424,6 +437,51 @@ class ConfirmDeleteModal extends Modal {
   }
 }
 
+class UndeclaredPropertyModal extends Modal {
+  constructor(app, { property, type, schemaName, recordName }, onResolve) {
+    super(app);
+    this.property = property;
+    this.type = type;
+    this.schemaName = schemaName;
+    this.recordName = recordName;
+    this.onResolve = onResolve;
+    this.answered = false;
+  }
+
+  resolve(choice) {
+    if (this.answered) return;
+    this.answered = true;
+    this.onResolve(choice);
+    this.close();
+  }
+
+  option(parent, label, description, choice, cls) {
+    const row = parent.createDiv({ cls: "schema-sync-choice" });
+    const button = row.createEl("button", { text: label, cls: cls || "" });
+    button.addEventListener("click", () => this.resolve(choice));
+    row.createEl("small", { text: description });
+    return button;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: `"${this.property}" is not in the ${this.schemaName} schema` });
+    contentEl.createEl("p", { text: `${this.recordName} has a property the schema does not declare. It was read as ${this.type}.` });
+    const options = contentEl.createDiv({ cls: "schema-sync-choices" });
+    this.option(options, "Define and bind", `Adds ${this.property} to ${this.schemaName} and to every ${this.schemaName} record, then opens the dashboard so you can set its type and default.`, "bind", "mod-cta");
+    this.option(options, "Define, unbound", `Adds ${this.property} to ${this.schemaName} as documentation only. Other records are left alone, and you can bind it later when you want it everywhere.`, "unbind");
+    this.option(options, "Leave it alone", `Keeps ${this.property} as a property of this record only. Nothing is written to the schema, and you will not be asked about it again.`, "ignore");
+    contentEl.createEl("small", { cls: "schema-sync-choice-footer", text: "Turn these prompts off in Settings → Schema Sync." });
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    // Dismissing the modal is not an answer: stay quiet now, ask again later.
+    this.resolve("defer");
+  }
+}
+
 class SchemaSyncView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -733,6 +791,19 @@ class SchemaSyncSettingTab extends PluginSettingTab {
       () => this.plugin.refreshDashboards(),
     );
     this.toggle(
+      "Ask about undeclared record properties",
+      "On by default. When a record gains a property its schema does not declare, offers to define it — bound to every record, or documented but unbound for a one-off. Answering \"leave it alone\" is remembered, so a record's private annotations are only ever asked about once.",
+      "promptForUndeclaredProperties",
+    );
+    new Setting(this.containerEl)
+      .setName("Forget dismissed properties")
+      .setDesc(`Clears the list of properties you chose to leave alone, so they are offered again. Currently ${Object.values(this.plugin.settings.ignoredProperties).reduce((total, list) => total + list.length, 0)} remembered.`)
+      .addButton((button) => button.setButtonText("Forget all").onClick(async () => {
+        this.plugin.settings.ignoredProperties = {};
+        await this.plugin.saveSettings();
+        this.display();
+      }));
+    this.toggle(
       "Confirm before removing a field or deleting a record",
       "On by default. Pressing × on a bound field only unbinds it, which is never confirmed; this gates the second press that drops the field, and record deletion. Records go to the trash, so both are recoverable.",
       "confirmDestructiveActions",
@@ -756,6 +827,9 @@ class SchemaSyncPlugin extends Plugin {
   skipRecordDeleteConfirm = false;
   safetyPrompted = new Set();
   lastAdopted = new Map();
+  // Guards against a second modal for the same property while one is open, and
+  // against re-asking after the modal is dismissed without an answer.
+  askingAbout = new Set();
   // Schema notes edited while focused. Their sync is held until focus leaves the
   // file, so typing is never interrupted by a vault-wide rewrite.
   pendingSchemaEdits = new Set();
@@ -1615,6 +1689,81 @@ class SchemaSyncPlugin extends Plugin {
     new Notice(`Deleted ${file.basename}.`);
   }
 
+  // Fires when a record gains a property its schema does not declare. Asks once
+  // per property; "leave it alone" is remembered on disk so a record's private
+  // annotations never nag again.
+  async checkUndeclaredProperties(file) {
+    if (!this.settings.promptForUndeclaredProperties) return;
+    if (file.basename.startsWith(PLACEHOLDER_PREFIX)) return;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    const schemaName = frontmatter?.implements;
+    if (typeof schemaName !== "string") return;
+    const fields = this.schemas.get(schemaName);
+    if (!fields) return;
+    const ignored = new Set(this.settings.ignoredProperties[schemaName] || []);
+    const unknown = Object.keys(frontmatter).find((name) =>
+      name !== "implements"
+      && !Object.prototype.hasOwnProperty.call(fields, name)
+      && !ignored.has(name)
+      && !this.askingAbout.has(`${schemaName}.${name}`));
+    if (!unknown) return;
+
+    const key = `${schemaName}.${unknown}`;
+    this.askingAbout.add(key);
+    const type = this.inferRecordFieldType(frontmatter[unknown]);
+    const choice = await new Promise((resolve) => new UndeclaredPropertyModal(
+      this.app,
+      { property: unknown, type, schemaName, recordName: file.basename },
+      resolve,
+    ).open());
+
+    if (choice === "defer") {
+      this.askingAbout.delete(key);
+      return;
+    }
+    if (choice === "ignore") {
+      this.settings.ignoredProperties[schemaName] = [...ignored, unknown];
+      await this.saveSettings();
+      new Notice(`"${unknown}" left as a property of ${file.basename} alone.`);
+      return;
+    }
+
+    const bind = choice === "bind";
+    const next = { ...fields, [unknown]: { type, required: false, hasDefault: false, defaultValue: undefined, bind } };
+    await this.writeSchemaFile(schemaName, next);
+    this.schemas.set(schemaName, next);
+    if (bind) await this.syncEntityFieldsForSchema(schemaName, next);
+    await this.syncBaseViews();
+    this.refreshDashboards();
+    if (bind) {
+      new Notice(`"${unknown}" added to ${schemaName} and to every ${schemaName} record.`);
+      await this.openDashboardAt(schemaName);
+    } else {
+      new Notice(`"${unknown}" documented in ${schemaName} as unbound. Other records are untouched; bind it when you want it everywhere.`, 7000);
+    }
+  }
+
+  // An [[link]] to a non-markdown file is an attachment, not a plain string.
+  inferRecordFieldType(value) {
+    if (typeof value === "string") {
+      const link = value.trim().match(/^\[\[([^\]|]+?)(?:\|[^\]]*)?\]\]$/);
+      const target = link ? this.app.metadataCache.getFirstLinkpathDest(link[1].trim(), "") : null;
+      if (target && target.extension && target.extension.toLowerCase() !== "md") return "attachment";
+    }
+    return inferFieldType(value);
+  }
+
+  async openDashboardAt(schemaName) {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_SCHEMA_SYNC)[0];
+    const leaf = existing || this.app.workspace.getLeaf(true);
+    if (!existing) await leaf.setViewState({ type: VIEW_TYPE_SCHEMA_SYNC, active: true });
+    this.app.workspace.revealLeaf(leaf);
+    if (leaf.view?.selectedSchema !== undefined) {
+      leaf.view.selectedSchema = schemaName;
+      leaf.view.render();
+    }
+  }
+
   async openSchemaNote(schemaName) {
     const file = this.schemaFile(schemaName);
     if (!file) return new Notice(`No schema file found for "${schemaName}".`);
@@ -1691,9 +1840,10 @@ class SchemaSyncPlugin extends Plugin {
     if (previous) clearTimeout(previous);
     this.pending.set(
       file.path,
-      setTimeout(() => {
+      setTimeout(async () => {
         this.pending.delete(file.path);
-        void this.validateFile(file, true);
+        await this.validateFile(file, true);
+        await this.checkUndeclaredProperties(file);
       }, 250)
     );
   }
@@ -2085,6 +2235,7 @@ module.exports.generators = {
   storageType,
   reorderFields,
   renameField,
+  inferFieldType,
   setFieldBind,
   yamlValue,
   frontmatterText,

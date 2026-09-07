@@ -20,19 +20,8 @@
               "icon": "lucide-file",
               "title": "README"
             }
-          },
-          {
-            "id": "481185f94b6f4c4f",
-            "type": "leaf",
-            "state": {
-              "type": "schema-sync-dashboard",
-              "state": {},
-              "icon": "workflow",
-              "title": "Schema Sync"
-            }
           }
-        ],
-        "currentTab": 1
+        ]
       },
       {
         "id": "807b07bf4c8730b2",
@@ -66,14 +55,10 @@
                 "id": "3364781c4bd79f2e",
                 "type": "leaf",
                 "state": {
-                  "type": "markdown",
-                  "state": {
-                    "file": "data/record/lifeforms/id2.LifeForm.md",
-                    "mode": "source",
-                    "source": false
-                  },
+                  "type": "empty",
+                  "state": {},
                   "icon": "lucide-file",
-                  "title": "id2.LifeForm"
+                  "title": "New tab"
                 }
               }
             ]
@@ -245,32 +230,38 @@
       "schema-sync:Open schema dashboard": false
     }
   },
-  "active": "3364781c4bd79f2e",
+  "active": "0ec45bc60f9e82c5",
   "lastOpenFiles": [
+    "data/config/schema-mappings.md",
+    "data/base/LifeForm.base",
+    "data/base/Realm.base",
+    "data/base/Verse.base",
+    "data/base",
+    "data/config/temp2s.config.md",
+    "data/config/temps.config.md",
+    "data/config/traits.config.md",
+    "data/config/Realms.config.md",
+    "data/config",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
+    "data/record/lifeforms",
+    "data/record/realms/_placeholder.Realm.md",
+    "data/record/realms",
+    "data/record/verses/_placeholder.Verse.md",
+    "data/record/verses",
+    "data/record",
+    "data/record/lifeforms/id2.LifeForm.md",
     "data/schema/LifeForm.schema.md",
     "README.md",
-    "README.md.tmp.9572.47574c895507",
-    "README.md.tmp.9572.9c912004d6ac",
+    "README.md.tmp.9572.17a21206130f",
     "data/schema/Verse.schema.md",
     "data/AssetDatabase.base.md",
     "data/config/covers.config.md",
-    "data/record/lifeforms/_placeholder.LifeForm.md",
     "config/_placeholder.Verse.md",
-    "README.md.tmp.9572.b34b188b21dd",
-    "README.md.tmp.9572.a672b3cf90b0",
-    "README.md.tmp.9572.b3dc4cf7291d",
-    "README.md.tmp.9572.f2913157ab58",
-    "README.md.tmp.9572.e9e911d861eb",
-    "README.md.tmp.9572.7da1590029e7",
     "data/config/strings.config.md",
     "data/config/attachments.config.md",
-    "README.md.tmp.9572.b42e19ffabb1",
-    "data/base/LifeForm.base",
     "data/config/trait1s.config.md",
     "data/config/LifeForms.config.md",
-    "data/record/lifeforms/id2.LifeForm.md",
     "Architecture.md",
-    "data/config/traits.config.md",
     "data/record/lifeforms/_placeholder2.LifeForm.md",
     "data/record/lifeforms/_placeholder2.LifeForm 2.md",
     "data/record/lifeforms/_placeholder4.LifeForm.md",
@@ -278,12 +269,6 @@
     "assets/cover.jpg",
     "assets/FB_IMG_1695878841711.jpg",
     "data/config/Architectures.config.md",
-    "data/config/schema-mappings.md",
-    "data/config/Realms.config.md",
-    "data/config/Events.config.md",
-    "data/config/Weathers.config.md",
-    "data/config/FactionAlignments.config.md",
-    "data/config/Services.config.md",
     "assets/atompunk.jpg"
   ]
 }

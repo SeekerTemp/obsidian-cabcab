@@ -418,7 +418,12 @@ module.exports = class AssetRenamerPlugin extends Plugin {
 	}
 
 	getSourcePropertyName(sourceName) {
-		const normalized = sourceName.toLowerCase();
+		// A config filename may carry a suffix before the extension, as Schema
+		// Sync's Architectures.config.md does. Obsidian strips only ".md", so
+		// without this the property would be written as "Architectures.config".
+		// Stripping happens before the lookup so categories.config.md still maps.
+		const base = String(sourceName).split(".")[0];
+		const normalized = base.toLowerCase();
 		const names = {
 			categories: "Category",
 			eras: "Era",
@@ -428,7 +433,7 @@ module.exports = class AssetRenamerPlugin extends Plugin {
 			asset_types: "Asset_type",
 			outfit_types: "Outfit_type"
 		};
-		return names[normalized] ?? sourceName;
+		return names[normalized] ?? base;
 	}
 
 	parseMetadataValue(value) {

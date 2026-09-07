@@ -216,7 +216,21 @@ validateVault()             report issues to the status bar
 
 Config lists run after records, so newly back-filled values are visible to them.
 
-Properties on a record that its schema does not declare are **the note's own business**. They are never removed, never reported as errors, and never pushed back into the schema — you can annotate a single record freely without it becoming an entity-wide attribute. Promote one deliberately by adding the field in 02/Definition.
+## Undeclared record properties
+
+Add a property to a record that its schema does not declare, and you are asked once what it is:
+
+| Choice | Effect |
+| --- | --- |
+| **Define and bind** | Adds the field to the schema *and* to every record of that schema, then opens the dashboard on it. Use when it belongs to the entity. |
+| **Define, unbound** | Adds it to the schema as documentation only. Other records are untouched, and it is there to bind later. Use for an attribute one record happens to need. |
+| **Leave it alone** | Stays a property of that record alone. Remembered on disk, so you are never asked again. |
+
+Dismissing the dialog answers nothing — it stays quiet for now and asks again later.
+
+The type is inferred from the value, including `attachment` when the value is a `[[link]]` to a non-markdown file. Whatever you choose, the property itself is **never removed or rewritten**.
+
+Turn the prompts off, or clear the remembered dismissals, in Settings → Schema Sync.
 
 Cleanup only ever touches paths the plugin recorded as generated, so hand-authored files under `data/` survive.
 

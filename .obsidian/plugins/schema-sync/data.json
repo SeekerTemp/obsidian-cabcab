@@ -1,0 +1,10 @@
+{
+  "requireEditUnlock": false,
+  "confirmDestructiveActions": true,
+  "promptForUndeclaredProperties": true,
+  "ignoredProperties": {
+    "LifeForm": [
+      "Cultures.config"
+    ]
+  }
+}

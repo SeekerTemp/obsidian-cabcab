@@ -10,4 +10,6 @@ views:
       - id
       - cover
       - trait
+      - temp
+      - temp2
     sort: []
