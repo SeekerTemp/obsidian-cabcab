@@ -26,9 +26,11 @@
 /* Scrolls independently of the page so a long schema does not push the other
    panels off-screen. */
 .schema-sync-field-editor { border-top: 1px solid #ded9cf; max-height: 52vh; overflow: auto; overscroll-behavior: contain; }
-.schema-sync-field-row { display: grid; grid-template-columns: 14px minmax(64px, 1fr) 74px minmax(52px, .8fr) 96px 74px auto 20px 20px; gap: 4px; align-items: center; padding: 3px 0; border-bottom: 1px solid #ded9cf; }
+.schema-sync-field-row { display: grid; grid-template-columns: 14px minmax(64px, 1fr) 74px minmax(52px, .8fr) 96px 34px 30px 20px 20px 20px; gap: 4px; align-items: center; padding: 3px 0; border-bottom: 1px solid #ded9cf; }
 .schema-sync-field-row input:not([type="checkbox"]), .schema-sync-field-row select { min-width: 0; border: 1px solid #d8d3c8; border-radius: 4px; background: #fffdf8; color: #5b5951; padding: 3px 4px; font-size: 10px; }
-.schema-sync-field-row input:disabled, .schema-sync-field-row select:disabled { border-color: transparent; background: transparent; color: #6f6d64; }
+/* Locked rows flatten their text inputs and selects. Checkboxes are excluded:
+   a checkbox IS its border and background, so blanking those erases it. */
+.schema-sync-field-row input:not([type="checkbox"]):disabled, .schema-sync-field-row select:disabled { border-color: transparent; background: transparent; color: #6f6d64; }
 .schema-sync-field-row label { color: #96938a; font: 9px var(--font-monospace); white-space: nowrap; }
 .schema-sync-field-row button { border: 0; background: transparent; color: #b76c5c; font-size: 15px; cursor: pointer; padding: 0; }
 .schema-sync-field-row.is-editing { background: #fff8e8; }
@@ -48,7 +50,7 @@
 .schema-sync-registry-header h2 { margin: 0; }
 .schema-sync-new-button { border: 1px solid #d95f47; background: #ed684d; color: white; border-radius: 5px; padding: 7px 9px; cursor: pointer; font-size: 10px; white-space: nowrap; }
 .schema-sync-list, .schema-sync-entities { display: grid; gap: 6px; }
-.schema-sync-schema-row { display: grid; grid-template-columns: minmax(0, 1fr) 26px 26px; gap: 4px; align-items: stretch; }
+.schema-sync-schema-row { display: grid; grid-template-columns: minmax(0, 1fr) 24px 24px 24px; gap: 3px; align-items: stretch; }
 .schema-sync-schema-row > .schema-sync-schema { min-width: 0; }
 .schema-sync-row-action { border: 1px solid transparent; background: transparent; color: #aaa69c; border-radius: 5px; cursor: pointer; font-size: 14px; }
 .schema-sync-row-action:hover { border-color: #d8d3c8; background: #fffdf8; color: #d45e46; }
@@ -86,4 +88,39 @@
   .schema-sync-field-row > .schema-sync-drag { flex: 0 0 14px; order: -2; }
   .schema-sync-field-row > label { flex: 1 1 auto; }
   .schema-sync-field-row > button { flex: 0 0 20px; }
+  .schema-sync-field-row > input[type="checkbox"] { flex: 0 0 auto; margin-right: 10px; }
+  /* Rows are no longer columnar here, so column headings would not line up. */
+  .schema-sync-field-head { display: none; }
 }
+.schema-sync-head-actions { display: flex; gap: 6px; align-items: center; }
+.schema-sync-head-actions button[data-action="reload"] { color: #6c685e; }
+.schema-sync-row-action.is-muted { opacity: .3; }
+.schema-sync-field-row .schema-sync-row-action { font-size: 11px; }
+/* Header row: same grid as a field row so the columns line up, sticky inside
+   the editor's own scroll container. */
+.schema-sync-field-head { position: sticky; top: 0; z-index: 2; background: #faf8f2; color: #98958b; font: 9px var(--font-monospace); letter-spacing: .06em; text-transform: uppercase; padding: 5px 0; border-bottom: 1px solid #d8d3c8; }
+.schema-sync-field-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Drawn rather than native, in every state. A locked row is still a row you
+   read, and browsers fade a disabled checkbox to near-invisible against this
+   background; styling only the disabled case would change the box's shape as
+   rows lock and unlock. */
+.schema-sync-field-row input[type="checkbox"] {
+  justify-self: center; margin: 0; position: relative; width: 14px; height: 14px;
+  appearance: none; -webkit-appearance: none; opacity: 1;
+  border: 1px solid #c4bdb0; border-radius: 3px; background: #fffdf8; cursor: pointer;
+}
+.schema-sync-field-row input[type="checkbox"]:checked { border-color: #d95e45; background: #d95e45; }
+.schema-sync-field-row input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 7px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.schema-sync-field-row input[type="checkbox"]:disabled { cursor: default; }
+.schema-sync-field-row input[type="checkbox"]:not(:disabled):hover { border-color: #d95e45; }
+.schema-sync-field-row input[type="checkbox"]:focus-visible { outline: 2px solid #d95e45; outline-offset: 1px; }
+/* Live mode drops the ✎ button, so the row is one column shorter and the
+   header's edit cell goes with it. */
+.schema-sync-field-editor.is-live .schema-sync-field-row { grid-template-columns: 14px minmax(64px, 1fr) 74px minmax(52px, .8fr) 96px 34px 30px 20px 20px; }
+.schema-sync-field-editor.is-live .schema-sync-edit-col { display: none; }
+/* The pull direction can drop fields, so it does not look like the safe one. */
+.schema-sync-head button.schema-sync-danger { color: #9a6a3c; border-color: #dcc9ae; }
+.schema-sync-head button.schema-sync-danger:hover { color: #b94b3d; border-color: #d9a98f; }

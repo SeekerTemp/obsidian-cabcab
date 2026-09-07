@@ -80,7 +80,9 @@ Field properties:
 | `relation` | a schema name | Emits a `Ref:` in the ERD; suppresses the attribute's config list |
 | `bind` | `false` | Documentation only — see below |
 
-**`bind: false`** keeps a field visible in the definition editor and the Field Reference, but excludes it from record frontmatter, config lists, base view columns, the ERD, and validation. Absent means bound, so existing schemas need no migration and `bind: true` is never written to disk.
+**`bind: false`** keeps a field visible in the definition editor and the Field Reference, but excludes it from record frontmatter, config lists, base view columns, the ERD, and validation. A scratch field: documented, inert.
+
+**Binding is opt-in for anything half-written.** A field binds when it declares a `type`; a field with no type, a bare `- name` entry, or a Field Reference row with a blank `Bound` cell stays **unbound** until you say otherwise. A half-finished thought should never write itself into every record. An explicit `bind:` always wins, and `bind: true` is never written to disk, so schemas with fully declared fields need no migration.
 
 **`attachment`** is a string holding a `[[wikilink]]` to a media file. Asset Renamer builds its property picker from a note's frontmatter keys, so an attachment field is editable there with no configuration — the plugin's only job is to make sure the key exists.
 
@@ -115,7 +117,29 @@ configFor: [Verse.Culture, LifeForm.Culture]
 | [[Nomadic clans]] |  |
 ```
 
-Regeneration **unions** — rows added by hand survive, even when no record currently uses that value. Fields named `id` or `name` get no list, being identity keys rather than categories.
+Regeneration **unions** — rows added by hand survive, even when no record currently uses that value, and the `Notes` cell on each row is carried across. Fields named `id` or `name` get no list, being identity keys rather than categories.
+
+## Writing in generated files
+
+Generated files are rebuilt wholesale on every sync, so anything written into one would otherwise be destroyed. Every generated markdown file therefore ends with a protected region:
+
+```markdown
+<!-- schema-sync:notes -->
+
+Anything below this line is yours. Sync never touches it.
+```
+
+This applies to `.config.md` value lists, `.schema.md` notes (below the Field Reference), and the `.base.md` ERD. New records and placeholders are created with the marker already in place.
+
+Three places are safe to write in:
+
+| Where | Protected |
+| --- | --- |
+| Below the notes marker, in any generated file | Verbatim |
+| The `Notes` column of a `.config.md` row | Per row |
+| Prose between the title and the Field Reference in a schema note | Verbatim |
+
+**Record notes are never rewritten at all** — only frontmatter keys are added, never removed, and the body is untouched. Undeclared frontmatter properties on a record are equally safe.
 
 ## Dashboard
 
@@ -123,7 +147,11 @@ Ribbon icon, or **Open schema dashboard**. Three panels:
 
 **01 / Registry** — schemas, with duplicate and delete per row.
 
-**02 / Definition** — the field editor. Click ✎ to unlock a row; **Enter** commits, **Escape** cancels and restores. Drag ⠿ to reorder — field order flows through to the schema note, base columns and the ERD. A blank field name is refused and reverted rather than saved. Renaming a field **moves the key in every record**, preserving values. Deleting a field offers "don't ask again this session".
+**02 / Definition** — the field editor. Click ✎ to unlock a row; **Enter** commits, **Escape** cancels and restores. Drag ⠿ to reorder — field order flows through to the schema note, base columns and the ERD. A blank field name is refused and reverted rather than saved. Renaming a field **moves the key in every record**, preserving values.
+
+Rows are **live-editable by default** — no gate, changes apply as you make them, and Escape reverts a row you are part-way through. This is a note editor, not a DBMS: the trade is that a malformed edit lands rather than being caught. Settings → Schema Sync → *Require unlock before editing a field* restores the ✎-per-row behaviour if you want the extra step.
+
+**× is two-stage and non-destructive first.** On a bound field it **unbinds** — no confirmation, since nothing is written away and the bind dropdown reverses it. The field stops reaching records, config lists, base views and the ERD, and values already stored in records stay put as ordinary free-form properties. Pressing × again on the now-unbound field removes it from the schema, and that step does ask, with "don't ask again this session".
 
 **03 / Relation** — records for the selected schema, templates included and badged. Per row: open, ⧉ duplicate, 🖼 Asset Renamer, × delete (to trash, honouring your vault setting). `+ New <Schema> record` writes `_placeholder<N>.<Schema>.md` with every field, repeatable.
 
@@ -133,9 +161,41 @@ The layout responds to the **pane** width via container queries, not the window 
 
 Supported, and the plugin stays out of the way while you do it.
 
-While a schema note is the **active file**, changes are held: only the dashboard refreshes, nothing is written. When you move off the note, one sync runs and applies your edits. `syncSchemaDocs` additionally refuses to rewrite the active file whatever triggered the sync.
+**A schema note that is open in any leaf is never rewritten.** Not "not the active view" — open anywhere, including a background tab or a split. Flushing is triggered by moving focus off the note, at which point it is no longer active but is still open; rewriting it there reloads the editor buffer under the cursor and makes the note impossible to type in. The note is normalised once it is actually closed.
 
-For longer protection — a schema note pinned open across many syncs — the command **Toggle schema safety for the active note** exempts it until it is closed.
+While the note is the active view, changes are held entirely: only the dashboard refreshes, nothing is written. When you move focus off it, one sync runs and applies your edits **outward** — to records, config lists, base views and the ERD — leaving the note itself alone.
+
+Both directions of the schema note are read:
+
+- `fields:` frontmatter is authoritative for the fields it declares.
+- **The Field Reference table is an input too**, but only for *adding*. A row with a **blank `Bound` cell** is read as hand-typed and adopted into `fields:`, always unbound; flip `bind` in 02/Definition when you're ready to commit to it.
+
+**Only blank-`Bound` rows are adopted**, and that is what makes deletion work. The generator always writes `yes` or `no` in that column, so a row carrying either is its own output and is ignored on the way back in. Without that rule the two copies resurrect each other: delete a field from `fields:` and its still-present generated row puts it straight back.
+
+So: **delete a field in `fields:` frontmatter, or with the × in 02/Definition — not by deleting its table row.** The stale row is ignored immediately and disappears when the table is next regenerated. Because an open note is only rewritten by a sync you press yourself, the deleted field can linger *visually* in the table until then; it is already gone from the schema.
+
+Because an open note cannot be written back, an adopted field stays adopted-but-undeclared until the note is closed. It reaches records and config lists immediately regardless.
+
+## The two directions
+
+The dashboard header has one button per direction, and they are not symmetrical.
+
+**↓ Sync schema system — top to bottom.** The schema is authoritative. Pushes it out to records, config lists, base views and the ERD, and regenerates each Field Reference table from `fields:`. Additive and safe: it never removes a record property.
+
+**↑ Pull from notes — bottom to top, and destructive by design.** Each schema note's Field Reference table *becomes* the field set. A row deleted there deletes the field; a row added there adds it; blank cells resolve to the quiet defaults — `string`, no default, not required, **unbound**, no relation. Field order follows the table.
+
+This is the one operation that can drop a field, so it confirms first and lists exactly what will go. Values already in records are never touched — a dropped field just becomes an ordinary free-form property. It does not push anything outward; follow it with a sync.
+
+The table carries **every** field property, `Relation` included, so a pull is lossless — it cannot drop something the table was unable to express.
+
+The command **Toggle schema safety for the active note** pins a note as never-rewritten even after it is closed, until toggled back.
+
+## Settings
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| Require unlock before editing a field | **off** | On, each row in 02/Definition needs its ✎ pressed before it can be edited. Off, rows are live. |
+| Confirm before removing a field or deleting a record | on | Gates the second × on a field and record deletion. Unbinding is never confirmed; records go to the trash. |
 
 ## Sync pipeline
 
@@ -156,7 +216,9 @@ validateVault()             report issues to the status bar
 
 Config lists run after records, so newly back-filled values are visible to them.
 
-Unknown properties on a record are **reported, never removed** — adding a property to a note is a visible warning to correct in the schema, not a reason to lose data. Cleanup only ever touches paths the plugin recorded as generated, so hand-authored files under `data/` survive.
+Properties on a record that its schema does not declare are **the note's own business**. They are never removed, never reported as errors, and never pushed back into the schema — you can annotate a single record freely without it becoming an entity-wide attribute. Promote one deliberately by adding the field in 02/Definition.
+
+Cleanup only ever touches paths the plugin recorded as generated, so hand-authored files under `data/` survive.
 
 ## Plugin interop
 

@@ -1,9 +1,9 @@
 [
   "dataview",
-  "metadata-menu",
   "tag-wrangler",
   "asset-renamer",
   "dbml-visualizer",
   "editing-toolbar",
+  "metadata-menu",
   "schema-sync"
 ]

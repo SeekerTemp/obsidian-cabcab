@@ -22,7 +22,7 @@
             }
           },
           {
-            "id": "d750a2ae2729a7eb",
+            "id": "481185f94b6f4c4f",
             "type": "leaf",
             "state": {
               "type": "schema-sync-dashboard",
@@ -35,39 +35,51 @@
         "currentTab": 1
       },
       {
-        "id": "faf4acc706731a73",
-        "type": "tabs",
+        "id": "807b07bf4c8730b2",
+        "type": "split",
         "children": [
           {
-            "id": "1da743f679345f7b",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "data/record/lifeforms/id2.LifeForm.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "id2.LifeForm"
-            }
+            "id": "bd24e162e9cf4913",
+            "type": "tabs",
+            "children": [
+              {
+                "id": "bfa9f4aabc86acf1",
+                "type": "leaf",
+                "state": {
+                  "type": "markdown",
+                  "state": {
+                    "file": "data/schema/LifeForm.schema.md",
+                    "mode": "source",
+                    "source": false
+                  },
+                  "icon": "lucide-file",
+                  "title": "LifeForm.schema"
+                }
+              }
+            ]
           },
           {
-            "id": "582f4c27330af288",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "data/record/lifeforms/id2.LifeForm.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "id2.LifeForm"
-            }
+            "id": "85e0705ed4ad538b",
+            "type": "tabs",
+            "children": [
+              {
+                "id": "3364781c4bd79f2e",
+                "type": "leaf",
+                "state": {
+                  "type": "markdown",
+                  "state": {
+                    "file": "data/record/lifeforms/id2.LifeForm.md",
+                    "mode": "source",
+                    "source": false
+                  },
+                  "icon": "lucide-file",
+                  "title": "id2.LifeForm"
+                }
+              }
+            ]
           }
         ],
-        "currentTab": 1
+        "direction": "horizontal"
       }
     ],
     "direction": "vertical"
@@ -233,46 +245,45 @@
       "schema-sync:Open schema dashboard": false
     }
   },
-  "active": "582f4c27330af288",
+  "active": "3364781c4bd79f2e",
   "lastOpenFiles": [
-    "README.md.tmp.9572.421eb045b3f4",
-    "Architecture.md",
-    "data/record/lifeforms/id2.LifeForm.md",
-    "data/record/lifeforms/_placeholder.LifeForm.md",
-    "data/config/traits.config.md",
-    "README.md",
-    "data/record/lifeforms/_placeholder2.LifeForm.md",
     "data/schema/LifeForm.schema.md",
+    "README.md",
+    "README.md.tmp.9572.47574c895507",
+    "README.md.tmp.9572.9c912004d6ac",
+    "data/schema/Verse.schema.md",
+    "data/AssetDatabase.base.md",
+    "data/config/covers.config.md",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
+    "config/_placeholder.Verse.md",
+    "README.md.tmp.9572.b34b188b21dd",
+    "README.md.tmp.9572.a672b3cf90b0",
+    "README.md.tmp.9572.b3dc4cf7291d",
+    "README.md.tmp.9572.f2913157ab58",
+    "README.md.tmp.9572.e9e911d861eb",
+    "README.md.tmp.9572.7da1590029e7",
+    "data/config/strings.config.md",
+    "data/config/attachments.config.md",
+    "README.md.tmp.9572.b42e19ffabb1",
+    "data/base/LifeForm.base",
+    "data/config/trait1s.config.md",
+    "data/config/LifeForms.config.md",
+    "data/record/lifeforms/id2.LifeForm.md",
+    "Architecture.md",
+    "data/config/traits.config.md",
+    "data/record/lifeforms/_placeholder2.LifeForm.md",
     "data/record/lifeforms/_placeholder2.LifeForm 2.md",
     "data/record/lifeforms/_placeholder4.LifeForm.md",
     "data/record/lifeforms/_placeholder3.LifeForm.md",
     "assets/cover.jpg",
-    "assets/config/config.base",
-    "assets/config",
-    "data/config/covers.config.md",
     "assets/FB_IMG_1695878841711.jpg",
-    "assets",
-    "New folder",
     "data/config/Architectures.config.md",
-    "data/base/LifeForm.base",
     "data/config/schema-mappings.md",
     "data/config/Realms.config.md",
     "data/config/Events.config.md",
     "data/config/Weathers.config.md",
     "data/config/FactionAlignments.config.md",
     "data/config/Services.config.md",
-    "data/config/Cultures.config.md",
-    "data/config/LifeForms.config.md",
-    "data/config",
-    "data/record/lifeforms",
-    "data/record/realms/_placeholder.Realm.md",
-    "data/record/realms",
-    "data/record/verses/_placeholder.Verse.md",
-    "data/record/verses",
-    "data/record",
-    "config/entity.md",
-    "config/categories.md",
-    "MyVault/doc/config_environment.md",
     "assets/atompunk.jpg"
   ]
 }
