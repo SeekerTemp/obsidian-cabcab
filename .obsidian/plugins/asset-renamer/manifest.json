@@ -1,0 +1,9 @@
+{
+	"id": "asset-renamer",
+	"name": "Asset Renamer",
+	"version": "1.2.0",
+	"minAppVersion": "1.7.2",
+	"description": "Rename a note's Cover image from configured asset values.",
+	"author": "cabcab",
+	"isDesktopOnly": false
+}

@@ -1,0 +1,13 @@
+views:
+  - type: table
+    name: Configuration records
+    filters:
+      and:
+        - file.inFolder("data/config")
+        - file.name != "config.base"
+    order:
+      - file.name
+      - file.path
+    sort:
+      - property: file.name
+        direction: ASC

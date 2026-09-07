@@ -1,0 +1,278 @@
+{
+  "main": {
+    "id": "8f02e65dc7671c8c",
+    "type": "split",
+    "children": [
+      {
+        "id": "35487ee6d913e72a",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "242bc1386461b4d7",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "README.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "README"
+            }
+          },
+          {
+            "id": "d750a2ae2729a7eb",
+            "type": "leaf",
+            "state": {
+              "type": "schema-sync-dashboard",
+              "state": {},
+              "icon": "workflow",
+              "title": "Schema Sync"
+            }
+          }
+        ],
+        "currentTab": 1
+      },
+      {
+        "id": "faf4acc706731a73",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "1da743f679345f7b",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "data/record/lifeforms/id2.LifeForm.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "id2.LifeForm"
+            }
+          },
+          {
+            "id": "582f4c27330af288",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "data/record/lifeforms/id2.LifeForm.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "id2.LifeForm"
+            }
+          }
+        ],
+        "currentTab": 1
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "242e56a6ecacb9e9",
+    "type": "split",
+    "children": [
+      {
+        "id": "dd77ca7bdf9db4dd",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "0ec45bc60f9e82c5",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "371ce8932d3f881e",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "eba0542e9abb77eb",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 200
+  },
+  "right": {
+    "id": "70c16952ab22aae0",
+    "type": "split",
+    "children": [
+      {
+        "id": "b0c373133e890857",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "58c4809c15ef68f2",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "MAP.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for MAP"
+            }
+          },
+          {
+            "id": "5944b799060766e4",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "MAP.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from MAP"
+            }
+          },
+          {
+            "id": "f6b9b0ef539b3a8f",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "7cd1a572f6e9d26c",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "e7aa62d5473e20d8",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "MAP.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of MAP"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false,
+      "asset-renamer:Open asset renamer for active note": false,
+      "schema-sync:Open schema dashboard": false
+    }
+  },
+  "active": "582f4c27330af288",
+  "lastOpenFiles": [
+    "README.md.tmp.9572.421eb045b3f4",
+    "Architecture.md",
+    "data/record/lifeforms/id2.LifeForm.md",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
+    "data/config/traits.config.md",
+    "README.md",
+    "data/record/lifeforms/_placeholder2.LifeForm.md",
+    "data/schema/LifeForm.schema.md",
+    "data/record/lifeforms/_placeholder2.LifeForm 2.md",
+    "data/record/lifeforms/_placeholder4.LifeForm.md",
+    "data/record/lifeforms/_placeholder3.LifeForm.md",
+    "assets/cover.jpg",
+    "assets/config/config.base",
+    "assets/config",
+    "data/config/covers.config.md",
+    "assets/FB_IMG_1695878841711.jpg",
+    "assets",
+    "New folder",
+    "data/config/Architectures.config.md",
+    "data/base/LifeForm.base",
+    "data/config/schema-mappings.md",
+    "data/config/Realms.config.md",
+    "data/config/Events.config.md",
+    "data/config/Weathers.config.md",
+    "data/config/FactionAlignments.config.md",
+    "data/config/Services.config.md",
+    "data/config/Cultures.config.md",
+    "data/config/LifeForms.config.md",
+    "data/config",
+    "data/record/lifeforms",
+    "data/record/realms/_placeholder.Realm.md",
+    "data/record/realms",
+    "data/record/verses/_placeholder.Verse.md",
+    "data/record/verses",
+    "data/record",
+    "config/entity.md",
+    "config/categories.md",
+    "MyVault/doc/config_environment.md",
+    "assets/atompunk.jpg"
+  ]
+}

@@ -1,0 +1,89 @@
+/* A container query, not a media query: the dashboard is usually a docked pane,
+   so what matters is the pane's width, not the window's. */
+.schema-sync-view { container-type: inline-size; container-name: schemasync; padding: 0 18px 18px; background: #f3f0e9; color: #242522; height: 100%; overflow-y: auto; font-family: Manrope, var(--font-text); }
+/* Sticky so the sync button and action bar stay reachable while scrolling a
+   long field list. The background must be opaque or rows show through. */
+.schema-sync-head { position: sticky; top: 0; z-index: 5; background: #f3f0e9; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid #d8d3c8; padding: 12px 0 10px; margin-bottom: 14px; }
+.schema-sync-head small, .schema-sync-label { color: #98958b; font: 10px var(--font-monospace); letter-spacing: .1em; text-transform: uppercase; }
+.schema-sync-head h1 { margin: 2px 0 0; font-size: 18px; letter-spacing: -.03em; }
+.schema-sync-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.schema-sync-modal-remember { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; }
+.schema-sync-head button { border: 1px solid #d1c9bc; background: #fffaf0; color: #d95e45; border-radius: 6px; padding: 9px 12px; cursor: pointer; }
+.schema-sync-empty-state { max-width: 560px; margin: 12vh auto; padding: 42px; border: 1px solid #d8d3c8; background: #faf8f2; text-align: center; }
+.schema-sync-empty-state small { color: #98958b; font: 10px var(--font-monospace); letter-spacing: .1em; }
+.schema-sync-empty-state h1 { margin: 12px 0 8px; font-size: 26px; }
+.schema-sync-empty-state p { color: #96938a; font: 11px var(--font-monospace); }
+.schema-sync-empty-state button { margin: 10px 4px 0; border: 1px solid #d95f47; background: #ed684d; color: white; border-radius: 5px; padding: 9px 12px; cursor: pointer; font-size: 10px; }
+.schema-sync-action-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.schema-sync-action-bar button, .schema-sync-implement { border: 1px solid #d8d1c5; background: #fffdf8; color: #6c685e; border-radius: 5px; padding: 6px 8px; font-size: 10px; cursor: pointer; }
+.schema-sync-action-bar button:hover, .schema-sync-implement:hover { border-color: #e26b52; color: #d45e46; }
+.schema-sync-mapping-note { display: block; color: #96938a; font: 9px var(--font-monospace); margin: 9px 0 2px; }
+.schema-sync-implement { width: 100%; margin-top: 10px; color: #d45e46; }
+.schema-sync-editor-help { color: #96938a; font: 10px var(--font-monospace); line-height: 1.5; }
+.schema-sync-definition-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+.schema-sync-definition-header h2 { margin: 0; }
+.schema-sync-add-field { border: 1px solid #d95f47; background: #ed684d; color: white; border-radius: 5px; padding: 7px 9px; cursor: pointer; font-size: 10px; white-space: nowrap; }
+/* Scrolls independently of the page so a long schema does not push the other
+   panels off-screen. */
+.schema-sync-field-editor { border-top: 1px solid #ded9cf; max-height: 52vh; overflow: auto; overscroll-behavior: contain; }
+.schema-sync-field-row { display: grid; grid-template-columns: 14px minmax(64px, 1fr) 74px minmax(52px, .8fr) 96px 74px auto 20px 20px; gap: 4px; align-items: center; padding: 3px 0; border-bottom: 1px solid #ded9cf; }
+.schema-sync-field-row input:not([type="checkbox"]), .schema-sync-field-row select { min-width: 0; border: 1px solid #d8d3c8; border-radius: 4px; background: #fffdf8; color: #5b5951; padding: 3px 4px; font-size: 10px; }
+.schema-sync-field-row input:disabled, .schema-sync-field-row select:disabled { border-color: transparent; background: transparent; color: #6f6d64; }
+.schema-sync-field-row label { color: #96938a; font: 9px var(--font-monospace); white-space: nowrap; }
+.schema-sync-field-row button { border: 0; background: transparent; color: #b76c5c; font-size: 15px; cursor: pointer; padding: 0; }
+.schema-sync-field-row.is-editing { background: #fff8e8; }
+.schema-sync-drag { cursor: grab; color: #b5b1a6; font-size: 11px; line-height: 1; user-select: none; text-align: center; }
+.schema-sync-drag:active { cursor: grabbing; }
+.schema-sync-field-row.is-dragging { opacity: .4; }
+.schema-sync-field-row.is-drop-target { box-shadow: inset 0 2px 0 0 #ed684d; }
+.schema-sync-entity-row { display: grid; grid-template-columns: minmax(0, 1fr) 22px 22px 22px; gap: 3px; align-items: stretch; }
+.schema-sync-entity-row > .schema-sync-entity { min-width: 0; }
+.schema-sync-grid { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(300px, 1.4fr) minmax(240px, 1fr); gap: 1px; background: #d8d3c8; border: 1px solid #d8d3c8; }
+.schema-sync-grid > section { background: #faf8f2; min-width: 0; min-height: 320px; padding: 14px; }
+.schema-sync-grid h2 { margin: 4px 0 12px; font-size: 15px; letter-spacing: -.03em; }
+/* grid-auto-rows and align-content are load-bearing: without them a capped
+   grid container compresses its rows and the rows visibly overlap. */
+.schema-sync-list, .schema-sync-entities { max-height: 52vh; overflow: auto; overscroll-behavior: contain; grid-auto-rows: min-content; align-content: start; }
+.schema-sync-registry-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+.schema-sync-registry-header h2 { margin: 0; }
+.schema-sync-new-button { border: 1px solid #d95f47; background: #ed684d; color: white; border-radius: 5px; padding: 7px 9px; cursor: pointer; font-size: 10px; white-space: nowrap; }
+.schema-sync-list, .schema-sync-entities { display: grid; gap: 6px; }
+.schema-sync-schema-row { display: grid; grid-template-columns: minmax(0, 1fr) 26px 26px; gap: 4px; align-items: stretch; }
+.schema-sync-schema-row > .schema-sync-schema { min-width: 0; }
+.schema-sync-row-action { border: 1px solid transparent; background: transparent; color: #aaa69c; border-radius: 5px; cursor: pointer; font-size: 14px; }
+.schema-sync-row-action:hover { border-color: #d8d3c8; background: #fffdf8; color: #d45e46; }
+.schema-sync-row-delete:hover { color: #b94b3d; }
+.schema-sync-schema, .schema-sync-entity { display: grid; text-align: left; cursor: pointer; border: 1px solid transparent; background: transparent; border-radius: 6px; }
+.schema-sync-schema { grid-template-columns: 28px 1fr; gap: 2px 9px; padding: 9px; }
+.schema-sync-schema > span { grid-row: span 2; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: #f7d4ca; color: #c34d39; font-weight: 700; }
+.schema-sync-schema small, .schema-sync-entity small, .schema-sync-path { color: #96938a; font: 9px var(--font-monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-sync-schema:hover, .schema-sync-schema.is-active, .schema-sync-entity:hover, .schema-sync-entity.is-active { background: #fffdf8; border-color: #e1dbd0; }
+.schema-sync-entity { grid-template-columns: 1fr auto; gap: 4px 12px; padding: 11px 10px; border-bottom: 1px solid #e5e0d7; }
+.schema-sync-entity small { grid-column: 1; }.schema-sync-entity em { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #4b9368; font: 9px var(--font-monospace); font-style: normal; }.schema-sync-entity em.is-warning { color: #ad7b20; }.schema-sync-entity em.is-template { color: #8d8a80; }
+.schema-sync-entity b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-sync-count { border-block: 1px solid #e0dbd1; padding: 14px 0; margin-bottom: 15px; }.schema-sync-count b { font-size: 23px; margin-right: 7px; }.schema-sync-count small { color: #96938a; font: 10px var(--font-monospace); }
+.schema-sync-inherits { margin: 18px 0 12px; padding: 12px; border-radius: 6px; background: #e9e5dc; color: #88857b; font: 10px var(--font-monospace); }.schema-sync-inherits b { color: #55564f; }.schema-sync-properties { border-top: 1px solid #ded9cf; }.schema-sync-property { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #ded9cf; }.schema-sync-property b, .schema-sync-property small { display: block; }.schema-sync-property b { font-size: 11px; }.schema-sync-property small { margin-top: 3px; color: #aaa69c; font: 9px var(--font-monospace); }.schema-sync-property code { color: #77756d; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.schema-sync-empty { color: #96938a; font-size: 12px; }
+/* Two columns first, then one. The definition editor needs ~510px for its nine
+   controls, so it takes the full row as soon as three columns stop fitting. */
+@container schemasync (max-width: 1150px) {
+  .schema-sync-grid { grid-template-columns: minmax(160px, .8fr) minmax(240px, 1.2fr); }
+  .schema-sync-grid > section:nth-child(2) { grid-column: 1 / -1; order: 3; }
+}
+@container schemasync (max-width: 780px) {
+  .schema-sync-grid { grid-template-columns: 1fr; }
+  .schema-sync-grid > section, .schema-sync-grid > section:nth-child(2) { grid-column: auto; min-height: auto; }
+  .schema-sync-view { padding: 0 10px 10px; }
+  .schema-sync-field-editor, .schema-sync-list, .schema-sync-entities { max-height: none; }
+}
+/* Below this the nine-column row cannot fit, so it wraps to a labelled block
+   instead of forcing a horizontal scrollbar. */
+@container schemasync (max-width: 560px) {
+  /* Flex, not grid: nine controls do not map onto a fixed narrow track list
+     without leaving holes, and wrapping order is what matters here. */
+  .schema-sync-field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 0; }
+  .schema-sync-field-row > input:not([type="checkbox"]), .schema-sync-field-row > select { flex: 1 1 40%; min-width: 0; }
+  .schema-sync-field-row > [data-field-name] { flex: 1 1 100%; order: -1; }
+  .schema-sync-field-row > .schema-sync-drag { flex: 0 0 14px; order: -2; }
+  .schema-sync-field-row > label { flex: 1 1 auto; }
+  .schema-sync-field-row > button { flex: 0 0 20px; }
+}
