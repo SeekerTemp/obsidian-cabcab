@@ -6,6 +6,52 @@ Markdown is the database. Schemas are notes, records are notes, and the value li
 
 The goal is **minimal constraint on editability**. This is a personal knowledge manager, not a database — it optimises for the relationships between notes and for quickly renaming external attachments. Anything needing real constraints belongs in a real DBMS.
 
+## Problems
+
+### Done
+
+**1. Undeclared-property prompt stopped firing.** Not a regression — the guard was
+right, the test data was gone. `checkUndeclaredProperties()` and `validateFile()`
+shared one `_placeholder.` check, and the last numbered record was deleted in the
+same commit that shipped the feature, so every remaining note was a template and
+the prompt had nothing to fire on. The two skips are now separate: templates are
+still never validated, but a property added to one raises the prompt, because
+that is the plainest statement of schema intent there is.
+
+**2. Orphaned configs survived.** `Clean orphaned configs` in 01/Registry and in
+the command palette. A list is orphaned only when its field is gone from the
+schema entirely, or the schema is gone — unbinding keeps the list, so the
+two-stage `×` button stays reversible. Nothing is preselected and files are
+trashed, not deleted.
+
+**3. Field names kept their `[[ ]]`, and configs could not be linked.** Field names
+typed as `[[Planet]]`, `[[LifeForm/trait|trait]]` or `[[trait#Values]]` normalise
+to the target, and a trailing `.config` is stripped. Config notes moved to
+`data/config/<Schema>/<field>.md`, so the Field Reference cell links straight to
+the value list and the graph draws the edge. A foreign key generates no list of
+its own — it points at the one the target entity already owns, so the values
+cannot drift apart.
+
+**6. Renaming a field duplicated its config.** Renaming in 02/Definition now moves
+the value list with the field, and renaming a schema moves its whole folder. An
+occupied target is reported rather than merged: merging two notes would silently
+discard one side's hand-written Notes column.
+
+### Open
+
+4.I see Realms.config is created by assets renamer. Asssets renmaer not updated to match schema sync yet. 
+- combine 2 plugins but I still want it's 2 separate icon like before so I can call assets renamer when ever i want.![[Pasted image 20260907163318.png]]
+- Update path generate config.basse in \data\config too. Just get the config base path and generete it's there too
+5.Update on version controll.
+- git main branch will take change of .obsidan settings include all plugins, no \data is push on there, ignore all \data test.
+- Other branchs like feature/<plugins> (like db-schema-sync) is like a plugins test from anywhere. I'll test and later commit push on main.  ignore all \data test.
+- git data/<branch> These branch only contains project data. all plugins & settings using from main branch so it's get all lastest plugins upgrades. Some project don't need all plugins. Sometime it may need hot fixex plugins & fix imediattly plugins, then hand off fixed source to main, but push to main will ignore all \data. Only push to it's own branch will include all \data. Meanning it's change git ignore config based on which branch it's push onto
+7. If a schema have a foreign key relation -> record able to get the foreigh fied attribute to. Like an orm/jpa. Just able to mapping to query and labeling, this field foreign field not binding to source schema
+8. Add buttons options to implements list in config to records of its schemas with id = item name for PrimaryKey.config. button lay in the 02/definition, before delete button.
+9. .base read attachment as a formula column to get attachments field attribute as image column: image(Cover.path)
+
+10. Assets renamer builtin. It's only read schema's field in config, not all schema in \config. -> mean it's auto filter field to suit each record instant based on the schema. This is of by default if the note is not a record/not match my data pattern(which is rarely happend because my purpose when built assets renamer is to naming file based on schema to built pkm)
+
 ## Layout
 
 ```
@@ -16,7 +62,7 @@ MyVault/
 │   │   ├── _placeholder.<Name>.md       Template — never validated, never counted as data
 │   │   └── _placeholder<N>.<Name>.md    Real records, awaiting a proper name
 │   ├── config/
-│   │   ├── <Plural>.config.md         Auto-generated value list for one attribute
+│   │   ├── <Schema>/<field>.md        Auto-generated value list for one field
 │   │   └── schema-mappings.md         Plugin bookkeeping (bindings, tracked paths)
 │   ├── base/<Name>.base               Obsidian Bases table view (YAML)
 │   └── AssetDatabase.base.md          DBML ERD for the DBML Visualizer plugin
@@ -30,7 +76,7 @@ MyVault/
 | Suffix | Case | Meaning |
 | --- | --- | --- |
 | `.schema.md` | `PascalCase` | Interface definition of an entity |
-| `.config.md` | `PascalCasePlural` | Unique values of one attribute; behaves like a set of enum options |
+| `config/<Schema>/<field>.md` | matches the field | Unique values of one field; behaves like a set of enum options. The folder carries the convention, so the file name matches the field exactly and `[[Schema/field\|field]]` links straight to it |
 | `.base` | `PascalCase` | Bases table view over a record folder |
 | `.base.md` | `PascalCase` | DBML ERD note |
 | record notes | free | A note declaring `implements: <Schema>` |
