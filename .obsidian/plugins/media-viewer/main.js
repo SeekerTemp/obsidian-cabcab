@@ -984,6 +984,190 @@ function displayScaleFor(renderedWidth, orientedWidth) {
   return rendered / oriented;
 }
 
+/* ------------------------------------------------------------------------ *
+ * Adjusting a selection — MV-OVERLAY.
+ *
+ * The old app's crop selection could be drawn and not adjusted: getting it
+ * wrong by four pixels meant drawing the whole thing again. Eight handles and
+ * a move gesture are the fix, and this is the arithmetic behind them —
+ * everything the pointer does to a rectangle, with no DOM in sight.
+ *
+ * The space is the same one the selection is drawn in: CSS pixels relative to
+ * the top-left of what is on screen. `cropFromSelection` turns the result into
+ * source pixels, and does it once, at the end.
+ * ------------------------------------------------------------------------ */
+
+const CROP_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+// Below this a selection is a mis-click rather than a crop. Applied in display
+// pixels, where the user's hand is; the source-pixel floor is a separate rule
+// that `cropFromSelection` already enforces.
+const CROP_MIN_DISPLAY = 4;
+
+/* The point a drag pivots around: the opposite corner, or the opposite edge,
+ * or the centre of the axis the handle does not touch. Nothing else about the
+ * rectangle is fixed, which is why every other decision below can be expressed
+ * as a size and this point.
+ */
+function handleAnchor(rect, handle) {
+  const box = normaliseRect(rect);
+  const right = box.x + box.w;
+  const bottom = box.y + box.h;
+  const name = String(handle || "");
+  const west = name.includes("w");
+  const east = name.includes("e");
+  const north = name.includes("n");
+  const south = name.includes("s");
+  return {
+    x: west ? right : east ? box.x : box.x + box.w / 2,
+    y: north ? bottom : south ? box.y : box.y + box.h / 2,
+    west,
+    east,
+    north,
+    south,
+    // An edge handle leaves its perpendicular axis alone, so under an aspect
+    // lock that axis grows from the middle rather than from one side.
+    centredX: !west && !east,
+    centredY: !north && !south,
+  };
+}
+
+// Place a size against an anchor, in the direction the handle drags.
+function rectFromAnchor(anchor, width, height) {
+  const x = anchor.centredX ? anchor.x - width / 2 : anchor.west ? anchor.x - width : anchor.x;
+  const y = anchor.centredY ? anchor.y - height / 2 : anchor.north ? anchor.y - height : anchor.y;
+  return { x, y, w: width, h: height };
+}
+
+// How far the rectangle can grow from the anchor before it leaves the image.
+// A centred axis is limited by the nearer side and grows both ways, hence the
+// doubling.
+function roomFromAnchor(anchor, bounds) {
+  const width = Math.max(0, Number(bounds && bounds.width) || 0);
+  const height = Math.max(0, Number(bounds && bounds.height) || 0);
+  const x = anchor.centredX
+    ? 2 * Math.min(anchor.x, width - anchor.x)
+    : anchor.west
+    ? anchor.x
+    : width - anchor.x;
+  const y = anchor.centredY
+    ? 2 * Math.min(anchor.y, height - anchor.y)
+    : anchor.north
+    ? anchor.y
+    : height - anchor.y;
+  return { x: Math.max(0, x), y: Math.max(0, y) };
+}
+
+/* An aspect-locked rectangle that covers the drag.
+ *
+ * Growing to cover rather than shrinking to fit, because the pointer is the
+ * statement of intent: a diagonal drag that ends past the corner should
+ * produce a selection reaching at least that far. For an edge handle only one
+ * axis is being dragged, so that axis drives and the other follows.
+ */
+function aspectSize(width, height, aspect, anchor) {
+  const ratio = Number(aspect);
+  if (!Number.isFinite(ratio) || ratio <= 0) return { width, height };
+  if (anchor.centredX) return { width: height * ratio, height };
+  if (anchor.centredY) return { width, height: width / ratio };
+  const w = Math.max(width, height * ratio);
+  return { width: w, height: w / ratio };
+}
+
+/* One pointer move applied to a selection.
+ *
+ * `handle` is one of the eight compass points, or "move". `dx`/`dy` are the
+ * pointer's total offset from where the drag started, applied to the rectangle
+ * the drag started from — deltas from the previous frame would accumulate
+ * rounding, and would drift whenever a clamp ate part of a move.
+ */
+function resizeSelection(rect, handle, dx, dy, bounds, aspect) {
+  const box = normaliseRect(rect);
+  const width = Math.max(0, Number(bounds && bounds.width) || 0);
+  const height = Math.max(0, Number(bounds && bounds.height) || 0);
+  const moveX = Number(dx) || 0;
+  const moveY = Number(dy) || 0;
+
+  /* Moving slides, and is stopped by the edge rather than squashed by it: a
+     selection dragged into a corner keeps its size, which is the whole reason
+     someone sizes one and then moves it. */
+  if (handle === "move") {
+    const x = Math.min(Math.max(box.x + moveX, 0), Math.max(0, width - box.w));
+    const y = Math.min(Math.max(box.y + moveY, 0), Math.max(0, height - box.h));
+    return { x, y, w: box.w, h: box.h };
+  }
+
+  if (!CROP_HANDLES.includes(String(handle))) return box;
+
+  const anchor = handleAnchor(box, handle);
+  let left = box.x;
+  let top = box.y;
+  let right = box.x + box.w;
+  let bottom = box.y + box.h;
+  if (anchor.west) left += moveX;
+  if (anchor.east) right += moveX;
+  if (anchor.north) top += moveY;
+  if (anchor.south) bottom += moveY;
+
+  // Dragging an edge past its opposite flips the rectangle rather than
+  // producing a negative one — the gesture every editor allows and the reason
+  // normaliseRect exists.
+  const dragged = normaliseRect({ x: left, y: top, w: right - left, h: bottom - top });
+
+  const ratio = Number(aspect);
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    return clampRect(dragged, width, height);
+  }
+
+  const wanted = aspectSize(dragged.w, dragged.h, ratio, anchor);
+  const room = roomFromAnchor(anchor, { width, height });
+  // Shrunk toward the anchor rather than clipped, because clipping an
+  // aspect-locked rectangle is how the lock silently stops holding.
+  const fit = Math.min(
+    1,
+    wanted.width > 0 ? room.x / wanted.width : 1,
+    wanted.height > 0 ? room.y / wanted.height : 1
+  );
+  const placed = rectFromAnchor(anchor, wanted.width * fit, wanted.height * fit);
+  return clampRect(placed, width, height);
+}
+
+// A selection small enough to be a mis-click. Checked in display pixels,
+// because that is where the hand is; the source-pixel floor is a separate rule
+// and cropFromSelection already holds it.
+function isNegligibleSelection(rect, minimum) {
+  const box = normaliseRect(rect);
+  const floor = Number(minimum);
+  const limit = Number.isFinite(floor) && floor > 0 ? floor : CROP_MIN_DISPLAY;
+  return box.w < limit || box.h < limit;
+}
+
+/* A crop drawn on a view that is itself already cropped.
+ *
+ * The preview canvas shows the current crop, so a selection on it is relative
+ * to that crop, and the state stores an absolute rectangle in oriented space.
+ * One addition — but the one nobody remembers, and the reason a second crop of
+ * a crop used to land in the wrong place.
+ */
+function cropWithinCrop(current, rect) {
+  const base = normaliseRect(current);
+  const inner = normaliseRect(rect);
+  return { x: base.x + inner.x, y: base.y + inner.y, w: inner.w, h: inner.h };
+}
+
+// The aspect ratios offered, as [label, ratio]. null is free-form. Kept here
+// so the list is one thing rather than a dropdown and a parser.
+const CROP_ASPECTS = [
+  ["Free", null],
+  ["1:1", 1],
+  ["4:3", 4 / 3],
+  ["3:2", 3 / 2],
+  ["16:9", 16 / 9],
+  ["3:4", 3 / 4],
+  ["2:3", 2 / 3],
+  ["9:16", 9 / 16],
+];
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1178,6 +1362,16 @@ const core = {
   cropAfterRotation,
   cropAfterFlip,
   sourceRectFor,
+  CROP_HANDLES,
+  CROP_MIN_DISPLAY,
+  CROP_ASPECTS,
+  handleAnchor,
+  rectFromAnchor,
+  roomFromAnchor,
+  aspectSize,
+  resizeSelection,
+  isNegligibleSelection,
+  cropWithinCrop,
   scaleRect,
   MAX_DECODE_MEGAPIXELS,
   MAX_DISPLAY_EDGE,
@@ -1850,6 +2044,207 @@ class EditSession {
   }
 }
 
+/* ------------------------------------------------------------------------ *
+ * CropOverlay — the selection, on the viewer, in place.
+ *
+ * The old app's CropImageDialog drew a rectangle you could not touch again:
+ * four pixels out meant starting over. This one is eight handles, a move
+ * gesture and an aspect lock, sitting directly on the edit canvas rather than
+ * in a second window with its own zoom.
+ *
+ * Everything it decides is `resizeSelection`. What it owns is the elements,
+ * the pointer capture and the one rule the arithmetic cannot state: a drag
+ * that ends where it started is a click, and clears the selection rather than
+ * leaving a one-pixel crop behind.
+ * ------------------------------------------------------------------------ */
+
+class CropOverlay {
+  /* `host` is the element the overlay fills — the frame wrapped tightly around
+     the canvas, so that "inset: 0" and "the picture" are the same box and no
+     offset arithmetic is needed anywhere.
+
+     `options.bounds()` reports that box's CSS size, `options.label()` turns a
+     selection into the source-pixel readout, and `options.onChange()` fires
+     whenever the selection changes — including when it is cleared. */
+  constructor(host, options) {
+    const settings = options || {};
+    this.options = settings;
+    this.selection = null;
+    this.aspect = null;
+    this.drag = null;
+
+    this.el = host.createDiv({ cls: "mv-crop-overlay" });
+    this.rectEl = this.el.createDiv({ cls: "mv-crop-rect" });
+    this.handleEls = new Map();
+    for (const name of CROP_HANDLES) {
+      const handle = this.rectEl.createDiv({ cls: "mv-crop-handle mv-crop-" + name });
+      handle.dataset.handle = name;
+      this.handleEls.set(name, handle);
+    }
+    this.readoutEl = this.rectEl.createDiv({ cls: "mv-crop-readout" });
+
+    this.el.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
+    this.el.addEventListener("pointermove", (event) => this.handlePointerMove(event));
+    this.el.addEventListener("pointerup", (event) => this.handlePointerUp(event));
+    this.el.addEventListener("pointercancel", (event) => this.handlePointerUp(event));
+
+    this.paint();
+  }
+
+  get bounds() {
+    const read = this.options.bounds;
+    const size = typeof read === "function" ? read() : null;
+    return { width: (size && size.width) || 0, height: (size && size.height) || 0 };
+  }
+
+  // Pointer position in the overlay's own coordinates. Read from the live
+  // bounding box rather than cached at drag start, because a pane can be
+  // resized mid-drag and a cached origin would silently offset the result.
+  pointFrom(event) {
+    const box =
+      typeof this.el.getBoundingClientRect === "function"
+        ? this.el.getBoundingClientRect()
+        : { left: 0, top: 0 };
+    return { x: (event.clientX || 0) - (box.left || 0), y: (event.clientY || 0) - (box.top || 0) };
+  }
+
+  handlePointerDown(event) {
+    if (event.button !== undefined && event.button !== 0) return false;
+    const target = event.target;
+    const handle = target && target.dataset ? target.dataset.handle : null;
+    const point = this.pointFrom(event);
+
+    let from;
+    let grip;
+    if (handle) {
+      grip = handle;
+      from = this.selection;
+    } else if (this.selection && target && typeof target.closest === "function" && target.closest(".mv-crop-rect")) {
+      grip = "move";
+      from = this.selection;
+    } else {
+      // A fresh drag starts as a zero-size rectangle at the pointer, resized
+      // by its south-east handle — so drawing and resizing are the same code
+      // path, including under an aspect lock.
+      grip = "se";
+      from = { x: point.x, y: point.y, w: 0, h: 0 };
+      this.selection = from;
+    }
+    if (!from) return false;
+
+    this.drag = { handle: grip, origin: point, from: normaliseRect(from), pointerId: event.pointerId };
+    if (typeof this.el.setPointerCapture === "function" && event.pointerId !== undefined) {
+      this.el.setPointerCapture(event.pointerId);
+    }
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    this.el.addClass("is-dragging");
+    this.paint();
+    return true;
+  }
+
+  handlePointerMove(event) {
+    const drag = this.drag;
+    if (!drag) return false;
+    if (event.pointerId !== undefined && event.pointerId !== drag.pointerId) return false;
+    const point = this.pointFrom(event);
+    // Measured from where the drag started, not from the previous frame: frame
+    // deltas accumulate rounding, and drift every time a clamp eats part of a
+    // move.
+    this.selection = resizeSelection(
+      drag.from,
+      drag.handle,
+      point.x - drag.origin.x,
+      point.y - drag.origin.y,
+      this.bounds,
+      this.aspect
+    );
+    this.paint();
+    this.notify();
+    return true;
+  }
+
+  handlePointerUp(event) {
+    const drag = this.drag;
+    if (!drag) return false;
+    if (event && event.pointerId !== undefined && event.pointerId !== drag.pointerId) return false;
+    this.drag = null;
+    this.el.removeClass("is-dragging");
+    if (typeof this.el.releasePointerCapture === "function" && drag.pointerId !== undefined) {
+      this.el.releasePointerCapture(drag.pointerId);
+    }
+    // A click is a drag that went nowhere, and it means "no selection" rather
+    // than "a selection four pixels wide". Clearing here rather than during the
+    // drag is what lets someone start a selection, change their mind and drag
+    // back to nothing.
+    if (isNegligibleSelection(this.selection)) this.selection = null;
+    this.paint();
+    this.notify();
+    return true;
+  }
+
+  setAspect(ratio) {
+    const value = Number(ratio);
+    this.aspect = Number.isFinite(value) && value > 0 ? value : null;
+    // Re-applied immediately, so choosing a ratio reshapes what is already
+    // selected instead of waiting for the next drag to honour it.
+    if (this.selection && this.aspect) {
+      this.selection = resizeSelection(this.selection, "se", 0, 0, this.bounds, this.aspect);
+      this.paint();
+      this.notify();
+    }
+    return this.aspect;
+  }
+
+  set(rect) {
+    this.selection = rect ? clampRect(rect, this.bounds.width, this.bounds.height) : null;
+    if (this.selection && isNegligibleSelection(this.selection)) this.selection = null;
+    this.paint();
+    this.notify();
+    return this.selection;
+  }
+
+  clear() {
+    if (!this.selection) return false;
+    this.selection = null;
+    this.paint();
+    this.notify();
+    return true;
+  }
+
+  // The whole picture, as a selection. What "select all" means, and what a
+  // fresh aspect ratio is applied to when there is nothing selected yet.
+  selectAll() {
+    const bounds = this.bounds;
+    return this.set({ x: 0, y: 0, w: bounds.width, h: bounds.height });
+  }
+
+  notify() {
+    if (typeof this.options.onChange === "function") this.options.onChange(this.selection);
+  }
+
+  paint() {
+    const rect = this.selection;
+    this.el.toggleClass("has-selection", Boolean(rect));
+    if (!rect) {
+      this.rectEl.style.display = "none";
+      return;
+    }
+    this.rectEl.style.display = "";
+    this.rectEl.style.left = rect.x + "px";
+    this.rectEl.style.top = rect.y + "px";
+    this.rectEl.style.width = rect.w + "px";
+    this.rectEl.style.height = rect.h + "px";
+    const label = this.options.label;
+    this.readoutEl.setText(typeof label === "function" ? label(rect) || "" : "");
+  }
+
+  destroy() {
+    this.drag = null;
+    this.selection = null;
+    if (this.el && typeof this.el.remove === "function") this.el.remove();
+  }
+}
+
 class MediaViewerView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -1929,7 +2324,9 @@ class MediaViewerView extends ItemView {
        whenever selection moves: an edit belongs to the file it was started
        on. */
     this.session = null;
+    this.overlay = null;
     this.editCanvasEl = null;
+    this.editFrameEl = null;
     this.editStatusEl = null;
     // Set while a decode is in flight, so a second click on Edit does not
     // start a second one and so a decode that finishes after the user has
@@ -2064,6 +2461,7 @@ class MediaViewerView extends ItemView {
     stage.addEventListener("dblclick", () => this.toggleFit());
 
     this.buildVideoBar(viewer);
+    this.buildEditBar(viewer);
 
     const bar = viewer.createDiv({ cls: "mv-viewer-bar" });
     this.viewerBarEl = bar;
@@ -2660,7 +3058,12 @@ class MediaViewerView extends ItemView {
     this.stageEl.removeClass("is-broken");
     this.imageEl = null;
     this.editCanvasEl = null;
+    this.editFrameEl = null;
     this.editStatusEl = null;
+    if (this.overlay) {
+      this.overlay.destroy();
+      this.overlay = null;
+    }
 
     if (this.viewerNameEl) this.viewerNameEl.setText(path ? baseNameOf(path) : "");
 
@@ -3113,6 +3516,14 @@ class MediaViewerView extends ItemView {
   // W/S zoom, A/D step siblings. Modified presses are left alone so the pane
   // does not eat Ctrl+S or a Cmd+A the user meant for something else.
   handleKey(event) {
+    /* Edit mode is asked first, and before the modifier guard, because Ctrl+Z
+       there means this edit: the pane has focus and holds nothing else that
+       could be undone. Everything it does not claim falls through to the
+       ordinary keys, so A and D still step siblings while a session is open. */
+    if (this.session && this.handleEditKey(event)) {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      return true;
+    }
     if (event.ctrlKey || event.metaKey || event.altKey) return false;
     const key = String(event.key || "").toLowerCase();
     // The video keys are asked first and fall through to the shared ones, so
@@ -3322,21 +3733,37 @@ class MediaViewerView extends ItemView {
     this.session.onChange = null;
     this.session = null;
     this.editCanvasEl = null;
+    this.editFrameEl = null;
     this.editStatusEl = null;
+    if (this.overlay) {
+      this.overlay.destroy();
+      this.overlay = null;
+    }
     return true;
   }
 
+  /* The edit surface: a frame wrapped tightly around the canvas, with the
+     selection overlay filling it.
+
+     The frame exists so that "the overlay" and "the picture" are the same box.
+     Without it the canvas is a centred flex item and the overlay would have to
+     compute its offset from the stage — arithmetic that is correct until the
+     pane is resized. */
   renderEditSurface() {
     const session = this.session;
     if (!session || !this.stageEl) return;
     this.setViewerMode("edit");
+    const frame = this.stageEl.createDiv({ cls: "mv-edit-frame" });
+    this.editFrameEl = frame;
     const canvas = document.createElement("canvas");
     canvas.className = "mv-edit-canvas";
-    this.stageEl.appendChild(canvas);
+    frame.appendChild(canvas);
     this.editCanvasEl = canvas;
+    this.buildOverlay(frame);
     this.editStatusEl = this.stageEl.createDiv({ cls: "mv-edit-status" });
     this.paintEdit();
     this.updateViewerBar();
+    this.updateEditBar();
   }
 
   // Re-draw after a state change. Separate from renderEditSurface so that
@@ -3345,6 +3772,7 @@ class MediaViewerView extends ItemView {
   refreshEdit() {
     this.paintEdit();
     this.updateViewerBar();
+    this.updateEditBar();
   }
 
   paintEdit() {
@@ -3388,6 +3816,176 @@ class MediaViewerView extends ItemView {
     // The canvas holds the crop, not the whole oriented image, so the scale is
     // measured against what it is actually showing.
     return displayScaleFor(rendered, crop.w);
+  }
+
+  /* The edit toolbar.
+   *
+   * Built once and hidden by class, the same way the transport is: a bar
+   * created when a session opens would lose the aspect ratio the user chose
+   * every time they stepped to the next file, and rebuilding controls is how a
+   * dropdown loses its value without anyone deciding it should.
+   */
+  buildEditBar(parent) {
+    const bar = parent.createDiv({ cls: "mv-edit-bar" });
+    this.editBarEl = bar;
+
+    this.cropEl = this.barButton(bar, "Crop", () => this.applyCrop());
+    this.cropEl.title = "Crop to the selection (Enter)";
+
+    const aspect = bar.createEl("select", {
+      cls: "dropdown mv-aspect",
+      attr: { "aria-label": "Crop aspect ratio" },
+    });
+    for (const [label, ratio] of CROP_ASPECTS) {
+      aspect.createEl("option", { value: ratio === null ? "" : String(ratio), text: label });
+    }
+    aspect.addEventListener("change", () => this.setAspect(aspect.value));
+    this.aspectEl = aspect;
+
+    bar.createDiv({ cls: "mv-edit-sep" });
+
+    this.undoEl = this.barButton(bar, "Undo", () => this.undoEdit());
+    this.undoEl.title = "Undo (Ctrl+Z)";
+    this.redoEl = this.barButton(bar, "Redo", () => this.redoEdit());
+    this.redoEl.title = "Redo (Ctrl+Shift+Z)";
+    this.resetEl = this.barButton(bar, "Reset", () => this.resetEdit());
+    this.resetEl.title = "Undo every change in this session, in one undoable step";
+
+    this.updateEditBar();
+  }
+
+  /* Where the selection lives.
+   *
+   * The overlay is created with the surface and destroyed with it, because it
+   * is positioned against a canvas whose size changes with every crop and
+   * rotation. What survives a rebuild is the aspect ratio, which belongs to
+   * the user rather than to the picture.
+   */
+  buildOverlay(frame) {
+    this.overlay = new CropOverlay(frame, {
+      bounds: () => this.editSurfaceSize,
+      label: (rect) => this.selectionLabel(rect),
+      onChange: () => this.updateEditBar(),
+    });
+    if (this.aspectEl) this.overlay.setAspect(this.aspectEl.value);
+  }
+
+  // The canvas's laid-out box, which is what the selection is drawn in. Falls
+  // back to the canvas's own pixel size before the first layout, so a
+  // selection made in that window is at worst mis-scaled rather than NaN.
+  get editSurfaceSize() {
+    const canvas = this.editCanvasEl;
+    if (!canvas) return { width: 0, height: 0 };
+    return {
+      width: canvas.clientWidth || canvas.width || 0,
+      height: canvas.clientHeight || canvas.height || 0,
+    };
+  }
+
+  /* The live readout, in source pixels — which is the only unit a crop is
+     actually judged in. Shown as it would be cut, floor/ceil and all, so the
+     number on screen is the number in the file. */
+  selectionLabel(rect) {
+    const crop = this.selectionCrop(rect);
+    if (!crop) return "";
+    return crop.w + " x " + crop.h;
+  }
+
+  /* A selection, as an absolute rectangle in oriented-source pixels.
+   *
+   * Two conversions, and both are easy to forget. The canvas shows the current
+   * crop rather than the whole image, so the display scale is measured against
+   * the crop; and the result is relative to that crop, so it is offset by it.
+   * Returns null when the selection resolves to nothing worth cutting.
+   */
+  selectionCrop(rect) {
+    const session = this.session;
+    const selection = rect === undefined ? this.overlay && this.overlay.selection : rect;
+    if (!session || !selection) return null;
+    const crop = session.crop;
+    const size = this.editSurfaceSize;
+    const scale = displayScaleFor(size.width, crop.w);
+    const within = cropFromSelection(selection, scale, crop.w, crop.h);
+    if (!within) return null;
+    return cropWithinCrop(crop, within);
+  }
+
+  applyCrop() {
+    const session = this.session;
+    if (!session) return false;
+    const crop = this.selectionCrop();
+    if (!crop) {
+      new Notice("Media Viewer: drag a selection first");
+      return false;
+    }
+    if (!session.setCrop(crop)) return false;
+    // The canvas now shows the crop, so the selection that produced it would
+    // be a rectangle over the whole picture. Clearing it is what makes a
+    // second crop of the crop start from nothing.
+    if (this.overlay) this.overlay.clear();
+    return true;
+  }
+
+  /* The chosen ratio lives on the dropdown, which is also where the overlay
+     reads it from when it is rebuilt — so this writes back to the control even
+     when it was the control that called. A ratio held in two places is a ratio
+     that will disagree with itself the first time an overlay is rebuilt. */
+  setAspect(value) {
+    const ratio = Number(value);
+    const locked = Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+    if (this.aspectEl) this.aspectEl.value = locked === null ? "" : String(locked);
+    if (this.overlay) this.overlay.setAspect(locked);
+    this.updateEditBar();
+    return true;
+  }
+
+  undoEdit() {
+    if (!this.session || !this.session.undo()) return false;
+    if (this.overlay) this.overlay.clear();
+    return true;
+  }
+
+  redoEdit() {
+    if (!this.session || !this.session.redo()) return false;
+    if (this.overlay) this.overlay.clear();
+    return true;
+  }
+
+  resetEdit() {
+    if (!this.session || !this.session.reset()) return false;
+    if (this.overlay) this.overlay.clear();
+    return true;
+  }
+
+  updateEditBar() {
+    const session = this.session;
+    if (this.cropEl) this.cropEl.disabled = !session || !this.selectionCrop();
+    if (this.undoEl) this.undoEl.disabled = !session || !session.canUndo;
+    if (this.redoEl) this.redoEl.disabled = !session || !session.canRedo;
+    if (this.resetEl) this.resetEl.disabled = !session || !session.dirty;
+  }
+
+  /* Edit-mode keys.
+   *
+   * Asked before the shared ones and before the modifier guard, because Ctrl+Z
+   * in edit mode means this edit — the pane has focus and there is nothing
+   * else in it to undo. Escape steps back one level at a time: the selection
+   * first, the session second, which is what makes it safe to press.
+   */
+  handleEditKey(event) {
+    const key = String(event.key || "").toLowerCase();
+    if (event.ctrlKey || event.metaKey) {
+      if (key === "z") return event.shiftKey ? this.redoEdit() : this.undoEdit();
+      if (key === "y") return this.redoEdit();
+      return false;
+    }
+    if (event.altKey) return false;
+    if (key === "escape") {
+      if (this.overlay && this.overlay.clear()) return true;
+      return this.endEdit();
+    }
+    if (key === "enter") return this.applyCrop();
+    return false;
   }
 
   // The pane can be resized while an image is open, which changes what "fit"
@@ -3752,5 +4350,6 @@ module.exports.MediaIndex = MediaIndex;
 module.exports.EditSession = EditSession;
 module.exports.loadEditSource = loadEditSource;
 module.exports.DecodeBudgetError = DecodeBudgetError;
+module.exports.CropOverlay = CropOverlay;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;

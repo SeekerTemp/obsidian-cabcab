@@ -424,13 +424,15 @@ group("the structure the layout rules stand on", () => {
     ok(view.contentEl.hasClass("media-viewer"), "the queried container class is on contentEl");
   });
 
-  test("the viewer is a stage above its two bars", async () => {
+  test("the viewer is a stage above its three bars", async () => {
     const { view } = await paneOver(FILES);
-    // The transport sits between the stage and the viewer bar and is present
-    // whatever is open — the mode class, not the DOM, decides what shows.
+    // The transport and the edit bar sit between the stage and the viewer bar
+    // and are present whatever is open — the mode class, not the DOM, decides
+    // what shows. Both are built once so that a drag in progress and a chosen
+    // aspect ratio survive a change of file.
     deepEqual(
       view.viewerEl.children.map((child) => child.className),
-      ["mv-stage", "mv-video-bar", "mv-viewer-bar"]
+      ["mv-stage", "mv-video-bar", "mv-edit-bar", "mv-viewer-bar"]
     );
   });
 });
