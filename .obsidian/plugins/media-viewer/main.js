@@ -6,6 +6,11 @@ const VIEW_TYPE_MEDIA_VIEWER = "media-viewer-pane";
 // encoding block in core for why a lossy default exists at all.
 const DEFAULT_ENCODE_QUALITY = 0.92;
 
+// Where new lineage notes are written. Discovery never uses it — a note moved
+// out of the folder keeps working — so it is only ever the answer to "where
+// should this new one go". Hoisted here because the settings default to it.
+const DEFAULT_NOTE_FOLDER = "data/media";
+
 // Deliberately small. Anything the user can see in the pane header lives here
 // so the pane comes back the way they left it, and nothing else does.
 const DEFAULT_SETTINGS = {
@@ -25,6 +30,14 @@ const DEFAULT_SETTINGS = {
   // quality for a lossless format is a number that looks meaningful and is
   // not.
   encodeQuality: DEFAULT_ENCODE_QUALITY,
+  // Where new lineage notes are written. Only ever an answer to "where should
+  // this new one go" — a note moved out of it keeps working, because
+  // discovery is by the media: link and never by location.
+  noteFolder: DEFAULT_NOTE_FOLDER,
+  // Off writes no lineage at all. The plugin still browses and still edits;
+  // what stops is the record, which is a choice someone editing a vault they
+  // do not want indexed should have.
+  writeLineage: true,
 };
 
 /* ------------------------------------------------------------------------ *
@@ -1212,6 +1225,243 @@ function clampQuality(quality) {
   return Math.min(1, Math.max(0.1, value));
 }
 
+/* ------------------------------------------------------------------------ *
+ * MediaInstance records — MV-STORE.
+ *
+ * A lineage note is a record in this vault's schema system, not a private
+ * format beside the image. What is here is the reading and writing of one:
+ * frontmatter in, frontmatter out, and the user's prose below the marker
+ * carried across untouched.
+ *
+ * Nothing here builds or parses a note's *name*. That was the first draft's
+ * mechanism — find `cover.instance.md` beside `cover.png` by matching stems —
+ * and it was a program with no index guessing what a file is called. The
+ * pairing is `media:`, and only `media:`.
+ * ------------------------------------------------------------------------ */
+
+const INSTANCE_SCHEMA = "MediaInstance";
+
+/* Fields that describe *this file* rather than its subject, and are therefore
+ * never inherited. A child's crop is its own; inheriting a parent's would
+ * claim the file was cut from a rectangle it was not.
+ *
+ * Everything else walks the chain, including fields nobody has thought of yet,
+ * which is what lets someone add one to the schema and have it inherit without
+ * this list changing.
+ */
+const INTRINSIC_FIELDS = ["media", "source", "op", "crop", "transform", "width", "height", "created"];
+
+// The order a note is written in. Fixed, so a rewrite of an unchanged record
+// produces an unchanged file and a diff shows only what actually moved.
+const INSTANCE_FIELD_ORDER = [
+  "media",
+  "source",
+  "op",
+  "crop",
+  "transform",
+  "width",
+  "height",
+  "created",
+  "status",
+  "labels",
+];
+
+const STATUS_EDITED = "edited";
+const STATUS_REVIEWED = "reviewed";
+
+// What a note says produced the file. A root has none.
+const INSTANCE_OPS = ["crop", "transform", "capture", "paste"];
+
+/* "[[folder/cover.png|alias]]" → "folder/cover.png".
+ *
+ * Aliases and headings are stripped because they are display, not identity.
+ * A bare string is returned as itself: a user who typed a path without
+ * brackets meant the path, and refusing it would be pedantry.
+ */
+function linkTargetOf(value) {
+  if (value === null || value === undefined) return null;
+  // Obsidian hands a frontmatter list back as an array when a field holds one.
+  const raw = Array.isArray(value) ? value[0] : value;
+  const text = String(raw === null || raw === undefined ? "" : raw).trim();
+  if (!text) return null;
+  const inner = text.startsWith("[[") && text.endsWith("]]") ? text.slice(2, -2) : text;
+  const pipe = inner.indexOf("|");
+  const withoutAlias = pipe === -1 ? inner : inner.slice(0, pipe);
+  const hash = withoutAlias.indexOf("#");
+  const target = (hash === -1 ? withoutAlias : withoutAlias.slice(0, hash)).trim();
+  return target || null;
+}
+
+function wikilinkFor(path) {
+  const text = String(path === null || path === undefined ? "" : path).trim();
+  return text ? "[[" + text + "]]" : "";
+}
+
+/* When the record was written, in UTC and to the second.
+ *
+ * To the second because that is the resolution the question is ever asked at,
+ * and UTC because a vault synced between machines in two time zones should not
+ * disagree with itself about the order two edits happened in.
+ */
+function isoTimestamp(date) {
+  const at = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  return at.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// Obsidian's YAML parser turns an unquoted timestamp into a Date, so a record
+// read back does not hold the string that was written. Both shapes arrive
+// here; one leaves.
+function asIsoString(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : isoTimestamp(value);
+  const text = String(value === null || value === undefined ? "" : value).trim();
+  return text || null;
+}
+
+/* A YAML scalar, quoted only when it has to be.
+ *
+ * The "has to be" list is short because the values here are short: wikilinks
+ * (which start with a bracket and would otherwise read as a flow sequence),
+ * anything with a colon, and anything that would parse as some other type.
+ */
+function yamlScalar(value) {
+  if (value === null || value === undefined) return '""';
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : '""';
+  const text = String(value);
+  if (text === "") return '""';
+  if (/^[A-Za-z0-9][A-Za-z0-9 _.+\-/]*$/.test(text) && !/^(true|false|null|yes|no|on|off)$/i.test(text)) {
+    return text;
+  }
+  return '"' + text.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+// A flat mapping on one line. Used for `crop` and `transform`, which are three
+// or four numbers each and read better as a rectangle than as a stack.
+function yamlFlowMap(value) {
+  const entries = Object.entries(value || {});
+  if (!entries.length) return "{}";
+  return "{ " + entries.map(([key, item]) => key + ": " + yamlScalar(item)).join(", ") + " }";
+}
+
+function yamlFlowList(value) {
+  const items = Array.isArray(value) ? value : [];
+  if (!items.length) return "[]";
+  return "[" + items.map((item) => yamlScalar(item)).join(", ") + "]";
+}
+
+function yamlValueFor(key, value) {
+  if (key === "crop" || key === "transform") return yamlFlowMap(value);
+  if (Array.isArray(value)) return yamlFlowList(value);
+  if (value && typeof value === "object") return yamlFlowMap(value);
+  // A timestamp is written unquoted, matching the schema note's example. It
+  // comes back as a Date, which asIsoString puts right on the way in.
+  if (key === "created") return String(value);
+  return yamlScalar(value);
+}
+
+/* Everything below the notes marker, which is the user's and is never
+ * rewritten — the convention Schema Sync already established in this vault.
+ *
+ * Returns "" when there is no marker yet, which is also what a brand new note
+ * has, so the caller needs no special case for the first write.
+ */
+function notesBodyOf(raw) {
+  const text = String(raw || "");
+  const at = text.indexOf(NOTES_MARKER);
+  if (at === -1) return "";
+  return text.slice(at + NOTES_MARKER.length).replace(/^\r?\n/, "");
+}
+
+/* A MediaInstance note, rendered.
+ *
+ * `fields` is written in a fixed order and anything absent is omitted rather
+ * than written empty — a record says what it declares, and a blank `source:`
+ * on a root would be a claim that it has a parent nobody can find.
+ *
+ * Unknown fields are kept, and kept after the known ones. Someone who adds a
+ * field to the schema, or writes one by hand, does not lose it the next time
+ * the plugin touches the note.
+ */
+function renderInstanceNote(fields, body) {
+  const values = fields || {};
+  const lines = ["---", "implements: " + INSTANCE_SCHEMA];
+  const written = new Set(["implements"]);
+  for (const key of INSTANCE_FIELD_ORDER) {
+    if (values[key] === undefined || values[key] === null) continue;
+    written.add(key);
+    lines.push(key + ": " + yamlValueFor(key, values[key]));
+  }
+  for (const [key, value] of Object.entries(values)) {
+    if (written.has(key) || value === undefined || value === null) continue;
+    lines.push(key + ": " + yamlValueFor(key, value));
+  }
+  lines.push("---", "", NOTES_MARKER, "");
+  const tail = String(body || "");
+  return lines.join("\n") + (tail ? tail.replace(/^\r?\n/, "") : "");
+}
+
+/* A record, read out of a note's frontmatter.
+ *
+ * `mediaLink` and `sourceLink` are the link text as written; resolving them to
+ * paths needs the vault, so LineageStore does it. Keeping the raw text is what
+ * lets a dangling `source:` be reported by name rather than as "missing".
+ */
+function instanceRecordFrom(frontmatter, notePath) {
+  const front = frontmatter || {};
+  const record = {
+    notePath: notePath || null,
+    mediaLink: linkTargetOf(front.media),
+    sourceLink: linkTargetOf(front.source),
+    op: front.op === undefined || front.op === null ? null : String(front.op),
+    crop: normaliseCropField(front.crop),
+    transform: normaliseTransformField(front.transform),
+    width: Number.isFinite(Number(front.width)) ? Number(front.width) : null,
+    height: Number.isFinite(Number(front.height)) ? Number(front.height) : null,
+    created: asIsoString(front.created),
+    status: front.status === undefined || front.status === null ? null : String(front.status),
+    labels: Array.isArray(front.labels) ? front.labels.slice() : [],
+    frontmatter: front,
+  };
+  return record;
+}
+
+function normaliseCropField(value) {
+  if (!value || typeof value !== "object") return null;
+  const rect = normaliseRect(value);
+  return rect.w >= 1 && rect.h >= 1 ? rect : null;
+}
+
+function normaliseTransformField(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    rotate: normaliseRotation(value.rotate),
+    flipH: Boolean(value.flipH),
+    flipV: Boolean(value.flipV),
+  };
+}
+
+// Whether a frontmatter value counts as declared. Present but empty does not:
+// Schema Sync fills a record's bound fields out with blanks, and a blank that
+// stopped the chain walk would break inheritance for every record it touched.
+function isDeclared(value) {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function isIntrinsicField(name) {
+  return INTRINSIC_FIELDS.includes(String(name));
+}
+
+// Where a new note goes, and what it is called. A convenience only: nothing
+// ever reads this back, and a note moved out of the folder or renamed by hand
+// keeps working because the pairing is `media:`.
+function notePathFor(folder, mediaPath, taken) {
+  return uniquePath(folder, stemOf(mediaPath), "md", taken);
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1420,6 +1670,25 @@ const core = {
   DEFAULT_ENCODE_QUALITY,
   encodeQualityFor,
   clampQuality,
+  INSTANCE_SCHEMA,
+  DEFAULT_NOTE_FOLDER,
+  INTRINSIC_FIELDS,
+  INSTANCE_FIELD_ORDER,
+  INSTANCE_OPS,
+  STATUS_EDITED,
+  STATUS_REVIEWED,
+  linkTargetOf,
+  wikilinkFor,
+  isoTimestamp,
+  asIsoString,
+  yamlScalar,
+  yamlValueFor,
+  notesBodyOf,
+  renderInstanceNote,
+  instanceRecordFrom,
+  isDeclared,
+  isIntrinsicField,
+  notePathFor,
   scaleRect,
   MAX_DECODE_MEGAPIXELS,
   MAX_DISPLAY_EDGE,
@@ -2360,6 +2629,312 @@ class CropOverlay {
     this.drag = null;
     this.selection = null;
     if (this.el && typeof this.el.remove === "function") this.el.remove();
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * LineageStore — where the notes are, without ever looking for them.
+ *
+ * Two maps, built once from `metadataCache` and kept current from its
+ * `changed` event:
+ *
+ *   media path → the note that declares it
+ *   media path → the notes naming it as `source:`
+ *
+ * No filename convention, no directory listing, no candidate paths tried in
+ * order. The first draft had all three, because that is how a program with no
+ * index finds a file. This vault has an index: a note declaring
+ * `media: "[[cover.png]]"` is found by what it says, wherever it sits and
+ * whatever it is called — so a note the user moves or renames by hand keeps
+ * working, because nothing ever depended on where it was.
+ * ------------------------------------------------------------------------ */
+
+class LineageStore {
+  constructor(app, options) {
+    const settings = options || {};
+    this.app = app;
+    // Where new notes are written. Never used to find one.
+    this.noteFolder = settings.noteFolder || DEFAULT_NOTE_FOLDER;
+    // note path → record
+    this.records = new Map();
+    // media path → note path
+    this.byMedia = new Map();
+    // media path → Set of note paths naming it as source
+    this.bySource = new Map();
+    // Links that resolve to nothing, kept so a break can be reported by the
+    // name the note actually holds rather than as an anonymous "missing".
+    this.danglingSources = new Map();
+    this.onChange = typeof settings.onChange === "function" ? settings.onChange : null;
+  }
+
+  /* Build from what the cache already holds.
+   *
+   * Every markdown file's frontmatter is already parsed and in memory by the
+   * time this runs, so this is a walk over data rather than a scan of disk —
+   * which is the difference between "cheap on a large vault" and "the reason
+   * the pane takes a second to open".
+   */
+  build() {
+    this.records.clear();
+    this.byMedia.clear();
+    this.bySource.clear();
+    this.danglingSources.clear();
+    const files = typeof this.app.vault.getMarkdownFiles === "function" ? this.app.vault.getMarkdownFiles() : [];
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      this.absorb(file, cache && cache.frontmatter);
+    }
+    this.notify();
+    return this.records.size;
+  }
+
+  // One note's contribution to the maps. Called on build and on every
+  // `changed`, so it has to be idempotent — which it is, because it retracts
+  // the note's previous contribution first.
+  absorb(file, frontmatter) {
+    this.retract(file.path);
+    if (!frontmatter || frontmatter.implements !== INSTANCE_SCHEMA) return null;
+    const record = instanceRecordFrom(frontmatter, file.path);
+    record.mediaPath = this.resolveLink(record.mediaLink, file.path);
+    record.sourcePath = this.resolveLink(record.sourceLink, file.path);
+    this.records.set(file.path, record);
+    if (record.mediaPath) {
+      /* Two notes claiming the same file is a conflict the plugin cannot
+         resolve — both are equally valid declarations — so the first one wins
+         and the second is reported rather than silently overwriting it. */
+      const existing = this.byMedia.get(record.mediaPath);
+      if (existing && existing !== file.path) {
+        console.warn(
+          "Media Viewer: " + record.mediaPath + " is claimed by two notes, " + existing + " and " + file.path
+        );
+      } else {
+        this.byMedia.set(record.mediaPath, file.path);
+      }
+    }
+    if (record.sourcePath) {
+      if (!this.bySource.has(record.sourcePath)) this.bySource.set(record.sourcePath, new Set());
+      this.bySource.get(record.sourcePath).add(file.path);
+    } else if (record.sourceLink) {
+      // A source that names something the vault does not hold. Reported, never
+      // silently repaired: the file may simply not be here yet.
+      this.danglingSources.set(file.path, record.sourceLink);
+    }
+    return record;
+  }
+
+  retract(notePath) {
+    const previous = this.records.get(notePath);
+    if (!previous) return false;
+    this.records.delete(notePath);
+    this.danglingSources.delete(notePath);
+    if (previous.mediaPath && this.byMedia.get(previous.mediaPath) === notePath) {
+      this.byMedia.delete(previous.mediaPath);
+    }
+    if (previous.sourcePath) {
+      const children = this.bySource.get(previous.sourcePath);
+      if (children) {
+        children.delete(notePath);
+        if (!children.size) this.bySource.delete(previous.sourcePath);
+      }
+    }
+    return true;
+  }
+
+  /* A wikilink resolved against the vault.
+   *
+   * getFirstLinkpathDest is what Obsidian uses for its own links, so a note
+   * holding `[[cover.png]]` finds the same file the editor would jump to —
+   * including when two folders hold a file of that name and the nearer one
+   * wins. Returning null is the dangling case, and it is a normal one.
+   */
+  resolveLink(link, fromPath) {
+    if (!link) return null;
+    const cache = this.app.metadataCache;
+    if (cache && typeof cache.getFirstLinkpathDest === "function") {
+      const dest = cache.getFirstLinkpathDest(link, fromPath || "");
+      return dest ? dest.path : null;
+    }
+    const direct = this.app.vault.getAbstractFileByPath(link);
+    return direct ? direct.path : null;
+  }
+
+  /* Event handling. Three lines of work each, and for most of the vault the
+     first line is a miss. */
+
+  handleMetadataChange(file, data, cache) {
+    if (!file || !file.path || !file.path.toLowerCase().endsWith(".md")) return false;
+    const before = this.records.has(file.path);
+    const after = this.absorb(file, cache && cache.frontmatter);
+    if (!before && !after) return false;
+    this.notify();
+    return true;
+  }
+
+  handleDelete(file) {
+    if (!file || !file.path) return false;
+    let changed = this.retract(file.path);
+    /* A media file going away does not remove its note — the note is a record
+       in data/ and it stays where it is. What changes is that its children's
+       `source:` now dangles, which is reported rather than repaired: the file
+       may be coming back from the other end of a sync. */
+    if (this.byMedia.has(file.path) || this.bySource.has(file.path)) changed = true;
+    if (changed) this.notify();
+    return changed;
+  }
+
+  // A rename that Obsidian's own link updating has already handled arrives
+  // here as a metadata change too, so this only has to move the keys; the
+  // rewriting case is MV-RENAME's.
+  handleRename(file, oldPath) {
+    if (!file || !file.path) return false;
+    let changed = false;
+    if (this.records.has(oldPath)) {
+      const record = this.records.get(oldPath);
+      this.retract(oldPath);
+      record.notePath = file.path;
+      this.records.set(file.path, record);
+      if (record.mediaPath) this.byMedia.set(record.mediaPath, file.path);
+      if (record.sourcePath) {
+        if (!this.bySource.has(record.sourcePath)) this.bySource.set(record.sourcePath, new Set());
+        this.bySource.get(record.sourcePath).add(file.path);
+      }
+      changed = true;
+    }
+    if (this.byMedia.has(oldPath)) {
+      this.byMedia.set(file.path, this.byMedia.get(oldPath));
+      this.byMedia.delete(oldPath);
+      changed = true;
+    }
+    if (this.bySource.has(oldPath)) {
+      this.bySource.set(file.path, this.bySource.get(oldPath));
+      this.bySource.delete(oldPath);
+      changed = true;
+    }
+    if (changed) this.notify();
+    return changed;
+  }
+
+  notify() {
+    if (this.onChange) this.onChange(this);
+  }
+
+  /* Reading. */
+
+  isTracked(mediaPath) {
+    return this.byMedia.has(mediaPath);
+  }
+
+  noteFileFor(mediaPath) {
+    const notePath = this.byMedia.get(mediaPath);
+    if (!notePath) return null;
+    const file = this.app.vault.getAbstractFileByPath(notePath);
+    return file || null;
+  }
+
+  recordFor(mediaPath) {
+    const notePath = this.byMedia.get(mediaPath);
+    return notePath ? this.records.get(notePath) || null : null;
+  }
+
+  recordAt(notePath) {
+    return this.records.get(notePath) || null;
+  }
+
+  parentOf(mediaPath) {
+    const record = this.recordFor(mediaPath);
+    return record ? record.sourcePath : null;
+  }
+
+  // The media files derived from this one, in a stable order so the panel does
+  // not reshuffle itself between renders.
+  childrenOf(mediaPath) {
+    const notes = this.bySource.get(mediaPath);
+    if (!notes) return [];
+    const children = [];
+    for (const notePath of notes) {
+      const record = this.records.get(notePath);
+      if (record && record.mediaPath) children.push(record.mediaPath);
+    }
+    return children.sort(compareMediaPaths);
+  }
+
+  // Every note whose `source:` names something the vault does not hold, as
+  // { notePath, link }. The vault-wide break report MV-REPAIR builds is this
+  // plus the notes whose `media:` has gone.
+  breaks() {
+    const found = [];
+    for (const [notePath, link] of this.danglingSources) {
+      found.push({ notePath, link, kind: "source" });
+    }
+    for (const [notePath, record] of this.records) {
+      if (record.mediaLink && !record.mediaPath) {
+        found.push({ notePath, link: record.mediaLink, kind: "media" });
+      }
+    }
+    return found.sort((a, b) => (a.notePath < b.notePath ? -1 : a.notePath > b.notePath ? 1 : 0));
+  }
+
+  /* Writing.
+   *
+   * One method, because creating and updating differ only in whether there is
+   * a file already — and the thing that must not differ is that the user's
+   * prose below the marker survives either way.
+   */
+  async write(mediaPath, fields) {
+    const existing = this.noteFileFor(mediaPath);
+    const values = Object.assign({}, fields, { media: wikilinkFor(mediaPath) });
+    if (existing) {
+      const raw = await this.app.vault.read(existing);
+      // Unknown frontmatter is carried across as well as the body: a field
+      // someone added by hand is theirs, not ours to drop.
+      const record = this.records.get(existing.path);
+      const carried = record ? this.carriedFields(record.frontmatter, values) : {};
+      const text = renderInstanceNote(Object.assign(carried, values), notesBodyOf(raw));
+      await this.app.vault.modify(existing, text);
+      return existing;
+    }
+    const folder = this.noteFolder;
+    await this.ensureFolder(folder);
+    const path = notePathFor(folder, mediaPath, (candidate) => this.exists(candidate));
+    const file = await this.app.vault.create(path, renderInstanceNote(values, ""));
+    // The cache's `changed` event arrives later; inserting here means the note
+    // is findable the moment it exists, which is what the save path needs when
+    // it writes a root note and a child note in the same breath.
+    if (file) this.absorb(file, Object.assign({ implements: INSTANCE_SCHEMA }, values));
+    this.notify();
+    return file;
+  }
+
+  // Frontmatter the plugin did not write and is not about to. `implements` is
+  // excluded because it is re-emitted, and the known fields because the caller
+  // has just decided what they should be.
+  carriedFields(frontmatter, values) {
+    const carried = {};
+    for (const [key, value] of Object.entries(frontmatter || {})) {
+      if (key === "implements") continue;
+      if (INSTANCE_FIELD_ORDER.includes(key)) continue;
+      if (values[key] !== undefined) continue;
+      carried[key] = value;
+    }
+    return carried;
+  }
+
+  exists(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    return file !== null && file !== undefined;
+  }
+
+  async ensureFolder(folder) {
+    if (!folder) return false;
+    if (this.exists(folder)) return false;
+    try {
+      await this.app.vault.createFolder(folder);
+      return true;
+    } catch (error) {
+      // Already there, most likely — createFolder throws rather than
+      // returning, and a race with another plugin is not worth failing over.
+      return false;
+    }
   }
 }
 
@@ -4362,6 +4937,14 @@ class MediaViewerPlugin extends Plugin {
     // save keep the scroll position and the highlight it started with.
     this.selectedPath = null;
 
+    /* Lineage. Built once the vault has finished indexing — before then
+       metadataCache holds a fraction of the notes and the maps would be
+       quietly wrong rather than visibly empty. */
+    this.lineage = new LineageStore(this.app, {
+      noteFolder: this.settings.noteFolder,
+      onChange: () => this.refreshLineageViews(),
+    });
+
     this.index = new MediaIndex(this.app.vault);
     this.index.recursive = this.settings.recursive;
     this.index.onChange = (reason, path, oldPath) => this.handleIndexChange(reason, path, oldPath);
@@ -4417,12 +5000,39 @@ class MediaViewerPlugin extends Plugin {
     // The last folder is restored, but only once the vault has finished
     // indexing: scanning before then finds a fraction of the files and the
     // pane opens looking empty.
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file, data, cache) =>
+        this.lineage.handleMetadataChange(file, data, cache)
+      )
+    );
+    this.registerEvent(this.app.vault.on("delete", (file) => this.lineage.handleDelete(file)));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => this.handleLineageRename(file, oldPath))
+    );
+
     this.app.workspace.onLayoutReady(() => {
+      const started = Date.now();
+      const found = this.lineage.build();
+      this.logTiming("lineage-build", found + " notes", started);
       if (this.settings.lastFolder !== null) {
         this.index.setFolder(this.settings.lastFolder, this.settings.recursive);
       }
       this.followActiveFile(this.app.workspace.getActiveFile());
     });
+  }
+
+  /* Rename, for the store's maps. MV-RENAME adds the case this does not
+     handle — a tracked file renamed while Obsidian's own link updating is off,
+     which is the only case where this plugin writes on a rename. */
+  handleLineageRename(file, oldPath) {
+    return this.lineage.handleRename(file, oldPath);
+  }
+
+  refreshLineageViews() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
+      const view = leaf.view;
+      if (view instanceof MediaViewerView && typeof view.renderLineage === "function") view.renderLineage();
+    }
   }
 
   async loadSettings() {
@@ -4716,5 +5326,6 @@ module.exports.EditSession = EditSession;
 module.exports.loadEditSource = loadEditSource;
 module.exports.DecodeBudgetError = DecodeBudgetError;
 module.exports.CropOverlay = CropOverlay;
+module.exports.LineageStore = LineageStore;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;

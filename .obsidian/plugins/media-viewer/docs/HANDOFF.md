@@ -131,7 +131,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 17 `MV-TRANSFORM`
 - [x] 18 `MV-SAVE`
 - [x] 19 `MV-SCHEMA`
-- [ ] 20 `MV-STORE`
+- [x] 20 `MV-STORE`
 - [ ] 21 `MV-TRACK`
 - [ ] 22 `MV-RESOLVE`
 - [ ] 23 `MV-PANEL`

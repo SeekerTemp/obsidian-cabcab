@@ -239,9 +239,12 @@ group("persistence", () => {
 });
 
 group("event registration", () => {
-  test("listens for the four vault events plus file-open and file-menu", async () => {
+  test("listens for the four vault events, file-open, file-menu and metadata", async () => {
     const { app } = await pluginOver(FILES);
     deepEqual(Object.keys(app.handlers).sort(), [
+      // Lineage discovery is entirely `changed`: no filename convention, no
+      // directory listing, so this one event is what keeps the maps current.
+      "changed",
       "create",
       "delete",
       "file-menu",
