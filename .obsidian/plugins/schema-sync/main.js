@@ -322,6 +322,30 @@ function fieldNameError(name) {
   return null;
 }
 
+// Merging two config notes would silently discard one side's hand-written Notes
+// column, which is the whole reason these files are never auto-deleted. Two
+// fields in one schema cannot share a name, so an occupied target can only be a
+// leftover from an earlier failed rename — report it and let the user clear it
+// with the orphan cleanup, rather than merging behind their back.
+function configRenamePlan({ schemaName, oldName, newName, existingPaths }) {
+  const from = `${CONFIG_FOLDER}/${schemaName}/${oldName}.md`;
+  if (!existingPaths.has(from)) return { action: "none" };
+  const to = `${CONFIG_FOLDER}/${schemaName}/${newName}.md`;
+  if (existingPaths.has(to)) return { action: "conflict", from, to };
+  return { action: "rename", from, to, configFor: `${schemaName}.${newName}` };
+}
+
+// A value list is orphaned only when its field is gone from the schema entirely,
+// or the schema itself is gone. Bind state is deliberately irrelevant: unbinding
+// a field is the reversible first press of the × button, and throwing away its
+// curated values would make that press destructive after all.
+function orphanedConfigs(notes, schemas) {
+  return notes.filter(({ schemaName, fieldName }) => {
+    const fields = schemas.get(schemaName);
+    return !fields || !Object.prototype.hasOwnProperty.call(fields, fieldName);
+  });
+}
+
 // What the Field column points at. A link means "this field has somewhere to
 // go"; plain text means it has not. Path-qualified because Obsidian resolves a
 // wikilink by basename alone, and two schemas may both declare `trait`. Aliased
@@ -1428,6 +1452,23 @@ class SchemaSyncPlugin extends Plugin {
     }
   }
 
+  // Renaming a field used to leave its value list behind under the old name,
+  // and the next sync generated a second one alongside it.
+  async renameFieldConfig(schemaName, oldName, newName) {
+    const existingPaths = new Set(this.app.vault.getMarkdownFiles().map((each) => each.path));
+    const plan = configRenamePlan({ schemaName, oldName, newName, existingPaths });
+    if (plan.action === "none") return;
+    if (plan.action === "conflict") {
+      return new Notice(`${plan.to} already exists, so "${oldName}" kept its value list at ${plan.from}. Clear the leftover from 01 / Registry, then rename again.`, 10000);
+    }
+    const file = this.app.vault.getAbstractFileByPath(plan.from);
+    if (!(file instanceof TFile)) return;
+    await this.app.fileManager.renameFile(file, normalizePath(plan.to));
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      frontmatter.configFor = [plan.configFor];
+    });
+  }
+
   async saveSchemaFromDashboard(schemaName, editor) {
     const file = this.schemaFile(schemaName);
     if (!file) return;
@@ -1436,16 +1477,21 @@ class SchemaSyncPlugin extends Plugin {
     for (const row of editor.querySelectorAll("[data-schema-row]")) {
       const original = row.dataset.schemaRow;
       const input = row.querySelector("[data-field-name]");
-      const typed = input?.value.trim() || "";
-      // A blank name is a mistake, not an instruction. Restore what was there
-      // and abandon the whole save rather than writing a half-renamed schema.
-      if (input && !typed) {
+      // A name typed as [[link]] is the user reaching for the value list, not
+      // asking for brackets in the field name.
+      const typed = normalizeFieldName(input?.value);
+      // A bad name is a mistake, not an instruction. Restore what was there and
+      // abandon the whole save rather than writing a half-renamed schema.
+      const nameError = input ? fieldNameError(typed) : null;
+      if (nameError) {
         input.value = original;
-        new Notice(`A field name cannot be blank. Reverted to "${original}".`);
+        new Notice(`${nameError} Reverted to "${original}".`);
         return;
       }
       const name = typed || original;
-      if (Object.prototype.hasOwnProperty.call(fields, name)) {
+      // Case-insensitive: the two names are two file names now, and this vault
+      // is on a case-insensitive filesystem.
+      if (Object.keys(fields).some((existing) => existing.toLowerCase() === name.toLowerCase())) {
         if (input) input.value = original;
         new Notice(`${schemaName} already has a field named "${name}".`);
         return;
@@ -1468,7 +1514,13 @@ class SchemaSyncPlugin extends Plugin {
       if (relationTarget) definition.relation = { target: relationTarget };
       fields[name] = definition;
     }
-    for (const [oldName, newName] of renames) await this.renameRecordField(schemaName, oldName, newName);
+    // Before writeSchemaFile: renameFile makes Obsidian rewrite every
+    // [[Schema/field|field]] in the vault, and our own regeneration of the
+    // schema note has to be the last write to land.
+    for (const [oldName, newName] of renames) {
+      await this.renameRecordField(schemaName, oldName, newName);
+      await this.renameFieldConfig(schemaName, oldName, newName);
+    }
     await this.writeSchemaFile(schemaName, fields);
     await this.addSchemaFieldsToImplementation(schemaName, fields);
     await this.syncEntityFieldsForSchema(schemaName, fields);
@@ -2324,6 +2376,8 @@ module.exports.generators = {
   parseConfigValues,
   parseConfigRows,
   configPathFor,
+  configRenamePlan,
+  orphanedConfigs,
   normalizeFieldName,
   fieldNameError,
   shouldValidateNote,

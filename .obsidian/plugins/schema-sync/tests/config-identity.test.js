@@ -167,6 +167,67 @@ test("a linked row keeps its other columns intact", () => {
   assert.strictEqual(parsed.attachment.bind, false);
 });
 
+// --- Task 5: field rename ---------------------------------------------------
+
+const { configRenamePlan } = generators;
+
+test("renaming a field renames its config note", () => {
+  const paths = new Set(["data/config/LifeForm/trait.md"]);
+  assert.deepStrictEqual(configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: paths }), {
+    action: "rename",
+    from: "data/config/LifeForm/trait.md",
+    to: "data/config/LifeForm/feature.md",
+    configFor: "LifeForm.feature",
+  });
+});
+
+test("a field with no config note needs no action", () => {
+  assert.deepStrictEqual(configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: new Set() }), { action: "none" });
+});
+
+test("an occupied target is reported, never merged", () => {
+  const paths = new Set(["data/config/LifeForm/trait.md", "data/config/LifeForm/feature.md"]);
+  const plan = configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: paths });
+  assert.strictEqual(plan.action, "conflict");
+  assert.strictEqual(plan.to, "data/config/LifeForm/feature.md");
+});
+
+test("a rename inside one schema never touches another schema's note", () => {
+  const paths = new Set(["data/config/Beast/trait.md"]);
+  assert.deepStrictEqual(configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: paths }), { action: "none" });
+});
+
+// --- Task 7: orphan cleanup -------------------------------------------------
+
+const { orphanedConfigs } = generators;
+
+const NOTES = [
+  { path: "data/config/LifeForm/trait.md", schemaName: "LifeForm", fieldName: "trait" },
+  { path: "data/config/LifeForm/gone.md", schemaName: "LifeForm", fieldName: "gone" },
+  { path: "data/config/Ghost/anything.md", schemaName: "Ghost", fieldName: "anything" },
+  { path: "data/config/LifeForm/attachment.md", schemaName: "LifeForm", fieldName: "attachment" },
+];
+
+test("a note whose field still exists is live", () => {
+  assert.ok(!orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/LifeForm/trait.md"));
+});
+
+test("a note whose field was deleted is an orphan", () => {
+  assert.ok(orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/LifeForm/gone.md"));
+});
+
+test("a note whose schema was deleted is an orphan", () => {
+  assert.ok(orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/Ghost/anything.md"));
+});
+
+test("an unbound field keeps its list, so unbinding stays reversible", () => {
+  assert.ok(!orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/LifeForm/attachment.md"));
+});
+
+test("exactly two of the four are orphaned", () => {
+  assert.strictEqual(orphanedConfigs(NOTES, SCHEMAS).length, 2);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
