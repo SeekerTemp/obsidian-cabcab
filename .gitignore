@@ -1,0 +1,11 @@
+# Vault data lives on data/<name> branches only — never on main or feature/*.
+#
+# .gitignore is itself a tracked file, so each branch carries its own copy and
+# git switches these rules for you on checkout. On a data/<name> branch the
+# /data/ line below is removed, which is what makes the notes trackable there.
+#
+# See "Version control" in README.md. .githooks/pre-push is the safety net.
+/data/
+
+# A nested duplicate of the vault, left over from an earlier layout.
+/MyVault/

@@ -4,61 +4,91 @@
     "type": "split",
     "children": [
       {
-        "id": "35487ee6d913e72a",
+        "id": "786d82ddc339abce",
         "type": "tabs",
         "children": [
           {
-            "id": "242bc1386461b4d7",
+            "id": "a66ad9d4c2770353",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "README.md",
+                "file": "doc/config_environment.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "README"
+              "title": "config_environment"
+            }
+          },
+          {
+            "id": "5a2f58e04e5e88bc",
+            "type": "leaf",
+            "state": {
+              "type": "schema-sync-dashboard",
+              "state": {},
+              "icon": "workflow",
+              "title": "Schema Sync"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       },
       {
-        "id": "807b07bf4c8730b2",
+        "id": "9b3393de288c7dca",
         "type": "split",
         "children": [
           {
-            "id": "bd24e162e9cf4913",
+            "id": "4196a4fdcbe35114",
             "type": "tabs",
             "children": [
               {
-                "id": "bfa9f4aabc86acf1",
+                "id": "1a1ebca57607444a",
                 "type": "leaf",
                 "state": {
                   "type": "markdown",
                   "state": {
-                    "file": "data/schema/LifeForm.schema.md",
+                    "file": "data/record/verses/_placeholder.Verse.md",
                     "mode": "source",
                     "source": false
                   },
                   "icon": "lucide-file",
-                  "title": "LifeForm.schema"
+                  "title": "_placeholder.Verse"
+                }
+              },
+              {
+                "id": "12131d0824575331",
+                "type": "leaf",
+                "state": {
+                  "type": "markdown",
+                  "state": {
+                    "file": "data/schema/Verse.schema.md",
+                    "mode": "source",
+                    "source": false
+                  },
+                  "icon": "lucide-file",
+                  "title": "Verse.schema"
                 }
               }
-            ]
+            ],
+            "currentTab": 1
           },
           {
-            "id": "85e0705ed4ad538b",
+            "id": "a44e70b21faff580",
             "type": "tabs",
             "children": [
               {
-                "id": "3364781c4bd79f2e",
+                "id": "0dcabaccede3b352",
                 "type": "leaf",
                 "state": {
-                  "type": "empty",
-                  "state": {},
+                  "type": "markdown",
+                  "state": {
+                    "file": "README.md",
+                    "mode": "source",
+                    "source": false
+                  },
                   "icon": "lucide-file",
-                  "title": "New tab"
+                  "title": "README"
                 }
               }
             ]
@@ -232,43 +262,46 @@
   },
   "active": "0ec45bc60f9e82c5",
   "lastOpenFiles": [
+    "README.md.tmp.25628.22644db40641",
+    "README.md.tmp.25628.059663d3c74a",
+    "README.md.tmp.25628.34f4ed8835f9",
+    "README.md.tmp.25628.8949cd82a329",
+    "README.md.tmp.25628.f343dfb8f710",
+    "README.md.tmp.25628.4328f8dea3ac",
+    "README.md.tmp.25628.022ea48f1120",
     "data/config/schema-mappings.md",
     "data/base/LifeForm.base",
     "data/base/Realm.base",
     "data/base/Verse.base",
     "data/base",
-    "data/config/temp2s.config.md",
-    "data/config/temps.config.md",
+    "data/config/LifeForm/trait.md",
+    "data/config/Realm/Realm.md",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
+    "data/record/realms/_placeholder.Realm.md",
+    "data/record/verses/_placeholder.Verse.md",
+    "doc/MAP.md",
+    "README.md",
+    "MyVault/schemas/CharacterSchema.md",
+    "doc/config_environment.md",
+    "Excel 2026-09-07 17.05.19.univer.md",
+    "Pasted image 20260907162153.png",
+    "data/schema/Verse.schema.md",
+    "Pasted image 20260907163318.png",
+    "assets/cover.jpg",
+    "Realm.md",
+    "data/schema/LifeForm.schema.md",
     "data/config/traits.config.md",
     "data/config/Realms.config.md",
-    "data/config",
-    "data/record/lifeforms/_placeholder.LifeForm.md",
-    "data/record/lifeforms",
-    "data/record/realms/_placeholder.Realm.md",
-    "data/record/realms",
-    "data/record/verses/_placeholder.Verse.md",
-    "data/record/verses",
-    "data/record",
+    "data/config/temp2s.config.md",
+    "data/config/temps.config.md",
     "data/record/lifeforms/id2.LifeForm.md",
-    "data/schema/LifeForm.schema.md",
-    "README.md",
-    "README.md.tmp.9572.17a21206130f",
-    "data/schema/Verse.schema.md",
     "data/AssetDatabase.base.md",
     "data/config/covers.config.md",
     "config/_placeholder.Verse.md",
     "data/config/strings.config.md",
     "data/config/attachments.config.md",
     "data/config/trait1s.config.md",
-    "data/config/LifeForms.config.md",
-    "Architecture.md",
-    "data/record/lifeforms/_placeholder2.LifeForm.md",
-    "data/record/lifeforms/_placeholder2.LifeForm 2.md",
-    "data/record/lifeforms/_placeholder4.LifeForm.md",
-    "data/record/lifeforms/_placeholder3.LifeForm.md",
-    "assets/cover.jpg",
     "assets/FB_IMG_1695878841711.jpg",
-    "data/config/Architectures.config.md",
     "assets/atompunk.jpg"
   ]
 }

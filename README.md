@@ -32,20 +32,23 @@ the value list and the graph draws the edge. A foreign key generates no list of
 its own — it points at the one the target entity already owns, so the values
 cannot drift apart.
 
+**5. Version control.** Branch model below. `data/` is now untracked on `main` and
+`feature/*` — the files are untouched on disk, just no longer in git there.
+
 **6. Renaming a field duplicated its config.** Renaming in 02/Definition now moves
 the value list with the field, and renaming a schema moves its whole folder. An
 occupied target is reported rather than merged: merging two notes would silently
 discard one side's hand-written Notes column.
+
+**9. Attachments render as images in base views.** Each bound `attachment` field
+emits an `image(<field>.path)` formula and the view shows that in place of the
+raw path column.
 
 ### Open
 
 4.I see Realms.config is created by assets renamer. Asssets renmaer not updated to match schema sync yet. 
 - combine 2 plugins but I still want it's 2 separate icon like before so I can call assets renamer when ever i want.![[Pasted image 20260907163318.png]]
 - Update path generate config.basse in \data\config too. Just get the config base path and generete it's there too
-5.Update on version controll.
-- git main branch will take change of .obsidan settings include all plugins, no \data is push on there, ignore all \data test.
-- Other branchs like feature/<plugins> (like db-schema-sync) is like a plugins test from anywhere. I'll test and later commit push on main.  ignore all \data test.
-- git data/<branch> These branch only contains project data. all plugins & settings using from main branch so it's get all lastest plugins upgrades. Some project don't need all plugins. Sometime it may need hot fixex plugins & fix imediattly plugins, then hand off fixed source to main, but push to main will ignore all \data. Only push to it's own branch will include all \data. Meanning it's change git ignore config based on which branch it's push onto
 7. If a schema have a foreign key relation -> record able to get the foreigh fied attribute to. Like an orm/jpa. Just able to mapping to query and labeling, this field foreign field not binding to source schema
 8. Add buttons options to implements list in config to records of its schemas with id = item name for PrimaryKey.config. button lay in the 02/definition, before delete button.
 9. .base read attachment as a formula column to get attachments field attribute as image column: image(Cover.path)
@@ -297,10 +300,37 @@ The file opens with a block of **pure generators** — dependency-free functions
 
 Design notes for the current implementation are in [`.obsidian/plugins/schema-sync/docs/`](.obsidian/plugins/schema-sync/docs/).
 
+## Version control
+
+Three kinds of branch, and what each one carries:
+
+| Branch | Carries | `data/` |
+| --- | --- | --- |
+| `main` | `.obsidian/` — settings and every plugin | ignored |
+| `feature/<plugin>` | Plugin work, branched from and merged back to `main` | ignored |
+| `data/<project>` | One project's notes. Plugins come from `main` | tracked |
+
+`.gitignore` is itself a tracked file, so each branch carries its own copy and git
+swaps the rules on checkout. `main` and `feature/*` ignore `/data/`; a
+`data/<project>` branch drops that line, which is what makes its notes trackable.
+
+To pull the latest plugins into a project, merge `main` into the `data/<project>`
+branch. Never merge the other way: a plugin hotfix made on a data branch should be
+**cherry-picked** onto `main`, because merging would drag the whole vault with it.
+
+`.gitignore` only governs files that are not already tracked, so it cannot stop a
+merge from carrying data onto `main`. [`.githooks/pre-push`](.githooks/pre-push)
+is the net that catches that, refusing any push to `main` or `feature/*` that
+contains files under `data/`. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Known gaps
 
-- A `.config.md` for a renamed, unbound or deleted field is **not** removed — these hold curated rows, so they are deliberately never auto-deleted. Remove them by hand.
-- Config lists are keyed by attribute **name** across all schemas. Two schemas with a `Culture` field share one `Cultures.config.md`.
+- The bare basenames config notes use — `data/config/Realm/Realm.md` is `[[Realm]]` — compete with every other note in the vault. Generated links are always path-qualified, so they are safe; a hand-typed `[[Realm]]` may not be.
+- A value list whose field was merely **unbound** is kept, so unbinding stays reversible. Only a deleted field or schema makes one an orphan.
 - `isRecordFile()` still treats `config/entity.md` as a record for backwards compatibility, though nothing generates it any more.
 - The Field Reference table in a schema note can look stale while that note is the active file. It is rewritten as soon as you move off it.
 - Container queries need Chromium 105+. Obsidian 1.7+ is well past this.

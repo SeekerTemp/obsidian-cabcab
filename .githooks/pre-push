@@ -1,0 +1,43 @@
+#!/bin/sh
+# Refuses to push vault data onto a branch meant to carry only plugins and
+# settings.
+#
+# .gitignore keeps data/ out of new commits, but it has no effect on files that
+# are already tracked — so a merge from a data/<name> branch, or a stray
+# `git add -f`, can still carry the whole vault onto main. This is the net that
+# catches that, because by then .gitignore is not looking.
+#
+# Enable with:  git config core.hooksPath .githooks
+
+ZERO=0000000000000000000000000000000000000000
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+	case "$remote_ref" in
+		refs/heads/main|refs/heads/feature/*) ;;
+		*) continue ;;
+	esac
+
+	# Deleting a remote branch pushes nothing.
+	[ "$local_sha" = "$ZERO" ] && continue
+
+	if [ "$remote_sha" = "$ZERO" ]; then
+		# New branch on the remote: judge the whole tree, not a range.
+		files=$(git ls-tree -r --name-only "$local_sha" -- data)
+	else
+		files=$(git diff --name-only "$remote_sha" "$local_sha" -- data)
+	fi
+
+	if [ -n "$files" ]; then
+		count=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
+		echo "pre-push: refusing to push vault data to ${remote_ref#refs/heads/}." >&2
+		echo "  $count file(s) under data/ are in this push, for example:" >&2
+		printf '%s\n' "$files" | head -5 | sed 's/^/    /' >&2
+		echo "" >&2
+		echo "  data/ belongs on a data/<name> branch. main and feature/* carry" >&2
+		echo "  plugins and settings only. To move a plugin fix off a data branch," >&2
+		echo "  cherry-pick the commit rather than merging the branch." >&2
+		exit 1
+	fi
+done
+
+exit 0
