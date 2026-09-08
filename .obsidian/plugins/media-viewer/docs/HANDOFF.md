@@ -113,6 +113,23 @@ kept in the failure paths every task already writes.
 | 29 | `MV-PERF` | Manual performance pass at 20 / 100 / 500+ files; record numbers in this file | — | 28 | Numbers recorded below |
 | 30 | `MV-README` | Plugin `README.md` in the vault's documentation style | `README.md` | 29 | — |
 
+## M8 — From using it
+
+Written down from the user's own list, kept in the vault README on
+2026-09-08 after the first real session with the pane. Item 3 of that list is
+`MV-FRAME`, which was already a task; the rest were not.
+
+Item 2 of that list is not a task but a rule for the ones below it: **demo the
+layout as .html first and reuse only the layout** — the UI ported from the PyQt
+app is not a design to keep faith with. The responsive behaviour is fine as it
+stands.
+
+| # | Keyword | Goal | Touches | Needs | Verify |
+| --- | --- | --- | --- | --- | --- |
+| 32 | `MV-ZOOMFIX` | Zooming above 100% blurs the image. A browser smooths an upscaled bitmap by default, which is wrong for the screenshots this pane exists to look at — `image-rendering` should follow the zoom, sharp above 100% and smooth below | `styles.css`, `main.js` | 6 | A screenshot at 400% shows hard pixel edges, not a blur |
+| 33 | `MV-EXPLORER` | Make the grid behave like the file explorer: click reveals the file there, right-click offers Obsidian's own file menu, and a tile can be dragged out to move the file into another folder | `main.js` | 5 | Right-click a tile and get the same menu the explorer gives; drag one into a folder and the file moves |
+| 34 | `MV-RECORD` | A button that creates a record for the selected file from a chosen schema, binding it as an attachment at its full vault path. **Belongs in Schema Sync, not here** — it applies to every file type, not just media, and Schema Sync already owns record creation | — | — | Decide where it lives before building it |
+
 ## M7 — Overview tab (deferred)
 
 Not part of the first build. The data it needs already exists after M4.
@@ -159,6 +176,9 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 29 `MV-PERF` — plugin-side numbers measured and recorded; the manual pass still needs a person
 - [x] 30 `MV-README`
 - [ ] 31 `MV-OVERVIEW` (deferred)
+- [ ] 32 `MV-ZOOMFIX` — a bug, from use
+- [ ] 33 `MV-EXPLORER` — from use
+- [ ] 34 `MV-RECORD` — from use, probably Schema Sync's to build
 
 Retired after M2, and not to be picked up again: `MV-LOG`, which was 25. The
 numbering keeps its gaps rather than shifting, so that a commit message naming a
