@@ -228,6 +228,33 @@ test("exactly two of the four are orphaned", () => {
   assert.strictEqual(orphanedConfigs(NOTES, SCHEMAS).length, 2);
 });
 
+// --- README item 9: attachment as an image column ---------------------------
+
+const { renderBaseYaml } = generators;
+
+test("an attachment field is shown through image(), not as a raw path", () => {
+  const yaml = renderBaseYaml("LifeForm", { id: { type: "string" }, cover: { type: "attachment" } }, "data/record/lifeforms");
+  assert.ok(yaml.includes("formulas:"), yaml);
+  assert.ok(yaml.includes("coverImage: image(cover.path)"), yaml);
+  assert.ok(yaml.includes("- formula.coverImage"), yaml);
+});
+
+test("the raw attachment column is replaced, not duplicated", () => {
+  const yaml = renderBaseYaml("LifeForm", { cover: { type: "attachment" } }, "data/record/lifeforms");
+  assert.ok(!/^ *- cover$/m.test(yaml), yaml);
+});
+
+test("a schema with no attachment field gets no formulas block", () => {
+  const yaml = renderBaseYaml("Realm", { Realm: { type: "string" } }, "data/record/realms");
+  assert.ok(!yaml.includes("formulas:"), yaml);
+});
+
+test("an unbound attachment is left out entirely", () => {
+  const yaml = renderBaseYaml("LifeForm", { cover: { type: "attachment", bind: false } }, "data/record/lifeforms");
+  assert.ok(!yaml.includes("formulas:"), yaml);
+  assert.ok(!yaml.includes("cover"), yaml);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
