@@ -1462,6 +1462,160 @@ function notePathFor(folder, mediaPath, taken) {
   return uniquePath(folder, stemOf(mediaPath), "md", taken);
 }
 
+/* ------------------------------------------------------------------------ *
+ * Inheritance — MV-RESOLVE.
+ *
+ * A child declares only its own fields. Everything else is resolved by walking
+ * up the `source:` chain at read time, stopping at the first ancestor that
+ * declares it — which is the entire reason for tracking lineage: correcting a
+ * value on the parent corrects it for every descendant, without touching one
+ * of them.
+ *
+ * The walk is pure. It takes a `lookup` from media path to record, so the same
+ * function serves the pane, the panel and the tests, and none of them needs a
+ * vault to run it.
+ *
+ * Two failure modes, and neither is swallowed. A cycle is broken by a visited
+ * set; a chain longer than the cap is abandoned. Both are reported back as the
+ * reason the walk stopped, so the pane can say so rather than quietly showing
+ * the wrong answer.
+ * ------------------------------------------------------------------------ */
+
+const CHAIN_HOP_LIMIT = 32;
+
+// Why a walk ended. "end" is the ordinary one — a root, or a file with no note.
+const CHAIN_END = "end";
+const CHAIN_CYCLE = "cycle";
+const CHAIN_LIMIT = "limit";
+const CHAIN_MISSING = "missing";
+
+/* Walk from a file to its furthest ancestor.
+ *
+ * `lookup(path)` returns a record — anything with `frontmatter`, `sourcePath`
+ * and `sourceLink` — or null for a file with no note, which is a perfectly
+ * ordinary end to a chain rather than a break.
+ *
+ * A `sourceLink` that resolved to nothing is a break, and it is where the walk
+ * stops. The link text is carried out so the pane can name what is missing;
+ * "the chain is broken" without saying which file is not something a user can
+ * act on.
+ */
+function walkChain(startPath, lookup, limit) {
+  const cap = Number(limit);
+  const hops = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : CHAIN_HOP_LIMIT;
+  const chain = [];
+  const visited = new Set();
+  let path = startPath || null;
+  let stopped = CHAIN_END;
+  let missing = null;
+
+  while (path) {
+    if (visited.has(path)) {
+      stopped = CHAIN_CYCLE;
+      break;
+    }
+    if (chain.length >= hops) {
+      stopped = CHAIN_LIMIT;
+      break;
+    }
+    visited.add(path);
+    const record = lookup(path) || null;
+    chain.push({ path, record });
+    if (!record) break;
+    if (!record.sourcePath) {
+      if (record.sourceLink) {
+        stopped = CHAIN_MISSING;
+        missing = record.sourceLink;
+      }
+      break;
+    }
+    path = record.sourcePath;
+  }
+
+  return { chain, stopped, missing, ok: stopped === CHAIN_END };
+}
+
+/* One field, resolved.
+ *
+ * `from` is the file that actually declared the value, which is the half of
+ * the answer that makes it checkable — a panel showing "16:9, inherited" is
+ * useless next to one showing "16:9, from cover.png".
+ *
+ * Intrinsic fields never walk. A child's crop is its own; inheriting a
+ * parent's would claim the file was cut from a rectangle it was not.
+ */
+function resolveField(field, startPath, lookup, limit) {
+  const walk = walkChain(startPath, lookup, limit);
+  const name = String(field);
+  const intrinsic = isIntrinsicField(name);
+  for (const step of walk.chain) {
+    if (!step.record || !step.record.frontmatter) {
+      if (intrinsic) break;
+      continue;
+    }
+    const value = step.record.frontmatter[name];
+    if (isDeclared(value)) {
+      return {
+        field: name,
+        value,
+        from: step.path,
+        notePath: step.record.notePath || null,
+        inherited: step.path !== startPath,
+        walk,
+      };
+    }
+    if (intrinsic) break;
+  }
+  return { field: name, value: undefined, from: null, notePath: null, inherited: false, walk };
+}
+
+/* Every field the chain has anything to say about.
+ *
+ * The set of names is the union of what is declared anywhere along it, so a
+ * field someone adds to the schema — or writes into one note by hand —
+ * inherits without anything here being taught about it.
+ */
+function resolveFields(startPath, lookup, limit) {
+  const walk = walkChain(startPath, lookup, limit);
+  const resolved = {};
+  for (const step of walk.chain) {
+    const front = step.record && step.record.frontmatter;
+    if (!front) continue;
+    for (const [name, value] of Object.entries(front)) {
+      if (name === "implements") continue;
+      if (resolved[name] !== undefined) continue;
+      if (!isDeclared(value)) continue;
+      // An intrinsic field is only ever the starting file's own, so one seen
+      // further up the chain is somebody else's and is skipped.
+      if (isIntrinsicField(name) && step.path !== startPath) continue;
+      resolved[name] = {
+        field: name,
+        value,
+        from: step.path,
+        notePath: step.record.notePath || null,
+        inherited: step.path !== startPath,
+      };
+    }
+  }
+  return { fields: resolved, walk };
+}
+
+// What went wrong with a walk, in a sentence, or null when nothing did.
+function chainProblemMessage(walk, startPath) {
+  if (!walk || walk.stopped === CHAIN_END) return null;
+  const name = baseNameOf(startPath || "");
+  if (walk.stopped === CHAIN_CYCLE) {
+    return "The lineage of " + name + " loops back on itself; the walk was stopped.";
+  }
+  if (walk.stopped === CHAIN_LIMIT) {
+    return "The lineage of " + name + " is more than " + CHAIN_HOP_LIMIT + " deep; the walk was stopped.";
+  }
+  if (walk.stopped === CHAIN_MISSING) {
+    return "The chain breaks at " + (walk.missing || "a missing file") + ", which is not in the vault.";
+  }
+  return null;
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1689,6 +1843,15 @@ const core = {
   isDeclared,
   isIntrinsicField,
   notePathFor,
+  CHAIN_HOP_LIMIT,
+  CHAIN_END,
+  CHAIN_CYCLE,
+  CHAIN_LIMIT,
+  CHAIN_MISSING,
+  walkChain,
+  resolveField,
+  resolveFields,
+  chainProblemMessage,
   scaleRect,
   MAX_DECODE_MEGAPIXELS,
   MAX_DISPLAY_EDGE,
@@ -2935,6 +3098,66 @@ class LineageStore {
       // returning, and a race with another plugin is not worth failing over.
       return false;
     }
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * MetadataResolver — the chain walk, against a live store.
+ *
+ * Thin on purpose: everything it decides is a `core` function, and what it
+ * adds is the store to look records up in and the reporting the design asks
+ * for — a cycle or an over-deep chain is logged as well as surfaced, because
+ * the one thing neither should ever do is quietly produce a plausible answer.
+ * ------------------------------------------------------------------------ */
+
+class MetadataResolver {
+  constructor(store, options) {
+    const settings = options || {};
+    this.store = store;
+    this.limit = settings.limit || CHAIN_HOP_LIMIT;
+    // Reported once per file rather than once per lookup: the panel resolves
+    // every field on every render, and a loop that logged each time would fill
+    // the console faster than it could be read.
+    this.reported = new Set();
+  }
+
+  lookup() {
+    return (path) => this.store.recordFor(path);
+  }
+
+  walk(mediaPath) {
+    const walk = walkChain(mediaPath, this.lookup(), this.limit);
+    this.report(mediaPath, walk);
+    return walk;
+  }
+
+  resolve(field, mediaPath) {
+    const answer = resolveField(field, mediaPath, this.lookup(), this.limit);
+    this.report(mediaPath, answer.walk);
+    return answer;
+  }
+
+  resolveAll(mediaPath) {
+    const answer = resolveFields(mediaPath, this.lookup(), this.limit);
+    this.report(mediaPath, answer.walk);
+    return answer;
+  }
+
+  // The chain as media paths, nearest first. What the panel walks to draw
+  // itself, and what a break report needs to name the file it stopped at.
+  ancestry(mediaPath) {
+    return this.walk(mediaPath).chain.map((step) => step.path);
+  }
+
+  report(mediaPath, walk) {
+    if (!walk || walk.stopped === CHAIN_END) {
+      this.reported.delete(mediaPath);
+      return false;
+    }
+    if (this.reported.has(mediaPath)) return false;
+    this.reported.add(mediaPath);
+    console.warn("Media Viewer: " + chainProblemMessage(walk, mediaPath));
+    return true;
   }
 }
 
@@ -4945,6 +5168,8 @@ class MediaViewerPlugin extends Plugin {
       onChange: () => this.refreshLineageViews(),
     });
 
+    this.resolver = new MetadataResolver(this.lineage);
+
     this.index = new MediaIndex(this.app.vault);
     this.index.recursive = this.settings.recursive;
     this.index.onChange = (reason, path, oldPath) => this.handleIndexChange(reason, path, oldPath);
@@ -5449,5 +5674,6 @@ module.exports.loadEditSource = loadEditSource;
 module.exports.DecodeBudgetError = DecodeBudgetError;
 module.exports.CropOverlay = CropOverlay;
 module.exports.LineageStore = LineageStore;
+module.exports.MetadataResolver = MetadataResolver;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;
