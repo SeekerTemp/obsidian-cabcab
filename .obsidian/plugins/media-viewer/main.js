@@ -4960,6 +4960,12 @@ class MediaViewerPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "mark-reviewed",
+      name: "Mark as reviewed",
+      callback: () => this.markReviewed(),
+    });
+
+    this.addCommand({
       id: "paste-image-into-folder",
       name: "Paste image into the current folder",
       callback: () => this.pasteFromClipboard(),
@@ -5236,12 +5242,128 @@ let created = null;
     return path;
   }
 
-  /* Called after a derived file has been written and inserted, before the
-     selection moves to it. Nothing here yet: MV-TRACK is where a save starts
-     writing lineage notes, and this is the seam it writes into, so that the
-     save path does not have to change shape to grow one. */
+  /* ---------------------------------------------------------------------- *
+   * Writing lineage — MV-TRACK.
+   *
+   * Notes are created when you **act** on a file, never when you merely look
+   * at one. That is what makes the presence of a note the signal that a file
+   * has been dealt with, and the absence of one the mark of everything still
+   * untouched — a set difference over data already in memory, needing no index
+   * of its own.
+   *
+   * So: opening, viewing, zooming and playing write nothing at all. A save
+   * writes two notes, because a crop is a derivation and a derivation has two
+   * ends.
+   * ---------------------------------------------------------------------- */
+
+  /* Called by the save path once the derived file exists.
+   *
+   * One crop produces two notes: the child, with its full provenance, and a
+   * root note for the source — because you did open that file and act on it,
+   * so it has been reviewed, and because the root is what gives the child
+   * something to inherit from.
+   *
+   * Failures here do not undo the save. The binary is on disk and is the
+   * user's work; a note that could not be written is what **Repair lineage**
+   * is for, and the pane says so rather than pretending the save failed.
+   */
   async afterEditSaved(session, path, file) {
-    return null;
+    if (!this.settings.writeLineage) return null;
+    const started = Date.now();
+    const sourcePath = session.path;
+    try {
+      await this.ensureRootNote(sourcePath, {
+        width: session.sourceWidth,
+        height: session.sourceHeight,
+      });
+    } catch (error) {
+      console.error("Media Viewer: could not write the root note for " + sourcePath, error);
+      new Notice("Media Viewer: " + baseNameOf(sourcePath) + " could not be tracked");
+    }
+    const shape = session.describe();
+    try {
+      const written = await this.lineage.write(path, {
+        source: wikilinkFor(sourcePath),
+        op: shape.crop ? "crop" : "transform",
+        crop: shape.crop,
+        transform: shape.transform,
+        width: shape.width,
+        height: shape.height,
+        created: isoTimestamp(new Date()),
+        status: STATUS_EDITED,
+        labels: [],
+      });
+      this.logTiming("lineage-write", path, started);
+      return written;
+    } catch (error) {
+      console.error("Media Viewer: could not write the lineage note for " + path, error);
+      new Notice(
+        "Media Viewer: " + baseNameOf(path) + " was saved but not tracked — use Repair lineage"
+      );
+      return null;
+    }
+  }
+
+  /* A root note: `media:`, no `source:`, and nothing claimed about how it was
+     made. Written only when there is not one already — a file that already has
+     a note has already been dealt with, and overwriting its status would
+     silently undo whatever the user set it to. */
+  async ensureRootNote(mediaPath, extra) {
+    if (!mediaPath) return null;
+    if (this.lineage.isTracked(mediaPath)) return this.lineage.noteFileFor(mediaPath);
+    const fields = Object.assign(
+      {
+        created: isoTimestamp(new Date()),
+        status: STATUS_REVIEWED,
+        labels: [],
+      },
+      extra || {}
+    );
+    return this.lineage.write(mediaPath, fields);
+  }
+
+  /* Mark as reviewed.
+   *
+   * This exists because otherwise a file that is already correct could never
+   * leave the unreviewed list: the list would shrink only by editing files
+   * that needed no editing.
+   *
+   * "Reviewed" here means exactly one thing — this plugin has written
+   * something about the file. It cannot tell a considered decision from an
+   * accidental crop, and does not pretend to; `status:` is where any finer
+   * meaning lives.
+   */
+  async markReviewed(path) {
+    const target = path || this.selectedPath || this.activeMediaPath();
+    if (!target) {
+      new Notice("Media Viewer: select a media file to mark it reviewed");
+      return null;
+    }
+    if (!isMediaPath(target)) {
+      new Notice("Media Viewer: " + baseNameOf(target) + " is not a media file");
+      return null;
+    }
+    if (this.lineage.isTracked(target)) {
+      new Notice("Media Viewer: " + baseNameOf(target) + " already has a lineage note");
+      return this.lineage.noteFileFor(target);
+    }
+    try {
+      const file = await this.ensureRootNote(target, {});
+      new Notice("Marked " + baseNameOf(target) + " reviewed");
+      return file;
+    } catch (error) {
+      console.error("Media Viewer: could not mark " + target + " reviewed", error);
+      new Notice("Media Viewer: could not write a note for " + baseNameOf(target));
+      return null;
+    }
+  }
+
+  // The media file the workspace has open, if it has one. Lets the command
+  // work from the file explorer as well as from the pane.
+  activeMediaPath() {
+    const file = this.app.workspace.getActiveFile();
+    const path = file && file.path;
+    return path && isMediaPath(path) ? path : null;
   }
 
   pathExists(path) {

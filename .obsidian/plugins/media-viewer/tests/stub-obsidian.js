@@ -9,7 +9,12 @@ class Plugin {
   registerView() {}
   registerEvent() {}
   addRibbonIcon() {}
-  addCommand() {}
+  // Recorded rather than dropped, so a test can check that a command is
+  // registered and can invoke it the way the palette would.
+  addCommand(command) {
+    (this.commands = this.commands || []).push(command);
+    return command;
+  }
   addSettingTab() {}
   async loadData() {
     return null;
