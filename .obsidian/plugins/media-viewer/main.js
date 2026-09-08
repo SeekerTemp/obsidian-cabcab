@@ -2060,6 +2060,10 @@ class MediaIndex {
    * fallback filters by folder exactly as the caller's `accepts` does, so the
    * result is the same list by a slower road. */
   filesInFolder() {
+    return guarded("listing", this.folder, () => this.filesInFolderUnguarded(), []);
+  }
+
+  filesInFolderUnguarded() {
     const root = this.folderObject();
     if (!root) {
       if (!this.vault || typeof this.vault.getFiles !== "function") return [];
@@ -2841,6 +2845,33 @@ class CropOverlay {
  * working, because nothing ever depended on where it was.
  * ------------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------------ *
+ * Guarding — MV-ERRORS.
+ *
+ * One bad file must never take down the grid. The old app crash-logged
+ * instead, into logs/app_crash.log, because a PyQt process that throws takes
+ * everything with it; a plugin throws inside a render loop and leaves the pane
+ * half-drawn, which is worse in a quieter way.
+ *
+ * So every boundary where one item is processed among many — a tile, a note, a
+ * cache event — runs inside this. It reports through console.error with the
+ * operation and the subject, which is the discipline the crash log existed for,
+ * and returns the fallback so the loop goes on to the next one.
+ *
+ * Deliberately not a Notice. These are per-item failures in a loop that is
+ * about to try ninety-nine more, and a modal per bad file is not a diagnosis,
+ * it is a wall. A Notice belongs where the user asked for something and did not
+ * get it.
+ * ------------------------------------------------------------------------ */
+function guarded(operation, subject, action, fallback) {
+  try {
+    return action();
+  } catch (error) {
+    console.error("Media Viewer: " + operation + " failed for " + (subject || "an unnamed item"), error);
+    return fallback;
+  }
+}
+
 class LineageStore {
   constructor(app, options) {
     const settings = options || {};
@@ -2873,8 +2904,10 @@ class LineageStore {
     this.danglingSources.clear();
     const files = typeof this.app.vault.getMarkdownFiles === "function" ? this.app.vault.getMarkdownFiles() : [];
     for (const file of files) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      this.absorb(file, cache && cache.frontmatter);
+      guarded("reading lineage from", file && file.path, () => {
+        const cache = this.app.metadataCache.getFileCache(file);
+        this.absorb(file, cache && cache.frontmatter);
+      });
     }
     this.notify();
     return this.records.size;
@@ -2956,7 +2989,9 @@ class LineageStore {
   handleMetadataChange(file, data, cache) {
     if (!file || !file.path || !file.path.toLowerCase().endsWith(".md")) return false;
     const before = this.records.has(file.path);
-    const after = this.absorb(file, cache && cache.frontmatter);
+    const after = guarded("reading lineage from", file.path, () =>
+      this.absorb(file, cache && cache.frontmatter)
+    , null);
     if (!before && !after) return false;
     this.notify();
     return true;
@@ -3603,6 +3638,7 @@ class MediaViewerView extends ItemView {
         for (const entry of entries) {
           const path = entry.target.dataset.path;
           if (!path) continue;
+          guarded("handling visibility of", path, () => {
           if (entry.isIntersecting) {
             this.visible.add(path);
             this.watchFirstThumbs(path);
@@ -3615,6 +3651,7 @@ class MediaViewerView extends ItemView {
             // wastes what it spent.
             this.withdrawQueuedFrame(path);
           }
+          });
         }
       },
       { root: this.gridEl, rootMargin: THUMBNAIL_PRELOAD_MARGIN }
@@ -3672,7 +3709,7 @@ class MediaViewerView extends ItemView {
 
     for (const [path, tile] of Array.from(this.tiles.entries())) {
       if (wanted.has(path)) continue;
-      this.releaseTile(path, tile);
+      guarded("releasing the tile for", path, () => this.releaseTile(path, tile));
     }
 
     // Walk the desired order against the DOM in one pass, inserting what is
@@ -3682,7 +3719,8 @@ class MediaViewerView extends ItemView {
     for (const path of paths) {
       let tile = this.tiles.get(path);
       if (!tile) {
-        tile = this.createTile(path);
+        tile = guarded("building a tile for", path, () => this.createTile(path), null);
+        if (!tile) continue;
         this.tiles.set(path, tile);
         this.gridEl.insertBefore(tile, cursor);
         if (this.observer) this.observer.observe(tile);
@@ -3776,6 +3814,10 @@ class MediaViewerView extends ItemView {
   }
 
   loadThumbnail(tile, path) {
+    return guarded("loading a thumbnail for", path, () => this.loadThumbnailUnguarded(tile, path));
+  }
+
+  loadThumbnailUnguarded(tile, path) {
     // get(), not has(): a hit is a use, and the tile should age from now
     // rather than from whenever it first loaded.
     // Already loaded: nothing to wait for, so it settles immediately rather
@@ -5337,6 +5379,12 @@ class MediaViewerView extends ItemView {
   }
 
   renderLineage() {
+    return guarded("drawing the lineage panel for", this.plugin.selectedPath, () =>
+      this.renderLineageUnguarded()
+    );
+  }
+
+  renderLineageUnguarded() {
     const body = this.lineageBodyEl;
     if (!body) return;
     body.empty();
@@ -5355,12 +5403,23 @@ class MediaViewerView extends ItemView {
          one action that would give it one. */
       const empty = body.createDiv({ cls: "mv-lineage-empty" });
       empty.setText("No lineage note. Nothing has been done to this file yet.");
-      const button = body.createEl("button", {
+      const actions = body.createDiv({ cls: "mv-lineage-actions" });
+      const mark = actions.createEl("button", {
         cls: "mv-lineage-action",
         text: "Mark as reviewed",
         attr: { type: "button" },
       });
-      button.addEventListener("click", () => this.plugin.markReviewed(path));
+      mark.addEventListener("click", () => this.plugin.markReviewed(path));
+      /* The other reason a file can be sitting here: a save whose binary was
+         written and whose note was not. The pane cannot tell that case from an
+         untouched file — both are "no note" — so it offers the repair rather
+         than guessing which one this is. */
+      const repair = actions.createEl("button", {
+        cls: "mv-lineage-action",
+        text: "Repair lineage",
+        attr: { type: "button", title: "Use this if the file was saved but its note was not written" },
+      });
+      repair.addEventListener("click", () => this.plugin.repairLineage(path));
       return;
     }
 
@@ -5529,11 +5588,28 @@ class MediaViewerPlugin extends Plugin {
     // Registered on the vault rather than inside the view, so the index stays
     // correct while the pane is closed and does not need a rescan on reopen.
     // Each handler is a map lookup that misses for most of the vault.
-    this.registerEvent(this.app.vault.on("create", (file) => this.index.handleCreate(file)));
-    this.registerEvent(this.app.vault.on("modify", (file) => this.index.handleModify(file)));
-    this.registerEvent(this.app.vault.on("delete", (file) => this.index.handleDelete(file)));
+    /* Guarded, because these run inside Obsidian's own event dispatch: a
+       throw here does not just lose this plugin's handling, it can stop the
+       handlers registered after it from being called at all. */
     this.registerEvent(
-      this.app.vault.on("rename", (file, oldPath) => this.index.handleRename(file, oldPath))
+      this.app.vault.on("create", (file) =>
+        guarded("handling create of", file && file.path, () => this.index.handleCreate(file))
+      )
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) =>
+        guarded("handling modify of", file && file.path, () => this.index.handleModify(file))
+      )
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) =>
+        guarded("handling delete of", file && file.path, () => this.index.handleDelete(file))
+      )
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) =>
+        guarded("handling rename of", oldPath, () => this.index.handleRename(file, oldPath))
+      )
     );
 
     this.registerEvent(
@@ -5563,10 +5639,16 @@ class MediaViewerPlugin extends Plugin {
     // pane opens looking empty.
     this.registerEvent(
       this.app.metadataCache.on("changed", (file, data, cache) =>
-        this.lineage.handleMetadataChange(file, data, cache)
+        guarded("handling metadata for", file && file.path, () =>
+          this.lineage.handleMetadataChange(file, data, cache)
+        )
       )
     );
-    this.registerEvent(this.app.vault.on("delete", (file) => this.lineage.handleDelete(file)));
+    this.registerEvent(
+      this.app.vault.on("delete", (file) =>
+        guarded("handling lineage delete of", file && file.path, () => this.lineage.handleDelete(file))
+      )
+    );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.handleLineageRename(file, oldPath))
     );
@@ -5699,7 +5781,8 @@ class MediaViewerPlugin extends Plugin {
   refreshLineageViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
       const view = leaf.view;
-      if (view instanceof MediaViewerView && typeof view.renderLineage === "function") view.renderLineage();
+      if (!(view instanceof MediaViewerView)) continue;
+      guarded("refreshing a lineage panel", this.selectedPath, () => view.renderLineage());
     }
   }
 
@@ -5879,12 +5962,14 @@ class MediaViewerPlugin extends Plugin {
       if (!(view instanceof MediaViewerView)) continue;
       // A modify changes no membership, only pixels, so the grid is left alone
       // and one thumbnail is re-read.
-      if (reason === "modify") {
-        view.reloadThumbnail(path);
-        view.reloadViewer(path);
-      } else {
-        view.render();
-      }
+      guarded("refreshing a pane for", path, () => {
+        if (reason === "modify") {
+          view.reloadThumbnail(path);
+          view.reloadViewer(path);
+        } else {
+          view.render();
+        }
+      });
     }
   }
 
@@ -6254,5 +6339,6 @@ module.exports.DecodeBudgetError = DecodeBudgetError;
 module.exports.CropOverlay = CropOverlay;
 module.exports.LineageStore = LineageStore;
 module.exports.MetadataResolver = MetadataResolver;
+module.exports.guarded = guarded;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;
