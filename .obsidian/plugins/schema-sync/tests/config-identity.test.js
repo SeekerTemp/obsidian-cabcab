@@ -70,6 +70,49 @@ test("an ordinary name is not an error", () => {
   assert.strictEqual(fieldNameError("Realm"), null);
 });
 
+// --- Task 2: per-schema config folders -------------------------------------
+
+const { configPathFor } = generators;
+
+const STRING = { type: "string", bind: true };
+
+test("a bound string field gets a config under its schema's folder", () => {
+  assert.strictEqual(configPathFor("LifeForm", "trait", STRING), "data/config/LifeForm/trait.md");
+});
+
+test("two schemas with the same field name get separate notes", () => {
+  assert.strictEqual(configPathFor("Beast", "trait", STRING), "data/config/Beast/trait.md");
+  assert.notStrictEqual(configPathFor("Beast", "trait", STRING), configPathFor("LifeForm", "trait", STRING));
+});
+
+test("an unbound field has no config", () => {
+  assert.strictEqual(configPathFor("LifeForm", "attachment", { type: "string", bind: false }), null);
+});
+
+test("a relation field has no config of its own", () => {
+  assert.strictEqual(configPathFor("Verse", "Realm", { type: "string", bind: true, relation: { target: "Realm" } }), null);
+});
+
+test("an identity field has no config", () => {
+  assert.strictEqual(configPathFor("LifeForm", "id", { type: "string", bind: true, required: true }), null);
+  assert.strictEqual(configPathFor("LifeForm", "name", STRING), null);
+});
+
+test("a non-string field has no config", () => {
+  assert.strictEqual(configPathFor("LifeForm", "cover", { type: "attachment", bind: true }), null);
+  assert.strictEqual(configPathFor("LifeForm", "count", { type: "number", bind: true }), null);
+});
+
+test("the config note heading is the field name, not a plural", () => {
+  const note = generators.renderConfigNote("trait", ["LifeForm.trait"], ["bold"], "");
+  assert.ok(note.includes("# trait"), note.slice(0, 200));
+  assert.ok(!note.includes("# traits"));
+});
+
+test("pluralize is gone", () => {
+  assert.strictEqual(generators.pluralize, undefined);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
