@@ -1249,7 +1249,20 @@ const INSTANCE_SCHEMA = "MediaInstance";
  * which is what lets someone add one to the schema and have it inherit without
  * this list changing.
  */
-const INTRINSIC_FIELDS = ["media", "source", "op", "crop", "transform", "width", "height", "created"];
+const INTRINSIC_FIELDS = [
+  "media",
+  "source",
+  "op",
+  "crop",
+  "transform",
+  // Seconds into the source video, for a captured frame. Intrinsic for the
+  // same reason a crop is: it says where *this* file was taken from, and a
+  // child inheriting it would claim a moment it was not cut at.
+  "sourceTime",
+  "width",
+  "height",
+  "created",
+];
 
 // The order a note is written in. Fixed, so a rewrite of an unchanged record
 // produces an unchanged file and a diff shows only what actually moved.
@@ -1259,9 +1272,15 @@ const INSTANCE_FIELD_ORDER = [
   "op",
   "crop",
   "transform",
+  "sourceTime",
   "width",
   "height",
   "created",
+  // The evidence fields. Nothing in this plugin reads them; they exist so that
+  // Bases, Dataview and anything speaking to the vault from outside can answer
+  // "what evidence do I have for this use case, and where did it come from".
+  "useCase",
+  "shows",
   "status",
   "labels",
 ];
@@ -1417,6 +1436,11 @@ function instanceRecordFrom(frontmatter, notePath) {
     transform: normaliseTransformField(front.transform),
     width: Number.isFinite(Number(front.width)) ? Number(front.width) : null,
     height: Number.isFinite(Number(front.height)) ? Number(front.height) : null,
+    sourceTime: Number.isFinite(Number(front.sourceTime)) && front.sourceTime !== null && front.sourceTime !== ""
+      ? Number(front.sourceTime)
+      : null,
+    useCase: front.useCase === undefined || front.useCase === null ? null : String(front.useCase),
+    shows: front.shows === undefined || front.shows === null ? null : String(front.shows),
     created: asIsoString(front.created),
     status: front.status === undefined || front.status === null ? null : String(front.status),
     labels: Array.isArray(front.labels) ? front.labels.slice() : [],
@@ -1633,6 +1657,10 @@ function formatFieldValue(name, value) {
     if (value.flipH) parts.push("flip H");
     if (value.flipV) parts.push("flip V");
     return parts.length ? parts.join(" · ") : "none";
+  }
+  if (name === "sourceTime") {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) ? formatTimecode(seconds) + " (" + seconds + "s)" : String(value);
   }
   if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
   if (value instanceof Date) return asIsoString(value) || "";

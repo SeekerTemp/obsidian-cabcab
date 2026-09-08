@@ -251,9 +251,23 @@ group("reading a record", () => {
   });
 
   test("the intrinsic fields are the ones that describe this file", () => {
-    for (const field of ["media", "source", "op", "crop", "transform", "width", "height", "created"]) {
+    for (const field of [
+      "media",
+      "source",
+      "op",
+      "crop",
+      "transform",
+      "sourceTime",
+      "width",
+      "height",
+      "created",
+    ]) {
       ok(core.isIntrinsicField(field), field);
     }
+    // The evidence fields describe the subject rather than the file, so they
+    // inherit: a crop of a captured frame is about the same use case.
+    equal(core.isIntrinsicField("useCase"), false);
+    equal(core.isIntrinsicField("shows"), false);
     equal(core.isIntrinsicField("status"), false);
     equal(core.isIntrinsicField("labels"), false);
     equal(core.isIntrinsicField("photographer"), false);

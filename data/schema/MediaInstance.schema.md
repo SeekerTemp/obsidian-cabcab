@@ -12,11 +12,17 @@ fields:
       type: object
   - transform:
       type: object
+  - sourceTime:
+      type: number
   - width:
       type: number
   - height:
       type: number
   - created:
+      type: string
+  - useCase:
+      type: string
+  - shows:
       type: string
   - status:
       type: string
@@ -53,9 +59,12 @@ its absence marks everything still untouched.
 | op | string | - | no | yes | - |
 | crop | object | - | no | yes | - |
 | transform | object | - | no | yes | - |
+| sourceTime | number | - | no | yes | - |
 | width | number | - | no | yes | - |
 | height | number | - | no | yes | - |
 | created | string | - | no | yes | - |
+| useCase | string | - | no | yes | - |
+| shows | string | - | no | yes | - |
 | status | string | - | no | yes | - |
 | labels | array | - | no | yes | - |
 
@@ -79,18 +88,28 @@ and `height` are what the file measures. `created` is when the record was
 written, in UTC. `status` is `edited`, `reviewed`, or anything you set by hand,
 and `labels` is a free list that nothing in the plugin reads.
 
+`sourceTime` is seconds into the source video, for a captured frame: the only
+record of where that frame came from, since the filename no longer carries it.
+`useCase` says what the evidence is about, so a backlog can be built by grouping
+on it, and `shows` says in a sentence what the frame actually shows, so a reader
+does not have to open the image to know why it was kept. None of the three are
+read by this plugin's logic; they exist so that Bases, Dataview and anything
+speaking to the vault from outside can answer "what evidence do I have for this
+use case, and where did it come from" without the plugin's help.
+
 **Inherited, and not.**
 A child declares only what is its own. Every other field is resolved by walking
 up the `source:` chain at read time, stopping at the first ancestor that
 declares it — which is the entire reason for tracking lineage: correcting a
 value on the parent corrects it for every descendant.
 
-Eight fields are intrinsic and never inherited, because they describe this file
+Nine fields are intrinsic and never inherited, because they describe this file
 rather than the subject it is of: `media`, `source`, `op`, `crop`, `transform`,
-`width`, `height` and `created`. Inheriting a parent's crop would say this file
-was cut from a rectangle it was not.
+`sourceTime`, `width`, `height` and `created`. Inheriting a parent's crop would
+say this file was cut from a rectangle it was not, and inheriting its
+`sourceTime` would claim a moment it was not cut at.
 
-Everything else inherits — `status`, `labels`, and any field you add to this
+Everything else inherits — `useCase`, `shows`, `status`, `labels`, and any field you add to this
 schema or write into a record by hand. A field present but empty counts as not
 declared, so a record Schema Sync has filled out with blanks still inherits
 through them.
