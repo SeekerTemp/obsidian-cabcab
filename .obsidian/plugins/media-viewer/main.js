@@ -517,6 +517,185 @@ function framePathFor(sourcePath, taken, date) {
  * is.
  */
 
+/* ------------------------------------------------------------------------ *
+ * Crop and transform geometry — MV-CROPMATH.
+ *
+ * The old app's crop bugs all lived here, so this block states the rule rather
+ * than discovering it. Two coordinate spaces, and only two:
+ *
+ *   source    — the decoded file, before anything is done to it.
+ *   oriented  — the source after `rotate → flipH → flipV`, which is the space
+ *               the user sees, the space the selection is drawn in, and the
+ *               space the crop rectangle is stored and recorded in.
+ *
+ * Everything below either moves a rectangle between those two, or moves one
+ * within `oriented` when the transform under it changes. Nothing here knows
+ * about the DOM, the canvas or the vault.
+ * ------------------------------------------------------------------------ */
+
+// A drag can end above and to the left of where it started, which is a
+// perfectly ordinary way to select a region and an entirely negative
+// rectangle. Everything downstream assumes non-negative extents, so this is
+// where that becomes true.
+function normaliseRect(rect) {
+  const source = rect || {};
+  const finite = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  };
+  const x = finite(source.x);
+  const y = finite(source.y);
+  const w = finite(source.w);
+  const h = finite(source.h);
+  return {
+    x: w < 0 ? x + w : x,
+    y: h < 0 ? y + h : y,
+    w: Math.abs(w),
+    h: Math.abs(h),
+  };
+}
+
+// Clamped to the box, not refused by it. A selection that overhangs the edge
+// is a normal thing to draw — the user is saying "out to the corner" — and
+// what they meant is the part that exists.
+function clampRect(rect, width, height) {
+  const box = normaliseRect(rect);
+  const limitX = Math.max(0, Number(width) || 0);
+  const limitY = Math.max(0, Number(height) || 0);
+  const left = Math.min(Math.max(box.x, 0), limitX);
+  const top = Math.min(Math.max(box.y, 0), limitY);
+  const right = Math.min(Math.max(box.x + box.w, 0), limitX);
+  const bottom = Math.min(Math.max(box.y + box.h, 0), limitY);
+  return { x: left, y: top, w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
+}
+
+// Only the four quarter turns exist. Anything else is a caller bug rather than
+// a value to round toward, so it becomes 0 and the image is left alone.
+function normaliseRotation(degrees) {
+  const value = Number(degrees);
+  if (!Number.isFinite(value)) return 0;
+  const wrapped = ((Math.trunc(value) % 360) + 360) % 360;
+  return wrapped === 90 || wrapped === 180 || wrapped === 270 ? wrapped : 0;
+}
+
+function orientedSize(width, height, rotate) {
+  const w = Math.max(0, Number(width) || 0);
+  const h = Math.max(0, Number(height) || 0);
+  const turn = normaliseRotation(rotate);
+  return turn === 90 || turn === 270 ? { width: h, height: w } : { width: w, height: h };
+}
+
+/* The rule, in one function.
+ *
+ * `scale` is how many CSS pixels one oriented-source pixel occupies — the zoom,
+ * multiplied by the proxy factor when the image is too large to display at
+ * full size. Dividing by it is the whole mapping; the rest is the rounding
+ * decision the spec makes and the clamp that follows it.
+ *
+ * Floor the top-left and ceil the bottom-right, so the crop always contains
+ * every pixel the user could see inside their selection. Rounding to nearest
+ * would sometimes shave a row or column off an edge the user deliberately put
+ * their pointer past, and "sometimes" is the worst possible frequency for that.
+ *
+ * Returns null rather than a degenerate rectangle when there is nothing to cut:
+ * a selection off the image entirely, or one thinner than a source pixel.
+ */
+function cropFromSelection(selection, scale, orientedWidth, orientedHeight) {
+  const factor = Number(scale);
+  const z = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  const box = normaliseRect(selection);
+  const rect = clampRect(
+    {
+      x: Math.floor(box.x / z),
+      y: Math.floor(box.y / z),
+      w: Math.ceil((box.x + box.w) / z) - Math.floor(box.x / z),
+      h: Math.ceil((box.y + box.h) / z) - Math.floor(box.y / z),
+    },
+    orientedWidth,
+    orientedHeight
+  );
+  if (rect.w < 1 || rect.h < 1) return null;
+  return rect;
+}
+
+// The inverse, for drawing a stored crop back onto the display. Not the exact
+// inverse of cropFromSelection — that one deliberately loses the sub-pixel
+// edges — but the rectangle the overlay should show for a crop that is set.
+function selectionFromCrop(rect, scale) {
+  const factor = Number(scale);
+  const z = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  const box = normaliseRect(rect);
+  return { x: box.x * z, y: box.y * z, w: box.w * z, h: box.h * z };
+}
+
+/* A rectangle in a width x height box, after the box is turned `degrees`
+ * clockwise. The box's own dimensions swap on a quarter turn, which is why
+ * both are taken: the new x depends on the old height.
+ */
+function rotateRect(rect, width, height, degrees) {
+  const box = normaliseRect(rect);
+  const w = Math.max(0, Number(width) || 0);
+  const h = Math.max(0, Number(height) || 0);
+  switch (normaliseRotation(degrees)) {
+    case 90:
+      return { x: h - box.y - box.h, y: box.x, w: box.h, h: box.w };
+    case 180:
+      return { x: w - box.x - box.w, y: h - box.y - box.h, w: box.w, h: box.h };
+    case 270:
+      return { x: box.y, y: w - box.x - box.w, w: box.h, h: box.w };
+    default:
+      return box;
+  }
+}
+
+function flipRect(rect, width, height, axis) {
+  const box = normaliseRect(rect);
+  if (axis === "h") return { x: Math.max(0, Number(width) || 0) - box.x - box.w, y: box.y, w: box.w, h: box.h };
+  if (axis === "v") return { x: box.x, y: Math.max(0, Number(height) || 0) - box.y - box.h, w: box.w, h: box.h };
+  return box;
+}
+
+/* Where a stored crop moves to when the rotation changes under it.
+ *
+ * The crop is stored *after* the flips, so a flip conjugates the rotation: with
+ * exactly one axis mirrored, turning the image clockwise turns the stored
+ * rectangle anticlockwise. With both axes mirrored — which is a half turn
+ * wearing a different name — or neither, the conjugation cancels and the
+ * rectangle turns the same way the image does.
+ *
+ * Getting this wrong is invisible until someone rotates a cropped image and
+ * finds a different part of it selected, which is exactly the class of bug the
+ * fixed pipeline exists to make impossible.
+ */
+function cropAfterRotation(rect, width, height, delta, flipH, flipV) {
+  const mirrored = Boolean(flipH) !== Boolean(flipV);
+  const turn = normaliseRotation(delta);
+  return rotateRect(rect, width, height, mirrored ? normaliseRotation(-turn) : turn);
+}
+
+// Toggling a flip mirrors the stored rectangle in oriented space, with no
+// conjugation to think about: the flips commute with each other, so adding one
+// is just that one mirror.
+function cropAfterFlip(rect, width, height, axis) {
+  return flipRect(rect, width, height, axis);
+}
+
+/* An oriented-space rectangle expressed in source pixels.
+ *
+ * Nothing in the pipeline needs this — the render works forwards, from source
+ * to output. It exists so the tests can ask the only question that actually
+ * matters about a carried crop: does it still name the same pixels of the file
+ * on disk? Undo the flips in oriented space, then undo the turn.
+ */
+function sourceRectFor(rect, sourceWidth, sourceHeight, rotate, flipH, flipV) {
+  const turn = normaliseRotation(rotate);
+  const size = orientedSize(sourceWidth, sourceHeight, turn);
+  let box = normaliseRect(rect);
+  if (flipV) box = flipRect(box, size.width, size.height, "v");
+  if (flipH) box = flipRect(box, size.width, size.height, "h");
+  return rotateRect(box, size.width, size.height, normaliseRotation(-turn));
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -700,6 +879,17 @@ const core = {
   clampPan,
   panAfterZoom,
   siblingPath,
+  normaliseRect,
+  clampRect,
+  normaliseRotation,
+  orientedSize,
+  cropFromSelection,
+  selectionFromCrop,
+  rotateRect,
+  flipRect,
+  cropAfterRotation,
+  cropAfterFlip,
+  sourceRectFor,
   ZOOM_WHEEL_RATIO,
   ZOOM_KEY_RATIO,
   VIDEO_SEEK_SECONDS,

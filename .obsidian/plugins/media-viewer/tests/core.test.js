@@ -368,4 +368,358 @@ group("frame-capture paths", () => {
  * build and no collision to sequence. What replaces these tests is MV-STORE's
  * own: that a note is still found after being moved and renamed by hand. */
 
+/* ------------------------------------------------------------------------ *
+ * MV-CROPMATH
+ *
+ * Written from the design spec rather than from the implementation, which is
+ * the whole reason this task exists: divide by the display scale, floor the
+ * top-left, ceil the bottom-right, clamp to the image, refuse anything that
+ * resolves to less than 1x1. Expanding outward never discards a pixel the user
+ * could see inside their selection; rounding to nearest sometimes does.
+ * ------------------------------------------------------------------------ */
+
+group("rectangles", () => {
+  test("a drag up and to the left normalises to a positive rectangle", () => {
+    deepEqual(core.normaliseRect({ x: 100, y: 80, w: -40, h: -30 }), { x: 60, y: 50, w: 40, h: 30 });
+  });
+
+  test("a rectangle already positive is unchanged", () => {
+    deepEqual(core.normaliseRect({ x: 5, y: 6, w: 7, h: 8 }), { x: 5, y: 6, w: 7, h: 8 });
+  });
+
+  test("nonsense coordinates collapse to an empty rectangle at the origin", () => {
+    deepEqual(core.normaliseRect(null), { x: 0, y: 0, w: 0, h: 0 });
+    deepEqual(core.normaliseRect({ x: NaN, y: 3, w: "x", h: 2 }), { x: 0, y: 3, w: 0, h: 2 });
+  });
+
+  test("clamping keeps a rectangle inside the image", () => {
+    deepEqual(core.clampRect({ x: -10, y: -10, w: 40, h: 40 }, 100, 50), { x: 0, y: 0, w: 30, h: 30 });
+    deepEqual(core.clampRect({ x: 90, y: 40, w: 40, h: 40 }, 100, 50), { x: 90, y: 40, w: 10, h: 10 });
+  });
+
+  test("a rectangle entirely outside the image clamps to nothing", () => {
+    deepEqual(core.clampRect({ x: 200, y: 0, w: 10, h: 10 }, 100, 50), { x: 100, y: 0, w: 0, h: 10 });
+  });
+});
+
+group("rotation bookkeeping", () => {
+  test("rotations normalise into the four quarter turns", () => {
+    equal(core.normaliseRotation(0), 0);
+    equal(core.normaliseRotation(90), 90);
+    equal(core.normaliseRotation(-90), 270);
+    equal(core.normaliseRotation(450), 90);
+    equal(core.normaliseRotation(-450), 270);
+    equal(core.normaliseRotation("180"), 180);
+    equal(core.normaliseRotation(37), 0, "anything not a quarter turn is refused, not rounded");
+  });
+
+  test("a quarter turn swaps the oriented dimensions", () => {
+    deepEqual(core.orientedSize(1000, 400, 0), { width: 1000, height: 400 });
+    deepEqual(core.orientedSize(1000, 400, 90), { width: 400, height: 1000 });
+    deepEqual(core.orientedSize(1000, 400, 180), { width: 1000, height: 400 });
+    deepEqual(core.orientedSize(1000, 400, 270), { width: 400, height: 1000 });
+  });
+});
+
+group("crop mapping", () => {
+  test("at 100% the selection is the crop", () => {
+    deepEqual(core.cropFromSelection({ x: 120, y: 40, w: 800, h: 600 }, 1, 1000, 700), {
+      x: 120,
+      y: 40,
+      w: 800,
+      h: 600,
+    });
+  });
+
+  test("the top-left floors and the bottom-right ceils", () => {
+    // At 3x, 10..37 CSS px is 3.333..12.333 source px. Floor 3, ceil 13.
+    deepEqual(core.cropFromSelection({ x: 10, y: 10, w: 27, h: 27 }, 3, 1000, 1000), {
+      x: 3,
+      y: 3,
+      w: 10,
+      h: 10,
+    });
+  });
+
+  test("expanding outward never loses a visible pixel", () => {
+    // Rounding to nearest would give x=4 here and drop the leftmost column the
+    // user could see inside their selection.
+    const rect = core.cropFromSelection({ x: 11, y: 11, w: 26, h: 26 }, 3, 1000, 1000);
+    deepEqual(rect, { x: 3, y: 3, w: 10, h: 10 });
+    ok(rect.x <= 11 / 3, "left edge is at or outside the selection");
+    ok(rect.x + rect.w >= 37 / 3, "right edge is at or outside the selection");
+  });
+
+  test("a zoomed-out selection still maps to full-resolution pixels", () => {
+    deepEqual(core.cropFromSelection({ x: 50, y: 25, w: 100, h: 50 }, 0.25, 4000, 3000), {
+      x: 200,
+      y: 100,
+      w: 400,
+      h: 200,
+    });
+  });
+
+  test("the rule holds across a spread of zoom levels", () => {
+    for (const zoom of [0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4.5, 8, 16, 32]) {
+      const selection = { x: 17.3, y: 9.1, w: 61.7, h: 44.9 };
+      const rect = core.cropFromSelection(selection, zoom, 5000, 5000);
+      equal(rect.x, Math.floor(selection.x / zoom), "left at zoom " + zoom);
+      equal(rect.y, Math.floor(selection.y / zoom), "top at zoom " + zoom);
+      equal(rect.x + rect.w, Math.ceil((selection.x + selection.w) / zoom), "right at zoom " + zoom);
+      equal(rect.y + rect.h, Math.ceil((selection.y + selection.h) / zoom), "bottom at zoom " + zoom);
+    }
+  });
+
+  test("a selection overhanging the edge is clamped, not refused", () => {
+    deepEqual(core.cropFromSelection({ x: -30, y: -30, w: 200, h: 200 }, 1, 100, 80), {
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 80,
+    });
+  });
+
+  test("a selection overhanging one edge keeps the part that is on the image", () => {
+    deepEqual(core.cropFromSelection({ x: 80, y: 60, w: 100, h: 100 }, 1, 100, 80), {
+      x: 80,
+      y: 60,
+      w: 20,
+      h: 20,
+    });
+  });
+
+  test("a selection overhanging at zoom still lands on whole source pixels", () => {
+    deepEqual(core.cropFromSelection({ x: -12.5, y: 197, w: 60, h: 40 }, 2, 100, 100), {
+      x: 0,
+      y: 98,
+      w: 24,
+      h: 2,
+    });
+  });
+
+  test("a selection entirely off the image is refused", () => {
+    equal(core.cropFromSelection({ x: 500, y: 0, w: 40, h: 40 }, 1, 100, 80), null);
+    equal(core.cropFromSelection({ x: -500, y: 0, w: 40, h: 40 }, 1, 100, 80), null);
+  });
+
+  test("a selection resolving to less than 1x1 is refused", () => {
+    equal(core.cropFromSelection({ x: 0, y: 0, w: 0, h: 0 }, 1, 100, 80), null);
+    // A whole source pixel wide, but zero high: still nothing to cut.
+    equal(core.cropFromSelection({ x: 10, y: 10, w: 40, h: 0 }, 1, 100, 80), null);
+  });
+
+  test("a hair of a selection still rounds out to a whole pixel", () => {
+    deepEqual(core.cropFromSelection({ x: 10.2, y: 10.2, w: 0.4, h: 0.4 }, 1, 100, 80), {
+      x: 10,
+      y: 10,
+      w: 1,
+      h: 1,
+    });
+  });
+
+  test("a backwards drag maps the same as the forwards one", () => {
+    deepEqual(
+      core.cropFromSelection({ x: 120, y: 90, w: -60, h: -40 }, 2, 200, 200),
+      core.cropFromSelection({ x: 60, y: 50, w: 60, h: 40 }, 2, 200, 200)
+    );
+  });
+
+  test("a missing or absurd display scale is treated as 100%", () => {
+    deepEqual(core.cropFromSelection({ x: 4, y: 4, w: 8, h: 8 }, 0, 100, 100), {
+      x: 4,
+      y: 4,
+      w: 8,
+      h: 8,
+    });
+    deepEqual(core.cropFromSelection({ x: 4, y: 4, w: 8, h: 8 }, NaN, 100, 100), {
+      x: 4,
+      y: 4,
+      w: 8,
+      h: 8,
+    });
+  });
+
+  test("a crop maps back to the selection that would draw it", () => {
+    deepEqual(core.selectionFromCrop({ x: 10, y: 20, w: 30, h: 40 }, 2), {
+      x: 20,
+      y: 40,
+      w: 60,
+      h: 80,
+    });
+  });
+});
+
+group("carrying a crop through a rotation", () => {
+  // The image is 1000x400 in oriented space; the crop is the left-hand strip.
+  const strip = { x: 0, y: 0, w: 100, h: 400 };
+
+  test("a quarter turn clockwise moves the strip to the top", () => {
+    deepEqual(core.rotateRect(strip, 1000, 400, 90), { x: 0, y: 0, w: 400, h: 100 });
+  });
+
+  test("a half turn moves the strip to the right", () => {
+    deepEqual(core.rotateRect(strip, 1000, 400, 180), { x: 900, y: 0, w: 100, h: 400 });
+  });
+
+  test("a quarter turn anticlockwise moves the strip to the bottom", () => {
+    deepEqual(core.rotateRect(strip, 1000, 400, 270), { x: 0, y: 900, w: 400, h: 100 });
+  });
+
+  test("four quarter turns come back to where they started", () => {
+    let rect = { x: 37, y: 11, w: 120, h: 63 };
+    let width = 1000;
+    let height = 400;
+    for (let turn = 0; turn < 4; turn += 1) {
+      rect = core.rotateRect(rect, width, height, 90);
+      const size = core.orientedSize(width, height, 90);
+      width = size.width;
+      height = size.height;
+    }
+    deepEqual(rect, { x: 37, y: 11, w: 120, h: 63 });
+    equal(width, 1000);
+    equal(height, 400);
+  });
+
+  test("the same region stays selected when rotation changes", () => {
+    deepEqual(core.cropAfterRotation(strip, 1000, 400, 90, false, false), {
+      x: 0,
+      y: 0,
+      w: 400,
+      h: 100,
+    });
+  });
+
+  test("with one flip set, the stored rect turns the other way", () => {
+    // The crop lives after the flip, so the flip conjugates the rotation:
+    // turning the image clockwise turns the stored rectangle anticlockwise.
+    deepEqual(core.cropAfterRotation(strip, 1000, 400, 90, true, false), {
+      x: 0,
+      y: 900,
+      w: 400,
+      h: 100,
+    });
+    deepEqual(core.cropAfterRotation(strip, 1000, 400, 90, false, true), {
+      x: 0,
+      y: 900,
+      w: 400,
+      h: 100,
+    });
+  });
+
+  test("with both flips set, the conjugation cancels out", () => {
+    deepEqual(core.cropAfterRotation(strip, 1000, 400, 90, true, true), {
+      x: 0,
+      y: 0,
+      w: 400,
+      h: 100,
+    });
+  });
+
+  test("every rotation and flip combination keeps the same source pixels", () => {
+    /* The check that matters, stated in the space the answer lives in: take a
+       crop, change the rotation under it, and confirm it still names the same
+       rectangle of the *source* image. Every other test in this group is one
+       instance of this one. */
+    const sourceWidth = 1000;
+    const sourceHeight = 400;
+    const rect = { x: 120, y: 40, w: 300, h: 200 };
+    let checked = 0;
+    for (const flipH of [false, true]) {
+      for (const flipV of [false, true]) {
+        for (const from of [0, 90, 180, 270]) {
+          for (const to of [0, 90, 180, 270]) {
+            const before = core.orientedSize(sourceWidth, sourceHeight, from);
+            const start = core.clampRect(rect, before.width, before.height);
+            if (start.w < 1 || start.h < 1) continue;
+            const moved = core.cropAfterRotation(
+              start,
+              before.width,
+              before.height,
+              to - from,
+              flipH,
+              flipV
+            );
+            const wanted = core.sourceRectFor(start, sourceWidth, sourceHeight, from, flipH, flipV);
+            const got = core.sourceRectFor(moved, sourceWidth, sourceHeight, to, flipH, flipV);
+            deepEqual(got, wanted, from + "->" + to + " flipH=" + flipH + " flipV=" + flipV);
+            checked += 1;
+          }
+        }
+      }
+    }
+    equal(checked, 64, "every combination was actually reached");
+  });
+
+  test("toggling a flip mirrors the rect in oriented space", () => {
+    deepEqual(core.cropAfterFlip(strip, 1000, 400, "h"), { x: 900, y: 0, w: 100, h: 400 });
+    deepEqual(core.cropAfterFlip(strip, 1000, 400, "v"), { x: 0, y: 0, w: 100, h: 400 });
+    deepEqual(core.cropAfterFlip({ x: 0, y: 0, w: 100, h: 40 }, 1000, 400, "v"), {
+      x: 0,
+      y: 360,
+      w: 100,
+      h: 40,
+    });
+  });
+
+  test("toggling a flip twice is the identity", () => {
+    const rect = { x: 37, y: 11, w: 120, h: 63 };
+    deepEqual(core.cropAfterFlip(core.cropAfterFlip(rect, 1000, 400, "h"), 1000, 400, "h"), rect);
+    deepEqual(core.cropAfterFlip(core.cropAfterFlip(rect, 1000, 400, "v"), 1000, 400, "v"), rect);
+  });
+
+  test("a flip toggle keeps the same source pixels in every rotation", () => {
+    const rect = { x: 120, y: 40, w: 300, h: 200 };
+    for (const rotate of [0, 90, 180, 270]) {
+      for (const axis of ["h", "v"]) {
+        for (const flipH of [false, true]) {
+          for (const flipV of [false, true]) {
+            const size = core.orientedSize(1000, 400, rotate);
+            const start = core.clampRect(rect, size.width, size.height);
+            if (start.w < 1 || start.h < 1) continue;
+            const nextH = axis === "h" ? !flipH : flipH;
+            const nextV = axis === "v" ? !flipV : flipV;
+            const moved = core.cropAfterFlip(start, size.width, size.height, axis);
+            deepEqual(
+              core.sourceRectFor(moved, 1000, 400, rotate, nextH, nextV),
+              core.sourceRectFor(start, 1000, 400, rotate, flipH, flipV),
+              "rotate=" + rotate + " axis=" + axis + " " + flipH + "/" + flipV
+            );
+          }
+        }
+      }
+    }
+  });
+});
+
+group("oriented and source space", () => {
+  test("with no transform the two spaces are the same", () => {
+    deepEqual(core.sourceRectFor({ x: 10, y: 20, w: 30, h: 40 }, 1000, 400, 0, false, false), {
+      x: 10,
+      y: 20,
+      w: 30,
+      h: 40,
+    });
+  });
+
+  test("a quarter turn maps the oriented rect back onto the source", () => {
+    // Oriented space is 400x1000 after the turn; the top strip there is the
+    // left strip of the source.
+    deepEqual(core.sourceRectFor({ x: 0, y: 0, w: 400, h: 100 }, 1000, 400, 90, false, false), {
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 400,
+    });
+  });
+
+  test("a horizontal flip mirrors the rect back onto the source", () => {
+    deepEqual(core.sourceRectFor({ x: 0, y: 0, w: 100, h: 400 }, 1000, 400, 0, true, false), {
+      x: 900,
+      y: 0,
+      w: 100,
+      h: 400,
+    });
+  });
+});
+
 report("core");
