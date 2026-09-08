@@ -696,6 +696,188 @@ function sourceRectFor(rect, sourceWidth, sourceHeight, rotate, flipH, flipV) {
   return rotateRect(box, size.width, size.height, normaliseRotation(-turn));
 }
 
+/* ------------------------------------------------------------------------ *
+ * The transform pipeline — MV-SESSION.
+ *
+ *   decode → rotate → flipH → flipV → crop → resize → encode
+ *
+ * Fixed order, always. Without one, crop-then-rotate and rotate-then-crop
+ * silently disagree, undo stops being definable, and the provenance written
+ * into the lineage note stops describing what actually happened.
+ *
+ * The state below is the whole of an unsaved edit. It is plain data — no
+ * canvas, no image, no `this` — so a session can be snapshotted for undo by
+ * copying it, and so the maths that turns it into a draw call is testable
+ * without a browser.
+ * ------------------------------------------------------------------------ */
+
+// How far back undo reaches. Deep enough that nobody arrives at the end of it
+// by working, shallow enough that a long session is not also a memory leak:
+// each entry is five fields of plain data, so the cost is the cap times almost
+// nothing.
+const EDIT_HISTORY_LIMIT = 64;
+
+function emptyEditState() {
+  return {
+    rotate: 0,
+    flipH: false,
+    flipV: false,
+    // null means "the whole oriented image", which is a different thing from a
+    // crop that happens to cover it: clearing a crop and drawing one to the
+    // edges should not be the same state, because a later rotation moves one
+    // and leaves the other alone.
+    crop: null,
+    // null, { scale }, or { width, height }. The two forms are not
+    // interchangeable — see resizedSize.
+    resize: null,
+  };
+}
+
+function normaliseEditState(state) {
+  const source = state || {};
+  const next = emptyEditState();
+  next.rotate = normaliseRotation(source.rotate);
+  next.flipH = Boolean(source.flipH);
+  next.flipV = Boolean(source.flipV);
+  if (source.crop) {
+    const rect = normaliseRect(source.crop);
+    next.crop = { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+  }
+  next.resize = normaliseResize(source.resize);
+  return next;
+}
+
+/* Two shapes, because they behave differently and pretending otherwise is how
+ * a resize survives a crop it no longer describes:
+ *
+ *   { scale: 0.5 }         — relative, so it still means something after the
+ *                            crop changes underneath it.
+ *   { width, height }      — absolute, and only meaningful for the crop it was
+ *                            typed against.
+ */
+function normaliseResize(resize) {
+  if (!resize) return null;
+  const scale = Number(resize.scale);
+  if (Number.isFinite(scale) && scale > 0) {
+    return scale === 1 ? null : { scale };
+  }
+  const width = Math.round(Number(resize.width));
+  const height = Math.round(Number(resize.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (width < 1 || height < 1) return null;
+  return { width, height };
+}
+
+// The crop, resolved. A null crop is the whole oriented image; a crop that has
+// been clamped out of existence — by a rotation that shrank the axis it sat on
+// — falls back to the same thing rather than producing a zero-pixel canvas.
+function effectiveCrop(state, sourceWidth, sourceHeight) {
+  const size = orientedSize(sourceWidth, sourceHeight, state && state.rotate);
+  const full = { x: 0, y: 0, w: size.width, h: size.height };
+  if (!state || !state.crop) return full;
+  const rect = clampRect(state.crop, size.width, size.height);
+  return rect.w >= 1 && rect.h >= 1 ? rect : full;
+}
+
+// What the saved file will measure. Rounded, and never below one pixel: a
+// scale small enough to round an axis to zero would encode nothing.
+function resizedSize(cropWidth, cropHeight, resize) {
+  const w = Math.max(1, Math.round(Number(cropWidth) || 0));
+  const h = Math.max(1, Math.round(Number(cropHeight) || 0));
+  const spec = normaliseResize(resize);
+  if (!spec) return { width: w, height: h };
+  if (spec.scale !== undefined) {
+    return {
+      width: Math.max(1, Math.round(w * spec.scale)),
+      height: Math.max(1, Math.round(h * spec.scale)),
+    };
+  }
+  return { width: spec.width, height: spec.height };
+}
+
+function outputSize(state, sourceWidth, sourceHeight) {
+  const crop = effectiveCrop(state, sourceWidth, sourceHeight);
+  return resizedSize(crop.w, crop.h, state && state.resize);
+}
+
+/* Affine matrices, in the order canvas states them: [a, b, c, d, e, f], where
+ *   x' = a*x + c*y + e
+ *   y' = b*x + d*y + f
+ * so that a plan can be handed straight to setTransform.
+ */
+const IDENTITY_MATRIX = [1, 0, 0, 1, 0, 0];
+
+// m after n: the point goes through n first. Written this way round because
+// that is how the pipeline reads — source, then orient, then crop and resize.
+function multiplyMatrix(m, n) {
+  return [
+    m[0] * n[0] + m[2] * n[1],
+    m[1] * n[0] + m[3] * n[1],
+    m[0] * n[2] + m[2] * n[3],
+    m[1] * n[2] + m[3] * n[3],
+    m[0] * n[4] + m[2] * n[5] + m[4],
+    m[1] * n[4] + m[3] * n[5] + m[5],
+  ];
+}
+
+function applyMatrix(m, x, y) {
+  return { x: m[0] * x + m[2] * y + m[4], y: m[1] * x + m[3] * y + m[5] };
+}
+
+// Source space to oriented space: the turn, then the two flips, each of which
+// maps the image box onto the image box rather than off the canvas.
+function orientMatrix(rotate, flipH, flipV, sourceWidth, sourceHeight) {
+  const w = Math.max(0, Number(sourceWidth) || 0);
+  const h = Math.max(0, Number(sourceHeight) || 0);
+  const turn = normaliseRotation(rotate);
+  let m;
+  if (turn === 90) m = [0, 1, -1, 0, h, 0];
+  else if (turn === 180) m = [-1, 0, 0, -1, w, h];
+  else if (turn === 270) m = [0, -1, 1, 0, 0, w];
+  else m = IDENTITY_MATRIX.slice();
+  const size = orientedSize(w, h, turn);
+  if (flipH) m = multiplyMatrix([-1, 0, 0, 1, size.width, 0], m);
+  if (flipV) m = multiplyMatrix([1, 0, 0, -1, 0, size.height], m);
+  return m;
+}
+
+/* Everything the renderer needs, computed without touching a canvas.
+ *
+ * One matrix rather than an intermediate bitmap: rotating into a full-size
+ * canvas and then cropping out of it would cost two allocations of the source,
+ * which at the 40-megapixel ceiling is most of a gigabyte for an operation
+ * that is a change of coordinates.
+ */
+function renderPlan(state, sourceWidth, sourceHeight) {
+  const shape = normaliseEditState(state);
+  const oriented = orientedSize(sourceWidth, sourceHeight, shape.rotate);
+  const crop = effectiveCrop(shape, sourceWidth, sourceHeight);
+  const size = resizedSize(crop.w, crop.h, shape.resize);
+  const scaleX = crop.w > 0 ? size.width / crop.w : 1;
+  const scaleY = crop.h > 0 ? size.height / crop.h : 1;
+  const place = [scaleX, 0, 0, scaleY, -scaleX * crop.x, -scaleY * crop.y];
+  return {
+    width: size.width,
+    height: size.height,
+    oriented,
+    crop,
+    scale: { x: scaleX, y: scaleY },
+    matrix: multiplyMatrix(place, orientMatrix(shape.rotate, shape.flipH, shape.flipV, sourceWidth, sourceHeight)),
+  };
+}
+
+// Whether a state would change the file at all. A save of an untouched image
+// is a copy, which is a thing the user can ask for but not a thing to do by
+// accident.
+function isIdentityEdit(state, sourceWidth, sourceHeight) {
+  const shape = normaliseEditState(state);
+  if (shape.rotate !== 0 || shape.flipH || shape.flipV) return false;
+  if (shape.resize) return false;
+  const size = orientedSize(sourceWidth, sourceHeight, 0);
+  const crop = effectiveCrop(shape, sourceWidth, sourceHeight);
+  return crop.x === 0 && crop.y === 0 && crop.w === size.width && crop.h === size.height;
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -890,6 +1072,19 @@ const core = {
   cropAfterRotation,
   cropAfterFlip,
   sourceRectFor,
+  emptyEditState,
+  normaliseEditState,
+  normaliseResize,
+  effectiveCrop,
+  resizedSize,
+  outputSize,
+  IDENTITY_MATRIX,
+  multiplyMatrix,
+  applyMatrix,
+  orientMatrix,
+  renderPlan,
+  isIdentityEdit,
+  EDIT_HISTORY_LIMIT,
   ZOOM_WHEEL_RATIO,
   ZOOM_KEY_RATIO,
   VIDEO_SEEK_SECONDS,
@@ -1164,6 +1359,238 @@ class MediaIndex {
   // the path selection should fall back to for a delete, absent otherwise.
   emit(reason, path, detail) {
     if (typeof this.onChange === "function") this.onChange(reason, path, detail);
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * EditSession — the unsaved state of one edit.
+ *
+ * Non-destructive: the source file is never written to, and every operation
+ * amounts to editing the plain-data state that `renderPlan` turns into a draw
+ * call. That is what makes undo a stack of snapshots rather than a stack of
+ * inverse operations — the second of which is where an editor accumulates the
+ * bugs that only appear four steps back.
+ *
+ * The session holds the decoded source at full resolution. A display proxy, if
+ * the viewer is using one, belongs to the viewer: the maths here runs in full
+ * oriented-source coordinates so that a crop of a large image is still cut at
+ * full resolution.
+ * ------------------------------------------------------------------------ */
+
+class EditSession {
+  /* `source` is { path, image, width, height }: the decoded bitmap and the
+     dimensions to trust. The dimensions are taken rather than read off the
+     element because an <img> that failed to decode still reports zeroes, and a
+     session built on zeroes fails later and further away. */
+  constructor(source) {
+    const shape = source || {};
+    this.path = shape.path || null;
+    this.image = shape.image || null;
+    this.sourceWidth = Math.max(0, Math.floor(Number(shape.width) || 0));
+    this.sourceHeight = Math.max(0, Math.floor(Number(shape.height) || 0));
+    this.state = emptyEditState();
+    this.past = [];
+    this.future = [];
+    // Set by the pane. Called after every accepted change, including undo and
+    // redo, so there is one place the UI has to re-read from.
+    this.onChange = null;
+  }
+
+  get orientedSize() {
+    return orientedSize(this.sourceWidth, this.sourceHeight, this.state.rotate);
+  }
+
+  get crop() {
+    return effectiveCrop(this.state, this.sourceWidth, this.sourceHeight);
+  }
+
+  get outputSize() {
+    return outputSize(this.state, this.sourceWidth, this.sourceHeight);
+  }
+
+  get canUndo() {
+    return this.past.length > 0;
+  }
+
+  get canRedo() {
+    return this.future.length > 0;
+  }
+
+  // Whether saving would produce anything but a copy. A session the user has
+  // opened and not touched is not an edit, and the save button says so.
+  get dirty() {
+    return !isIdentityEdit(this.state, this.sourceWidth, this.sourceHeight);
+  }
+
+  plan() {
+    return renderPlan(this.state, this.sourceWidth, this.sourceHeight);
+  }
+
+  /* Every state change funnels through here, so undo has exactly one thing to
+     record and the no-op case is rejected in one place. A redo future is
+     dropped on any new edit, which is the behaviour every editor has: the
+     branch you did not take stops existing the moment you take another. */
+  commit(next) {
+    const shape = normaliseEditState(next);
+    if (JSON.stringify(shape) === JSON.stringify(this.state)) return false;
+    this.past.push(this.state);
+    if (this.past.length > EDIT_HISTORY_LIMIT) this.past.shift();
+    this.future.length = 0;
+    this.state = shape;
+    this.notify();
+    return true;
+  }
+
+  notify() {
+    if (typeof this.onChange === "function") this.onChange(this);
+  }
+
+  /* Rotation, with the crop carried.
+   *
+   * `cropAfterRotation` is the part that keeps the same region selected. An
+   * absolute resize has its axes swapped on a quarter turn for the same
+   * reason: 800x600 typed against a landscape crop means 600x800 once that
+   * crop stands on its end. */
+  rotateBy(delta) {
+    const turn = normaliseRotation(delta);
+    if (turn === 0) return false;
+    const state = this.state;
+    const size = this.orientedSize;
+    const next = Object.assign({}, state, { rotate: normaliseRotation(state.rotate + turn) });
+    if (state.crop) {
+      next.crop = cropAfterRotation(state.crop, size.width, size.height, turn, state.flipH, state.flipV);
+    }
+    if (state.resize && state.resize.width !== undefined && (turn === 90 || turn === 270)) {
+      next.resize = { width: state.resize.height, height: state.resize.width };
+    }
+    return this.commit(next);
+  }
+
+  setRotation(degrees) {
+    return this.rotateBy(normaliseRotation(degrees) - this.state.rotate);
+  }
+
+  // The flips commute with each other, so toggling one is a plain mirror of
+  // the stored rectangle in oriented space — no conjugation to think about.
+  toggleFlip(axis) {
+    if (axis !== "h" && axis !== "v") return false;
+    const state = this.state;
+    const size = this.orientedSize;
+    const next = Object.assign({}, state);
+    if (axis === "h") next.flipH = !state.flipH;
+    else next.flipV = !state.flipV;
+    if (state.crop) next.crop = cropAfterFlip(state.crop, size.width, size.height, axis);
+    return this.commit(next);
+  }
+
+  /* A crop in oriented-source pixels — what `cropFromSelection` returns.
+   *
+   * Setting one drops an absolute resize, because "800 x 600" was typed
+   * against the crop it replaced and means nothing against this one. A scale
+   * factor survives, because it means the same thing whatever it is applied
+   * to. */
+  setCrop(rect) {
+    const size = this.orientedSize;
+    const crop = rect ? clampRect(rect, size.width, size.height) : null;
+    if (crop && (crop.w < 1 || crop.h < 1)) return false;
+    const next = Object.assign({}, this.state, {
+      crop: crop ? { x: crop.x, y: crop.y, w: crop.w, h: crop.h } : null,
+    });
+    if (next.resize && next.resize.width !== undefined) next.resize = null;
+    return this.commit(next);
+  }
+
+  clearCrop() {
+    return this.setCrop(null);
+  }
+
+  setResize(width, height) {
+    return this.commit(Object.assign({}, this.state, { resize: { width, height } }));
+  }
+
+  setScale(scale) {
+    return this.commit(Object.assign({}, this.state, { resize: { scale } }));
+  }
+
+  clearResize() {
+    return this.commit(Object.assign({}, this.state, { resize: null }));
+  }
+
+  undo() {
+    if (!this.past.length) return false;
+    this.future.push(this.state);
+    this.state = this.past.pop();
+    this.notify();
+    return true;
+  }
+
+  redo() {
+    if (!this.future.length) return false;
+    this.past.push(this.state);
+    this.state = this.future.pop();
+    this.notify();
+    return true;
+  }
+
+  // One undoable step back to nothing, rather than a wipe: someone who resets
+  // by accident has lost their work otherwise.
+  reset() {
+    return this.commit(emptyEditState());
+  }
+
+  /* Render into a canvas.
+   *
+   * One drawImage under one matrix. The alternative — draw the rotation into a
+   * full-size intermediate, then crop out of it — allocates the source twice,
+   * which at the decode ceiling is most of a gigabyte to express a change of
+   * coordinates.
+   *
+   * The transform is reset afterwards so the caller gets a canvas in a known
+   * state, which matters because MV-SAVE draws nothing else onto it but a
+   * later task might. */
+  renderTo(canvas) {
+    if (!canvas) throw new Error("EditSession.renderTo needs a canvas");
+    if (!this.image) throw new Error("EditSession has no decoded source to draw");
+    const plan = this.plan();
+    canvas.width = plan.width;
+    canvas.height = plan.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("EditSession could not get a 2D context");
+    if ("imageSmoothingEnabled" in context) {
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+    }
+    context.setTransform(plan.matrix[0], plan.matrix[1], plan.matrix[2], plan.matrix[3], plan.matrix[4], plan.matrix[5]);
+    // The explicit destination size rather than the three-argument form: a
+    // proxy handed here by mistake would silently render at the wrong scale
+    // otherwise, and this is the one place that would not be visible.
+    context.drawImage(this.image, 0, 0, this.sourceWidth, this.sourceHeight);
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    return canvas;
+  }
+
+  render() {
+    if (typeof document === "undefined" || !document.createElement) {
+      throw new Error("EditSession.render needs a document");
+    }
+    return this.renderTo(document.createElement("canvas"));
+  }
+
+  /* What the lineage note records. Oriented-source pixels for the crop, the
+     three transform flags, and the output dimensions — enough to reproduce the
+     derivation rather than merely describe it. */
+  describe() {
+    const size = this.outputSize;
+    const crop = this.crop;
+    const oriented = this.orientedSize;
+    const whole =
+      crop.x === 0 && crop.y === 0 && crop.w === oriented.width && crop.h === oriented.height;
+    return {
+      crop: whole ? null : { x: crop.x, y: crop.y, w: crop.w, h: crop.h },
+      transform: { rotate: this.state.rotate, flipH: this.state.flipH, flipV: this.state.flipV },
+      width: size.width,
+      height: size.height,
+    };
   }
 }
 
@@ -2838,5 +3265,6 @@ module.exports.core = core;
 module.exports.MediaIndex = MediaIndex;
 // Exported so the grid's DOM logic — tile reconciliation, lazy loading and
 // thumbnail eviction — can be driven against a stub document.
+module.exports.EditSession = EditSession;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;

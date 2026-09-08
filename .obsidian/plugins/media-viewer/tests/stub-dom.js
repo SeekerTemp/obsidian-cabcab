@@ -81,6 +81,15 @@ class StubElement {
       const canvas = this;
       this.context = {
         canvas,
+        transforms: [],
+        setTransform(a, b, c, d, e, f) {
+          this.transforms.push([a, b, c, d, e, f]);
+        },
+        resetTransform() {
+          this.transforms.push([1, 0, 0, 1, 0, 0]);
+        },
+        imageSmoothingEnabled: false,
+        imageSmoothingQuality: "low",
         drawn: [],
         drawImage(source, x, y, width, height) {
           this.drawn.push({ source, x, y, width, height });

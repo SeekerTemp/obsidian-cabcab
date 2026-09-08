@@ -125,7 +125,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [ ] 11 `MV-REVERSE`
 - [ ] 12 `MV-FRAME`
 - [x] 13 `MV-CROPMATH`
-- [ ] 14 `MV-SESSION`
+- [x] 14 `MV-SESSION`
 - [ ] 15 `MV-BUDGET`
 - [ ] 16 `MV-OVERLAY`
 - [ ] 17 `MV-TRANSFORM`
