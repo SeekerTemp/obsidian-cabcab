@@ -457,19 +457,33 @@ const CELL_SPLIT = /(?<!\\)\|/;
 // go"; plain text means it has not. Path-qualified because Obsidian resolves a
 // wikilink by basename alone, and two schemas may both declare `trait`. Aliased
 // so the cell still reads as the bare field name.
-function fieldReferenceLink(schemaName, fieldName, definition, schemas) {
+// Where a field points. `path` is always somewhere real, so the ☰ button never
+// has to refuse; `link` is null when the table should show plain text instead of
+// a link. One rule, so the cell and the button cannot drift apart.
+function fieldReferenceTarget(schemaName, fieldName, definition, schemas) {
   const target = definition?.relation?.target;
   if (target) {
     // A foreign key never gets a list of its own: it points at the one list the
     // target entity already owns, so values cannot drift between the two.
     const targetFields = schemas?.get?.(target);
     const ownField = targetFields && Object.prototype.hasOwnProperty.call(targetFields, target) ? targetFields[target] : null;
-    if (ownField && configPathFor(target, target, ownField)) return `[[${target}/${target}${ALIAS}${fieldName}]]`;
-    // Nothing to point at — an entity keyed by `id` has no list, because
-    // identity fields are excluded — so fall back to its definition.
-    return `[[${target}.schema${ALIAS}${fieldName}]]`;
+    if (ownField && configPathFor(target, target, ownField)) {
+      return { path: `${CONFIG_FOLDER}/${target}/${target}.md`, link: `${target}/${target}` };
+    }
+    // An entity keyed by `id` has no list, because identity fields are
+    // excluded, so fall back to its definition.
+    return { path: `${SCHEMA_FOLDER}/${target}.schema.md`, link: `${target}.schema` };
   }
-  return configPathFor(schemaName, fieldName, definition) ? `[[${schemaName}/${fieldName}${ALIAS}${fieldName}]]` : fieldName;
+  const config = configPathFor(schemaName, fieldName, definition);
+  if (config) return { path: config, link: `${schemaName}/${fieldName}` };
+  // No list of its own and nothing to reference: the schema that declares it is
+  // still worth opening, but the table says so in plain text.
+  return { path: `${SCHEMA_FOLDER}/${schemaName}.schema.md`, link: null };
+}
+
+function fieldReferenceLink(schemaName, fieldName, definition, schemas) {
+  const { link } = fieldReferenceTarget(schemaName, fieldName, definition, schemas);
+  return link ? `[[${link}${ALIAS}${fieldName}]]` : fieldName;
 }
 
 // Carries every property a field has, Relation included, so the table is a
@@ -1138,7 +1152,7 @@ class SchemaSyncView extends ItemView {
         }
         const editorPanel = this.contentEl.querySelector(".schema-sync-grid > section:nth-child(2)");
         if (editorPanel) {
-          editorPanel.innerHTML = `<small class="schema-sync-label">02 / Definition</small><h2>Edit ${schemaName || "schema"}</h2><p class="schema-sync-editor-help">${this.plugin.settings.requireEditUnlock ? "Click ✎ to edit a row." : "Edit any row directly — changes save as you make them."} Enter commits, Escape reverts. Drag ⠿ to reorder. <b>Default</b> is the value a new record starts this field at — leave it blank for an empty value. <b>Bind</b> off keeps a field documented here but out of records, config lists, base views and the ERD.</p><div class="schema-sync-field-editor${this.plugin.settings.requireEditUnlock ? "" : " is-live"}"><div class="schema-sync-field-row schema-sync-field-head"><span></span><span>Field</span><span>Type</span><span title="Value a new record starts this field at">Default</span><span title="Points this field at another schema, drawn as a relation in the ERD">Relation</span><span title="Written to records, config lists, base views and the ERD">Bind</span><span title="Reports an issue when missing or blank in a record">Req</span><span title="Open this field's value list">☰</span><span title="Create one record per row of this field's value list">⤓</span><span class="schema-sync-edit-col"></span><span></span></div>${Object.entries(fields).map(([name, definition]) => `<div class="schema-sync-field-row" data-schema-row="${name}"><span class="schema-sync-drag" draggable="true" title="Drag to reorder">⠿</span><input data-field-name value="${name}" aria-label="Field name" /><select data-field-type aria-label="Field type">${FIELD_TYPES.map((type) => `<option value="${type}" ${definition.type === type ? "selected" : ""}>${type}</option>`).join("")}</select><input data-field-default value="${this.plugin.editorValue(definition.hasDefault ? definition.defaultValue : "")}" placeholder="default" aria-label="Default value" /><select data-field-relation aria-label="Foreign key target"><option value="">no foreign key</option>${schemas.map(([target]) => `<option value="${target}" ${definition.relation?.target === target ? "selected" : ""}>→ ${target}</option>`).join("")}</select><input data-field-bind type="checkbox" ${definition.bind === false ? "" : "checked"} aria-label="Bound" title="Bound: written to records, config lists, base views and the ERD. Unbound: documented here only." /><input data-field-required type="checkbox" ${definition.required ? "checked" : ""} aria-label="Required" title="Reports an issue when this field is missing or blank in a record" /><button data-open-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Open ${configPathFor(schemaName, name, definition)}` : `${name} has no value list`}">☰</button><button data-implement-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Create one ${schemaName} record per row of ${configPathFor(schemaName, name, definition)}, named after the value` : `${name} has no value list to implement`}">⤓</button><button data-delete-field="${name}" class="${definition.bind === false ? "schema-sync-row-delete" : ""}" title="${definition.bind === false ? `Remove ${name} from the schema` : `Unbind ${name} — stops writing it anywhere, keeps existing values`}">×</button></div>`).join("") || "<p class=\"schema-sync-empty\">No fields defined.</p>"}</div>`;
+          editorPanel.innerHTML = `<small class="schema-sync-label">02 / Definition</small><h2>Edit ${schemaName || "schema"}</h2><p class="schema-sync-editor-help">${this.plugin.settings.requireEditUnlock ? "Click ✎ to edit a row." : "Edit any row directly — changes save as you make them."} Enter commits, Escape reverts. Drag ⠿ to reorder. <b>Default</b> is the value a new record starts this field at — leave it blank for an empty value. <b>Bind</b> off keeps a field documented here but out of records, config lists, base views and the ERD.</p><div class="schema-sync-field-editor${this.plugin.settings.requireEditUnlock ? "" : " is-live"}"><div class="schema-sync-field-row schema-sync-field-head"><span></span><span>Field</span><span>Type</span><span title="Value a new record starts this field at">Default</span><span title="Points this field at another schema, drawn as a relation in the ERD">Relation</span><span title="Written to records, config lists, base views and the ERD">Bind</span><span title="Reports an issue when missing or blank in a record">Req</span><span title="Open this field's value list">☰</span><span title="Create one record per row of this field's value list">⤓</span><span class="schema-sync-edit-col"></span><span></span></div>${Object.entries(fields).map(([name, definition]) => `<div class="schema-sync-field-row" data-schema-row="${name}"><span class="schema-sync-drag" draggable="true" title="Drag to reorder">⠿</span><input data-field-name value="${name}" aria-label="Field name" /><select data-field-type aria-label="Field type">${FIELD_TYPES.map((type) => `<option value="${type}" ${definition.type === type ? "selected" : ""}>${type}</option>`).join("")}</select><input data-field-default value="${this.plugin.editorValue(definition.hasDefault ? definition.defaultValue : "")}" placeholder="default" aria-label="Default value" /><select data-field-relation aria-label="Foreign key target"><option value="">no foreign key</option>${schemas.map(([target]) => `<option value="${target}" ${definition.relation?.target === target ? "selected" : ""}>→ ${target}</option>`).join("")}</select><input data-field-bind type="checkbox" ${definition.bind === false ? "" : "checked"} aria-label="Bound" title="Bound: written to records, config lists, base views and the ERD. Unbound: documented here only." /><input data-field-required type="checkbox" ${definition.required ? "checked" : ""} aria-label="Required" title="Reports an issue when this field is missing or blank in a record" /><button data-open-config="${name}" class="schema-sync-row-action" title="Open ${fieldReferenceTarget(schemaName, name, definition, this.plugin.schemas).path}">☰</button><button data-implement-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Create one ${schemaName} record per row of ${configPathFor(schemaName, name, definition)}, named after the value` : `${name} has no value list to implement`}">⤓</button><button data-delete-field="${name}" class="${definition.bind === false ? "schema-sync-row-delete" : ""}" title="${definition.bind === false ? `Remove ${name} from the schema` : `Unbind ${name} — stops writing it anywhere, keeps existing values`}">×</button></div>`).join("") || "<p class=\"schema-sync-empty\">No fields defined.</p>"}</div>`;
           const definitionHeader = document.createElement("div");
           definitionHeader.className = "schema-sync-definition-header";
           const definitionTitle = editorPanel.querySelector("h2");
@@ -2537,20 +2551,22 @@ class SchemaSyncPlugin extends Plugin {
 
   // Opens the value list backing a field. When there is no list, says which of
   // the rules excluded it rather than failing silently.
+  // Always opens something. A field with a value list opens it, a foreign key
+  // opens whatever the target entity offers, and anything else opens the schema
+  // that declares it — a button that refuses to navigate is just a lecture.
   async openFieldConfig(schemaName, fieldName) {
     const definition = (this.schemas.get(schemaName) || {})[fieldName];
     if (!definition) return new Notice(`"${fieldName}" is not a field of ${schemaName}.`);
-    const configPath = configPathFor(schemaName, fieldName, definition);
-    if (!configPath) {
-      if (!isBound(definition)) return new Notice(`"${fieldName}" is unbound, so it has no value list. Set bind to yes to generate one.`);
-      if (definition.relation?.target) return new Notice(`"${fieldName}" is a relation to ${definition.relation.target} — its values come from that entity's own value list, not one of its own.`);
-      if (IDENTITY_FIELDS.has(fieldName.toLowerCase())) return new Notice(`"${fieldName}" is an identity key rather than a category, so it has no value list.`);
-      return new Notice(`Only string fields get a value list; "${fieldName}" is ${definition.type}.`);
+    const { path } = fieldReferenceTarget(schemaName, fieldName, definition, this.schemas);
+    const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    if (file instanceof TFile) return this.app.workspace.getLeaf(true).openFile(file);
+    // Not generated yet — fall back to the schema rather than going nowhere.
+    const schemaFile = this.schemaFile(schemaName);
+    if (schemaFile) {
+      new Notice(`${path} has not been generated yet. Opening ${schemaName}'s schema instead; run Sync schema system to create it.`, 6000);
+      return this.app.workspace.getLeaf(true).openFile(schemaFile);
     }
-    const path = normalizePath(configPath);
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) return new Notice(`${path} has not been generated yet. Run Sync schema system first.`);
-    await this.app.workspace.getLeaf(true).openFile(file);
+    new Notice(`${path} does not exist yet. Run Sync schema system first.`);
   }
 
   // --- Asset Renamer -------------------------------------------------------
@@ -2603,6 +2619,9 @@ class SchemaSyncPlugin extends Plugin {
     }
     const legacy = this.app.vault.getMarkdownFiles()
       .filter((file) => file.parent?.path === this.settings.configFolder && !EXCLUDED_CONFIG_FILES.has(file.name.toLowerCase()))
+      // Bookkeeping and anything else under data/config that is not a generated
+      // list is never a filename source.
+      .filter((file) => !file.path.startsWith(`${CONFIG_FOLDER}/`) || Boolean(this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor))
       .sort((left, right) => {
         const leftIndex = CONFIG_SOURCE_ORDER.indexOf(left.basename.toLowerCase());
         const rightIndex = CONFIG_SOURCE_ORDER.indexOf(right.basename.toLowerCase());
@@ -2624,9 +2643,16 @@ class SchemaSyncPlugin extends Plugin {
   // value; a hand-made one is a plain list. The frontmatter says which.
   async loadConfigValues(file) {
     const raw = await this.app.vault.read(file);
-    if (this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor || /^configFor:/m.test(raw)) {
-      return parseConfigValues(raw);
-    }
+    // A value list's values are the rows of its table. Frontmatter keys, the
+    // heading and the prose around it are not options — reading a file line by
+    // line offered "# Schema Mappings" and a sentence about vault paths as
+    // things you could name a file after.
+    const isValueList = configSourceOfPath(file.path)
+      || Boolean(this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor)
+      || /^configFor:/m.test(raw)
+      || /^\s*\|/m.test(raw);
+    if (isValueList) return parseConfigValues(raw);
+    // Only a hand-made source with no table at all is read line by line.
     return [...new Set(raw.split(/\r?\n/).map((line) => this.parseLegacyConfigValue(line)).filter(Boolean))];
   }
 
@@ -3353,6 +3379,7 @@ module.exports.generators = {
   extractUserNotes,
   NOTES_MARKER,
   renderConfigNote,
+  fieldReferenceTarget,
   fieldReferenceLink,
   renderFieldReference,
   parseFieldReference,

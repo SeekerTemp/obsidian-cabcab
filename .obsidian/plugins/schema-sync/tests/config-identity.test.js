@@ -400,6 +400,46 @@ test("renaming a field keeps its position and definition", () => {
   assert.strictEqual(next.feature.required, true);
 });
 
+// --- ☰ always has somewhere to go -------------------------------------------
+
+const { fieldReferenceTarget } = generators;
+
+test("a field with a value list points at it, and links", () => {
+  const t = fieldReferenceTarget("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS);
+  assert.strictEqual(t.path, "data/config/LifeForm/trait.md");
+  assert.strictEqual(t.link, "LifeForm/trait");
+});
+
+test("a relation points at the target's own value list", () => {
+  const field = { type: "string", bind: false, relation: { target: "Realm" } };
+  const t = fieldReferenceTarget("Verse", "Realm", field, SCHEMAS);
+  assert.strictEqual(t.path, "data/config/Realm/Realm.md");
+  assert.strictEqual(t.link, "Realm/Realm");
+});
+
+test("a relation with no such list points at the target schema", () => {
+  const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
+  const t = fieldReferenceTarget("Pack", "owner", field, SCHEMAS);
+  assert.strictEqual(t.path, "data/schema/LifeForm.schema.md");
+  assert.strictEqual(t.link, "LifeForm.schema");
+});
+
+test("a field with no list still has somewhere to open, but no link", () => {
+  for (const name of ["id", "cover", "attachment"]) {
+    const t = fieldReferenceTarget("LifeForm", name, SCHEMAS.get("LifeForm")[name], SCHEMAS);
+    assert.strictEqual(t.path, "data/schema/LifeForm.schema.md", name);
+    assert.strictEqual(t.link, null, name);
+  }
+});
+
+test("every field of every schema opens somewhere", () => {
+  for (const [schemaName, fields] of SCHEMAS) {
+    for (const [fieldName, definition] of Object.entries(fields)) {
+      assert.ok(fieldReferenceTarget(schemaName, fieldName, definition, SCHEMAS).path, `${schemaName}.${fieldName}`);
+    }
+  }
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
