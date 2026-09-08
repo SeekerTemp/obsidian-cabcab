@@ -2001,38 +2001,53 @@ class SchemaSyncPlugin extends Plugin {
   // as generated paths: they carry user-curated content and must survive a field
   // being renamed or removed.
   async syncConfigLists() {
-    const attributes = new Map();
+    await this.relocateConfigNotes();
+    const targets = new Map();
     for (const [schemaName, fields] of this.schemas) {
       for (const [fieldName, definition] of Object.entries(fields)) {
-        const fileName = configPathFor(schemaName, fieldName, definition);
-        if (!fileName) continue;
-        if (!attributes.has(fieldName)) attributes.set(fieldName, { sources: [], values: new Set(), fileName });
-        attributes.get(fieldName).sources.push(`${schemaName}.${fieldName}`);
+        const path = configPathFor(schemaName, fieldName, definition);
+        if (path) targets.set(path, { schemaName, fieldName, values: new Set() });
       }
     }
-    if (attributes.size === 0) return;
-    await this.ensureFolder(CONFIG_FOLDER);
+    if (targets.size === 0) return;
     for (const file of this.dataFiles()) {
       if (file.basename.startsWith(PLACEHOLDER_PREFIX)) continue;
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (!frontmatter || typeof frontmatter.implements !== "string") continue;
-      const fields = this.schemas.get(frontmatter.implements);
-      if (!fields) continue;
-      for (const fieldName of Object.keys(fields)) {
-        const entry = attributes.get(fieldName);
-        if (!entry) continue;
-        const raw = frontmatter[fieldName];
+      for (const entry of targets.values()) {
+        if (entry.schemaName !== frontmatter.implements) continue;
+        const raw = frontmatter[entry.fieldName];
         for (const value of Array.isArray(raw) ? raw : [raw]) {
           const text = typeof value === "string" ? value.trim().replace(/^\[\[|\]\]$/g, "").trim() : "";
           if (text) entry.values.add(text);
         }
       }
     }
-    for (const [fieldName, entry] of attributes) {
-      const path = normalizePath(`${CONFIG_FOLDER}/${entry.fileName}`);
-      const existing = this.app.vault.getAbstractFileByPath(path);
+    for (const [path, entry] of targets) {
+      await this.ensureFolder(`${CONFIG_FOLDER}/${entry.schemaName}`);
+      const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
       const existingRaw = existing instanceof TFile ? await this.app.vault.read(existing) : "";
-      await this.writeFile(path, renderConfigNote(fieldName, entry.sources, [...entry.values], existingRaw));
+      await this.writeFile(normalizePath(path), renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values], existingRaw));
+    }
+  }
+
+  // Notes written by an older version sit flat in data/config/. Move each into
+  // its schema's folder before generation runs, so generation does not create an
+  // empty note at the new path and leave the old one looking like an orphan.
+  async relocateConfigNotes() {
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (file.parent?.path !== CONFIG_FOLDER) continue;
+      const sources = this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor;
+      const source = Array.isArray(sources) ? sources[0] : null;
+      if (typeof source !== "string" || !source.includes(".")) continue;
+      const schemaName = source.slice(0, source.indexOf("."));
+      const fieldName = source.slice(source.indexOf(".") + 1);
+      if (!this.schemas.has(schemaName)) continue;
+      const destination = normalizePath(`${CONFIG_FOLDER}/${schemaName}/${fieldName}.md`);
+      if (file.path === destination || this.app.vault.getAbstractFileByPath(destination)) continue;
+      await this.ensureFolder(`${CONFIG_FOLDER}/${schemaName}`);
+      await this.app.fileManager.renameFile(file, destination);
+      new Notice(`Moved ${file.name} to ${destination}.`);
     }
   }
 
