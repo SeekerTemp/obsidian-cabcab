@@ -243,6 +243,26 @@ test("exactly two of the four are orphaned", () => {
   assert.strictEqual(orphanedConfigs(NOTES, SCHEMAS).length, 2);
 });
 
+test("a stray copy is orphaned even though its field is alive", () => {
+  // Obsidian's " 1" suffix on a rename collision. configFor says
+  // LifeForm.attachment, but that field's note lives at attachment.md.
+  const stray = { path: "data/config/LifeForm/attachment 1.md", schemaName: "LifeForm", fieldName: "attachment" };
+  const found = orphanedConfigs([stray], SCHEMAS);
+  assert.strictEqual(found.length, 1);
+  assert.match(found[0].reason, /stray copy/);
+});
+
+test("the note at its own configFor's path is never a stray", () => {
+  const live = { path: "data/config/LifeForm/attachment.md", schemaName: "LifeForm", fieldName: "attachment" };
+  assert.deepStrictEqual(orphanedConfigs([live], SCHEMAS), []);
+});
+
+test("every orphan says why it is listed", () => {
+  for (const orphan of orphanedConfigs(NOTES, SCHEMAS)) {
+    assert.ok(orphan.reason && orphan.reason.length > 0, orphan.path);
+  }
+});
+
 // --- README item 9: attachment as an image column ---------------------------
 
 const { renderBaseYaml } = generators;

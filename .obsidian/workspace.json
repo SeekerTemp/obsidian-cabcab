@@ -72,12 +72,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "README.md",
+                "file": "data/config/LifeForm/attachment 1.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "README"
+              "title": "attachment 1"
             }
           },
           {
@@ -261,15 +261,16 @@
       "schema-sync:Open schema dashboard": false
     }
   },
-  "active": "ddd296cd88d16cfa",
+  "active": "143043ea79a49332",
   "lastOpenFiles": [
+    "data/config/LifeForm/attachment.md",
+    "data/config/LifeForm/attachment 1.md",
+    "data/config/LifeForm/attachment3.md",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
     "data/AssetDatabase.base.md",
     "README.md",
-    "data/config/LifeForm/attachment3.md",
     "data/config/LifeForm/attachment2.md",
-    "data/config/LifeForm/attachment.md",
     "data/schema/LifeForm.schema.md",
-    "data/record/lifeforms/_placeholder.LifeForm.md",
     "data/record/verses/_placeholder.Verse.md",
     "data/config/Realm/Realm.md",
     "data/config/LifeForm/trait.md",
@@ -301,7 +302,6 @@
     "assets/generatedpaths_20260908_152040.jpg",
     "Realm.md",
     "data/config/traits.config.md",
-    "data/config/Realms.config.md",
     "assets/FB_IMG_1695878841711.jpg",
     "assets/atompunk.jpg"
   ]

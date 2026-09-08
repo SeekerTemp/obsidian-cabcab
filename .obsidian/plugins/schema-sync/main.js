@@ -454,10 +454,27 @@ function configRenamePlan({ schemaName, oldName, newName, existingPaths }) {
 // a field is the reversible first press of the × button, and throwing away its
 // curated values would make that press destructive after all.
 function orphanedConfigs(notes, schemas) {
-  return notes.filter(({ schemaName, fieldName }) => {
+  const orphans = [];
+  for (const note of notes) {
+    const { path, schemaName, fieldName } = note;
     const fields = schemas.get(schemaName);
-    return !fields || !Object.prototype.hasOwnProperty.call(fields, fieldName);
-  });
+    if (!fields) {
+      orphans.push({ ...note, reason: `${schemaName} is no longer a schema` });
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) {
+      orphans.push({ ...note, reason: `${schemaName} no longer declares ${fieldName}` });
+      continue;
+    }
+    // A note whose path disagrees with its own configFor is a stray copy —
+    // Obsidian's " 1" suffix after a rename collision, or the residue of a
+    // rename that could not finish. Its field is alive, but this is not the
+    // file serving it, so asking only "does the field exist?" left these behind
+    // for good.
+    const home = `${CONFIG_FOLDER}/${schemaName}/${fieldName}.md`;
+    if (path !== home) orphans.push({ ...note, reason: `a stray copy — ${schemaName}.${fieldName} is served by ${home}` });
+  }
+  return orphans;
 }
 
 // An unescaped "|" is a column separator, even inside [[a|b]]. Writing one makes
@@ -700,7 +717,7 @@ class OrphanedConfigModal extends Modal {
       const box = row.createEl("input", { type: "checkbox" });
       box.addEventListener("change", () => box.checked ? this.chosen.add(orphan.path) : this.chosen.delete(orphan.path));
       row.createEl("span", { text: orphan.path });
-      row.createEl("small", { text: `${orphan.schemaName}.${orphan.fieldName} is no longer declared — ${orphan.rows} row(s)` });
+      row.createEl("small", { text: `${orphan.reason} — ${orphan.rows} row(s)` });
     }
     const actions = contentEl.createDiv({ cls: "schema-sync-choices" });
     actions.createEl("button", { text: "Move selected to trash", cls: "mod-warning" })
