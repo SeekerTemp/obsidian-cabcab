@@ -297,6 +297,42 @@ test("a value that cannot be a file name is refused", () => {
   assert.strictEqual(recordFileNameFor("   "), null);
 });
 
+// --- README item 7: foreign fields pulled through a relation ----------------
+
+const FK_SCHEMAS = new Map([
+  ["Realm", { Realm: { type: "string", required: true }, size: { type: "number" }, ruler: { type: "string", relation: { target: "LifeForm" } } }],
+  ["LifeForm", { id: { type: "string", required: true } }],
+]);
+
+test("a bound relation exposes the target's fields as formulas", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(yaml.includes("home_Realm: home.Realm"), yaml);
+  assert.ok(yaml.includes("home_size: home.size"), yaml);
+  assert.ok(yaml.includes("- formula.home_Realm"), yaml);
+});
+
+test("the target's own relations are not pulled through a second hop", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(!yaml.includes("home_ruler"), yaml);
+});
+
+test("an unbound relation pulls nothing", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", bind: false, relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(!yaml.includes("formulas:"), yaml);
+});
+
+test("a relation to an unknown schema pulls nothing", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Ghost" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(!yaml.includes("formulas:"), yaml);
+});
+
+test("foreign fields do not become schema fields", () => {
+  // The whole point of item 7: query and labelling only, never bound back.
+  const fields = { home: { type: "string", relation: { target: "Realm" } } };
+  renderBaseYaml("Verse", fields, "data/record/verses", FK_SCHEMAS);
+  assert.deepStrictEqual(Object.keys(fields), ["home"]);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
