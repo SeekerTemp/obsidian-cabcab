@@ -465,6 +465,31 @@ test("every field of every schema opens somewhere", () => {
   }
 });
 
+// --- Which schema's lists apply to a note -----------------------------------
+
+const { schemaNameOfNote } = generators;
+
+test("a record says which schema it implements", () => {
+  assert.strictEqual(schemaNameOfNote({ implements: "LifeForm" }, "data/record/lifeforms/a.md"), "LifeForm");
+});
+
+test("a value list says which schema it belongs to", () => {
+  assert.strictEqual(schemaNameOfNote({ configFor: ["Realm.Realm"] }, "data/config/Realm/Realm.md"), "Realm");
+});
+
+test("a value list's own path says it too, with no frontmatter", () => {
+  assert.strictEqual(schemaNameOfNote(null, "data/config/Realm/Realm.md"), "Realm");
+});
+
+test("implements wins over the path", () => {
+  assert.strictEqual(schemaNameOfNote({ implements: "LifeForm" }, "data/config/Realm/Realm.md"), "LifeForm");
+});
+
+test("a note with none of the three belongs to no schema", () => {
+  assert.strictEqual(schemaNameOfNote({}, "notes/random.md"), null);
+  assert.strictEqual(schemaNameOfNote(null, "data/config/schema-mappings.md"), null);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }

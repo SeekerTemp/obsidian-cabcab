@@ -422,6 +422,20 @@ function configSourceOfPath(path) {
   return parts.length === 2 && parts[0] && parts[1] ? { schemaName: parts[0], fieldName: parts[1] } : null;
 }
 
+// Which schema's attribute lists apply to a note. A record says so with
+// `implements`, a value list with `configFor`, and a value list's own path says
+// it too — any of the three is enough. Looking only at `implements` left the
+// renamer with nothing to offer on a value list, which is a note that plainly
+// belongs to a schema.
+function schemaNameOfNote(frontmatter, path) {
+  const implemented = frontmatter?.implements;
+  if (typeof implemented === "string" && implemented) return implemented;
+  const sources = frontmatter?.configFor;
+  const source = Array.isArray(sources) ? sources[0] : null;
+  if (typeof source === "string" && source.includes(".")) return source.slice(0, source.indexOf("."));
+  return configSourceOfPath(path)?.schemaName || null;
+}
+
 // Merging two config notes would silently discard one side's hand-written Notes
 // column, which is the whole reason these files are never auto-deleted. Two
 // fields in one schema cannot share a name, so an occupied target can only be a
@@ -2575,8 +2589,9 @@ class SchemaSyncPlugin extends Plugin {
   // --- Asset Renamer -------------------------------------------------------
 
   schemaNameFor(noteFile) {
-    const name = noteFile && this.app.metadataCache.getFileCache(noteFile)?.frontmatter?.implements;
-    return typeof name === "string" && this.schemas.has(name) ? name : null;
+    if (!noteFile) return null;
+    const name = schemaNameOfNote(this.app.metadataCache.getFileCache(noteFile)?.frontmatter, noteFile.path);
+    return name && this.schemas.has(name) ? name : null;
   }
 
   schemaFieldsFor(noteFile) {
@@ -3373,6 +3388,7 @@ module.exports.generators = {
   parseConfigRows,
   configPathFor,
   configSourceOfPath,
+  schemaNameOfNote,
   configRenamePlan,
   orphanedConfigs,
   normalizeFieldName,
