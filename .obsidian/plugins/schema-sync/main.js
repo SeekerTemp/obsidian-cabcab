@@ -1324,7 +1324,7 @@ class SchemaSyncView extends ItemView {
           this.contentEl.querySelector(".schema-sync-entities")?.appendChild(implementButton);
         }
         this.contentEl.querySelectorAll("[data-duplicate-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.duplicateRecord(button.dataset.duplicateEntity); }));
-        this.contentEl.querySelectorAll("[data-asset-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.openAssetRenamer(button.dataset.assetEntity); }));
+        this.contentEl.querySelectorAll("[data-asset-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.openAssetRenamerForRecord(button.dataset.assetEntity); }));
         this.contentEl.querySelectorAll("[data-delete-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.deleteRecord(button.dataset.deleteEntity); }));
     this.contentEl.querySelectorAll("[data-schema]").forEach((el) => el.addEventListener("click", () => { this.selectedSchema = el.dataset.schema; this.selectedEntity = null; this.render(); }));
     this.contentEl.querySelectorAll("[data-entity]").forEach((el) => el.addEventListener("click", () => {
@@ -2768,15 +2768,14 @@ class SchemaSyncPlugin extends Plugin {
     new Notice(`Duplicated to ${path}.`);
   }
 
-  // Asset Renamer builds its property picker from the note's frontmatter keys,
-  // so an attachment-typed field is selectable there with no changes on its side.
-  async openAssetRenamer(recordPath) {
+  // The 03 panel's per-record 🖼 button. Since the renamer moved in-house this
+  // opens the modal directly rather than bouncing through a command that may or
+  // may not be registered.
+  async openAssetRenamerForRecord(recordPath) {
     const file = this.app.vault.getAbstractFileByPath(recordPath);
     if (!(file instanceof TFile)) return new Notice("That record no longer exists.");
     await this.app.workspace.getLeaf(true).openFile(file);
-    const command = this.app.commands?.commands?.["asset-renamer:open-asset-renamer"];
-    if (!command) return new Notice("Asset Renamer is not enabled.");
-    this.app.commands.executeCommandById("asset-renamer:open-asset-renamer");
+    new AssetRenamerModal(this, file).open();
   }
 
   onunload() {
