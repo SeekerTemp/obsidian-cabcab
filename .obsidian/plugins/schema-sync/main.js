@@ -33,6 +33,10 @@ const IDENTITY_FIELDS = new Set(["id", "name"]);
 // Renamer builds its property dropdown from a note's frontmatter keys, so an
 // attachment field becomes editable there as soon as the key exists.
 const FIELD_TYPES = ["string", "number", "boolean", "array", "object", "attachment"];
+// Keys that appear in a frontmatter cache but are not the note's own properties:
+// `implements` is ours, and `position` is injected by Obsidian's metadata cache.
+// Neither is ever something to offer to add to a schema.
+const RESERVED_PROPERTIES = new Set(["implements", "position"]);
 // Unbound fields are documentation only: shown in the definition editor and the
 // schema note, but never pushed into records, config lists, base views or DBML.
 const isBound = (definition) => definition.bind !== false;
@@ -270,6 +274,27 @@ function configFileNameFor(fieldName, definition) {
   if (!definition || definition.type !== "string" || definition.relation?.target || !isBound(definition)) return null;
   if (IDENTITY_FIELDS.has(String(fieldName).toLowerCase())) return null;
   return `${pluralize(fieldName)}.config.md`;
+}
+
+// A template is deliberately blank, so validating it would report every required
+// field as missing on every pass. That is the whole of what the _placeholder.
+// prefix decides.
+function shouldValidateNote(basename) {
+  return !String(basename).startsWith(PLACEHOLDER_PREFIX);
+}
+
+// The single rule for what a note is offering to add to its schema. Note kind is
+// deliberately not an input: adding a property to a template is the plainest
+// statement of schema intent there is, and for some schemas the template is the
+// only note that ever exists. Sharing one guard with shouldValidateNote() is
+// what silenced this prompt outright once the last numbered record was deleted.
+function undeclaredPropertyFor({ schemaName, frontmatter, fields, ignored, asking }) {
+  if (!frontmatter || !fields) return null;
+  return Object.keys(frontmatter).find((name) =>
+    !RESERVED_PROPERTIES.has(name)
+    && !Object.prototype.hasOwnProperty.call(fields, name)
+    && !ignored.has(name)
+    && !asking.has(`${schemaName}.${name}`)) || null;
 }
 
 // Carries every property a field has, Relation included, so the table is a
@@ -1694,18 +1719,13 @@ class SchemaSyncPlugin extends Plugin {
   // annotations never nag again.
   async checkUndeclaredProperties(file) {
     if (!this.settings.promptForUndeclaredProperties) return;
-    if (file.basename.startsWith(PLACEHOLDER_PREFIX)) return;
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
     const schemaName = frontmatter?.implements;
     if (typeof schemaName !== "string") return;
     const fields = this.schemas.get(schemaName);
-    if (!fields) return;
     const ignored = new Set(this.settings.ignoredProperties[schemaName] || []);
-    const unknown = Object.keys(frontmatter).find((name) =>
-      name !== "implements"
-      && !Object.prototype.hasOwnProperty.call(fields, name)
-      && !ignored.has(name)
-      && !this.askingAbout.has(`${schemaName}.${name}`));
+    // Templates are included on purpose — see undeclaredPropertyFor().
+    const unknown = undeclaredPropertyFor({ schemaName, frontmatter, fields, ignored, asking: this.askingAbout });
     if (!unknown) return;
 
     const key = `${schemaName}.${unknown}`;
@@ -2163,7 +2183,7 @@ class SchemaSyncPlugin extends Plugin {
   }
 
   async validateFile(file, showNotice) {
-    if (file.basename.startsWith(PLACEHOLDER_PREFIX)) return 0;
+    if (!shouldValidateNote(file.basename)) return 0;
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
     if (!frontmatter || typeof frontmatter.implements !== "string") return 0;
 
@@ -2246,6 +2266,8 @@ module.exports.generators = {
   parseConfigValues,
   parseConfigRows,
   configFileNameFor,
+  shouldValidateNote,
+  undeclaredPropertyFor,
   extractUserNotes,
   NOTES_MARKER,
   renderConfigNote,
