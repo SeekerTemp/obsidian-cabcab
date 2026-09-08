@@ -139,7 +139,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 25 `MV-REPAIR`
 - [x] 26 `MV-TIMING`
 - [x] 27 `MV-ERRORS`
-- [ ] 28 `MV-SETTINGS`
+- [x] 28 `MV-SETTINGS`
 - [ ] 29 `MV-PERF`
 - [ ] 30 `MV-README`
 - [ ] 31 `MV-OVERVIEW` (deferred)

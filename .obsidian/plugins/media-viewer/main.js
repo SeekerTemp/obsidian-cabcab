@@ -5529,6 +5529,130 @@ class MediaViewerView extends ItemView {
   }
 }
 
+/* ------------------------------------------------------------------------ *
+ * Settings — MV-SETTINGS.
+ *
+ * Four things worth a setting and no more. Everything the pane's own header
+ * already controls — the folder, the filter, the recursion toggle — lives
+ * there because that is where it is used; repeating it here would be two
+ * places to change one thing.
+ *
+ * What is left is what the header has nowhere to put: a number that only
+ * matters at save time, a switch that decides whether this plugin writes to
+ * the vault at all, where it writes when it does, and the diagnostics toggle.
+ * ------------------------------------------------------------------------ */
+
+class MediaViewerSettingTab extends PluginSettingTab {
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl).setName("Browsing").setHeading();
+
+    new Setting(containerEl)
+      .setName("Include subfolders")
+      .setDesc(
+        "Scan the whole subtree rather than one folder. The pane's own toggle changes this too; it is here so it survives being set once and forgotten."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.recursive).onChange((value) => {
+          this.plugin.setRecursive(value);
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Follow the active file")
+      .setDesc(
+        "Show the folder of whatever media file is open. Choosing a folder from its context menu turns this off, because otherwise the next click would silently undo the choice."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.followActiveFile).onChange((value) => {
+          this.plugin.setFollowActiveFile(value);
+        })
+      );
+
+    new Setting(containerEl).setName("Saving").setHeading();
+
+    new Setting(containerEl)
+      .setName("JPEG and WebP quality")
+      .setDesc(
+        "What a lossy output is encoded at. PNG ignores it. The output format follows the source, so this only ever applies to a file that was already lossy."
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.1, 1, 0.01)
+          .setValue(clampQuality(this.plugin.settings.encodeQuality))
+          .setDynamicTooltip()
+          .onChange((value) => {
+            this.plugin.settings.encodeQuality = clampQuality(value);
+            void this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl).setName("Lineage").setHeading();
+
+    new Setting(containerEl)
+      .setName("Write lineage notes")
+      .setDesc(
+        "Record where each saved file came from, as a MediaInstance note. Turning this off leaves the plugin browsing and editing as before, and writing nothing but the files you save."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.writeLineage).onChange((value) => {
+          this.plugin.settings.writeLineage = Boolean(value);
+          void this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Folder for new lineage notes")
+      .setDesc(
+        "Where a new note is written. Only ever that: notes are found by the media: link they declare, so one moved out of this folder afterwards keeps working."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_NOTE_FOLDER)
+          .setValue(this.plugin.settings.noteFolder)
+          .onChange((value) => {
+            /* Trimmed, and repeated separators collapsed: a path typed with a
+               stray space, a doubled slash or a trailing one names the same
+               folder, and storing three spellings of it would eventually put
+               three folders in the vault. */
+            const folder = normaliseSeparators(String(value || "").trim())
+              .replace(/\/{2,}/g, "/")
+              .replace(/^\/+|\/+$/g, "");
+            this.plugin.settings.noteFolder = folder || DEFAULT_NOTE_FOLDER;
+            this.plugin.lineage.noteFolder = this.plugin.settings.noteFolder;
+            void this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Report lineage breaks")
+      .setDesc(
+        "List every note whose media: or source: names a file the vault does not hold, and every chain that loops or runs too deep. It changes nothing."
+      )
+      .addButton((button) =>
+        button.setButtonText("Check the vault").onClick(() => {
+          this.plugin.showLineageBreaks();
+        })
+      );
+
+    new Setting(containerEl).setName("Diagnostics").setHeading();
+
+    new Setting(containerEl)
+      .setName("Debug logging")
+      .setDesc(
+        "Write ms= timings to the developer console for scans, thumbnails, decodes, encodes, saves and lineage resolution. Nothing is written to disk: the console already filters, persists and survives the failure."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.debugLogging).onChange((value) => {
+          this.plugin.settings.debugLogging = Boolean(value);
+          void this.plugin.saveSettings();
+        })
+      );
+  }
+}
+
 class MediaViewerPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
@@ -5541,7 +5665,7 @@ class MediaViewerPlugin extends Plugin {
        metadataCache holds a fraction of the notes and the maps would be
        quietly wrong rather than visibly empty. */
     this.lineage = new LineageStore(this.app, {
-      noteFolder: this.settings.noteFolder,
+      noteFolder: this.settings.noteFolder || DEFAULT_NOTE_FOLDER,
       onChange: () => this.refreshLineageViews(),
     });
 
@@ -5552,6 +5676,8 @@ class MediaViewerPlugin extends Plugin {
     this.index.onChange = (reason, path, oldPath) => this.handleIndexChange(reason, path, oldPath);
 
     this.registerView(VIEW_TYPE_MEDIA_VIEWER, (leaf) => new MediaViewerView(leaf, this));
+
+    this.addSettingTab(new MediaViewerSettingTab(this.app, this));
 
     this.addRibbonIcon("image", "Open Media Viewer", () => this.activateView());
 
@@ -6340,5 +6466,6 @@ module.exports.CropOverlay = CropOverlay;
 module.exports.LineageStore = LineageStore;
 module.exports.MetadataResolver = MetadataResolver;
 module.exports.guarded = guarded;
+module.exports.MediaViewerSettingTab = MediaViewerSettingTab;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;

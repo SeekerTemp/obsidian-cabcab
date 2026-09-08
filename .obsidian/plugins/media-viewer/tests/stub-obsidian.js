@@ -15,7 +15,10 @@ class Plugin {
     (this.commands = this.commands || []).push(command);
     return command;
   }
-  addSettingTab() {}
+  addSettingTab(tab) {
+    this.settingTab = tab;
+    return tab;
+  }
   async loadData() {
     return null;
   }
