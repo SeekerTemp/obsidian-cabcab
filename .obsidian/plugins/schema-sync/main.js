@@ -10,6 +10,30 @@ const DEFAULT_SETTINGS = {
   // schemaName -> [property names answered "leave it alone"]. Persisted, because
   // a session-only memory would re-ask about every scratch property on restart.
   ignoredProperties: {},
+  // Asset Renamer, merged in from the sibling plugin. Its keys are namespaced by
+  // meaning rather than prefix; none of them collide with the above.
+  configFolder: "assets/config",
+  configBasePath: "assets/config/config.base",
+  categoryLinkPrefix: "",
+  metadataMenuMappingEnabled: false,
+  metadataMenuMappingPrompted: false,
+};
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "svg"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "mkv", "m4v", "ogv", "avi", "3gp"]);
+const MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+const CONFIG_SOURCE_ORDER = ["categories", "eras", "weathers", "roles", "asset_types", "outfit_types", "entities"];
+const EXCLUDED_CONFIG_FILES = new Set(["sources.md", "list.md", "schema-mappings.md"]);
+// Legacy source names that were mapped to a differently-spelled property. A
+// schema-derived source needs no map: its property is the field name itself.
+const LEGACY_SOURCE_PROPERTIES = {
+  categories: "Category",
+  eras: "Era",
+  weathers: "Weather",
+  roles: "Role",
+  entities: "Entity",
+  asset_types: "Asset_type",
+  outfit_types: "Outfit_type",
 };
 
 const SCHEMA_FOLDER = "data/schema";
@@ -673,6 +697,375 @@ class UndeclaredPropertyModal extends Modal {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Asset Renamer, merged in from the sibling plugin. It keeps its own ribbon icon
+// and commands: naming an attachment from a note's fields is a separate job from
+// keeping schemas in sync, and is wanted on demand rather than on a schedule.
+// ---------------------------------------------------------------------------
+
+class MetadataMenuMapping {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+
+  isAvailable() {
+    return this.plugin.app.plugins?.enabledPlugins?.has("metadata-menu") && Boolean(this.plugin.app.plugins.getPlugin("metadata-menu"));
+  }
+
+  async promptIfNeeded() {
+    if (!this.isAvailable() || this.plugin.settings.metadataMenuMappingPrompted) return;
+    this.plugin.settings.metadataMenuMappingPrompted = true;
+    await this.plugin.saveSettings();
+    const answer = await new Promise((resolve) => new ConfirmDeleteModal(
+      this.plugin.app,
+      "Metadata Menu detected",
+      "Map Schema Sync's value lists to Metadata Menu Select fields, so its dropdowns offer the same options?",
+      "Map fields",
+      resolve,
+    ).open());
+    this.plugin.settings.metadataMenuMappingEnabled = answer.confirmed;
+    await this.plugin.saveSettings();
+    if (answer.confirmed) await this.sync();
+  }
+
+  async sync() {
+    if (!this.plugin.settings.metadataMenuMappingEnabled || !this.isAvailable()) return;
+    const metadataMenu = this.plugin.app.plugins.getPlugin("metadata-menu");
+    const fields = [];
+    for (const file of this.plugin.getConfigSourceFiles()) {
+      const values = await this.plugin.loadConfigValues(file);
+      if (!values.length) continue;
+      const valuesList = {};
+      values.forEach((value, index) => { valuesList[String(index)] = `[[${value}]]`; });
+      fields.push({
+        name: this.plugin.getSourcePropertyName(file),
+        type: "Select",
+        id: `schema-sync-${file.basename.toLowerCase()}`,
+        path: "",
+        options: { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" },
+      });
+    }
+    const sourceProperties = new Set(fields.map((field) => field.name));
+    metadataMenu.presetFields = metadataMenu.presetFields.filter((field) => !sourceProperties.has(field.name));
+    metadataMenu.presetFields.push(...fields);
+    await metadataMenu.saveSettings();
+    new Notice(`Mapped ${fields.length} value list(s) to Metadata Menu.`);
+  }
+}
+
+class AssetRenamerModal extends Modal {
+  constructor(plugin, noteFile, propertyName = "Cover") {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.noteFile = noteFile;
+    this.propertyName = propertyName;
+    this.selectedImage = this.getPropertyFile();
+    this.mediaFiles = plugin.app.vault.getFiles().filter((file) => MEDIA_EXTENSIONS.has(file.extension.toLowerCase()));
+    this.sourceValues = new Map();
+    this.valueSelects = [];
+    this.sourceEntries = [];
+    this.categorySelect = null;
+  }
+
+  getPropertyFile() {
+    const value = this.app.metadataCache.getFileCache(this.noteFile)?.frontmatter?.[this.propertyName];
+    if (typeof value !== "string") return null;
+    const link = value.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    const path = link ? link[1] : value.trim();
+    return path ? this.app.metadataCache.getFirstLinkpathDest(path, this.noteFile.path) : null;
+  }
+
+  // An attachment-typed field is what this modal exists to fill, so those lead.
+  getPropertyNames() {
+    const frontmatter = this.app.metadataCache.getFileCache(this.noteFile)?.frontmatter ?? {};
+    const fields = this.plugin.schemaFieldsFor(this.noteFile) || {};
+    const attachments = Object.entries(fields).filter(([, definition]) => definition.type === "attachment").map(([name]) => name);
+    const rest = Object.keys(frontmatter).filter((name) => !RESERVED_PROPERTIES.has(name) && !attachments.includes(name)).sort((a, b) => a.localeCompare(b));
+    return [...new Set([...attachments, this.propertyName, ...rest])];
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText(`Asset renamer: ${this.noteFile.basename}`);
+    const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
+    this.createTargetControls(root);
+    this.createFilenameControls(root);
+    await this.createSourceControls(root);
+    this.createActions(root);
+  }
+
+  createTargetControls(root) {
+    root.createEl("h3", { text: "Media property" });
+    const propertySelect = this.addSelectRow(root, "Property");
+    for (const property of this.getPropertyNames()) propertySelect.add(new Option(property, property));
+    propertySelect.value = this.propertyName;
+    const folderSelect = this.addSelectRow(root, "Folder");
+    const mediaSelect = this.addSelectRow(root, "Media");
+    const preview = root.createDiv({ cls: "asset-renamer-preview" });
+    const folders = [...new Set(this.mediaFiles.map((file) => file.parent.path))].sort();
+    for (const folder of folders) folderSelect.add(new Option(folder, folder));
+
+    const updatePreview = () => {
+      preview.empty();
+      if (!(this.selectedImage instanceof TFile)) {
+        preview.style.display = "none";
+        return;
+      }
+      const extension = this.selectedImage.extension.toLowerCase();
+      const media = VIDEO_EXTENSIONS.has(extension) ? preview.createEl("video") : preview.createEl("img");
+      media.src = this.app.vault.getResourcePath(this.selectedImage);
+      media.setAttribute("alt", this.selectedImage.name);
+      if (media instanceof HTMLVideoElement) media.controls = true;
+      preview.style.display = "block";
+    };
+    const loadMedia = (folder) => {
+      mediaSelect.replaceChildren(new Option("Select media...", ""));
+      for (const file of this.mediaFiles.filter((item) => item.parent.path === folder)) mediaSelect.add(new Option(file.name, file.path));
+      if (this.selectedImage?.parent?.path === folder) mediaSelect.value = this.selectedImage.path;
+      updatePreview();
+    };
+    propertySelect.addEventListener("change", () => {
+      this.propertyName = propertySelect.value;
+      this.selectedImage = this.getPropertyFile();
+      folderSelect.value = this.selectedImage?.parent?.path ?? folders[0] ?? "";
+      loadMedia(folderSelect.value);
+    });
+    folderSelect.value = this.selectedImage?.parent?.path ?? folders[0] ?? "";
+    folderSelect.addEventListener("change", () => loadMedia(folderSelect.value));
+    mediaSelect.addEventListener("change", () => {
+      this.selectedImage = this.app.vault.getAbstractFileByPath(mediaSelect.value);
+      updatePreview();
+    });
+    loadMedia(folderSelect.value);
+  }
+
+  createFilenameControls(root) {
+    root.createEl("h3", { text: "Filename builder" });
+    const row = root.createDiv({ cls: "asset-renamer-row" });
+    row.createSpan({ text: "Preview" });
+    this.filenamePreview = row.createEl("code", { text: `..._${this.timestamp()}` });
+  }
+
+  async createSourceControls(root) {
+    const files = this.plugin.getConfigSourceFiles(this.noteFile);
+    if (files.length === 0) {
+      const schemaName = this.plugin.schemaNameFor(this.noteFile);
+      root.createEl("p", {
+        cls: "asset-renamer-summary",
+        text: schemaName
+          ? `${schemaName} has no value lists yet, so there is nothing to build a name from. Run Sync schema system, or add values to a field's list.`
+          : `${this.noteFile.basename} does not declare a schema, so no value lists apply to it. Add "implements: <Schema>" to build names from that schema's fields.`,
+      });
+      return;
+    }
+    for (const [index, file] of files.entries()) {
+      const property = this.plugin.getSourcePropertyName(file);
+      const select = this.addSelectRow(root, property);
+      select.add(new Option("Select value...", ""));
+      const values = await this.loadValues(file);
+      for (const value of values) select.add(new Option(value, value));
+      const currentValue = this.getBoundSourceValue(property, values, index);
+      const matchingOption = [...select.options].find((option) => this.plugin.normalizeToken(option.value) === this.plugin.normalizeToken(currentValue));
+      if (matchingOption) select.value = matchingOption.value;
+      select.addEventListener("change", () => this.updateFilenamePreview());
+      this.valueSelects.push(select);
+      const entry = { file, select, property };
+      this.sourceEntries.push(entry);
+      if (property === "Category") this.categorySelect = select;
+    }
+    this.updateFilenamePreview();
+  }
+
+  getBoundSourceValue(property, values, index) {
+    const frontmatter = this.app.metadataCache.getFileCache(this.noteFile)?.frontmatter ?? {};
+    const direct = this.plugin.parseMetadataValue(frontmatter[property]);
+    if (direct && values.includes(direct)) return direct;
+    const composite = this.plugin.parseCompositeValues(frontmatter.Category);
+    return composite.find((value) => values.includes(value)) ?? composite[index] ?? "";
+  }
+
+  createActions(root) {
+    const actions = root.createDiv({ cls: "asset-renamer-actions" });
+    actions.createEl("button", { text: "Configure sources" })
+      .addEventListener("click", () => { this.close(); new AssetConfigModal(this.plugin).open(); });
+    const renameButton = actions.createEl("button", { text: `Rename ${this.propertyName} media`, cls: "mod-cta" });
+    renameButton.addEventListener("click", () => this.rename(renameButton));
+  }
+
+  addSelectRow(root, label) {
+    const row = root.createDiv({ cls: "asset-renamer-row" });
+    row.createSpan({ text: label });
+    return row.createEl("select");
+  }
+
+  async loadValues(file) {
+    if (!this.sourceValues.has(file.path)) {
+      this.sourceValues.set(file.path, await this.plugin.loadConfigValues(file));
+    }
+    return this.sourceValues.get(file.path);
+  }
+
+  joinedName() {
+    return this.valueSelects.map((select) => select.value).filter(Boolean).map((value) => this.plugin.normalizeToken(value)).filter(Boolean).join("_");
+  }
+
+  timestamp() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  }
+
+  updateFilenamePreview() {
+    const name = this.joinedName();
+    this.filenamePreview.textContent = name ? `${name}_${this.timestamp()}` : `..._${this.timestamp()}`;
+  }
+
+  async rename(button) {
+    const name = this.joinedName();
+    if (!name) return new Notice("Select at least one value.");
+    if (!(this.selectedImage instanceof TFile)) return new Notice("Select media from the folder browser.");
+    button.disabled = true;
+    try {
+      const filename = `${name}_${this.timestamp()}.${this.selectedImage.extension}`;
+      const folder = this.selectedImage.parent.path === "/" ? "" : `${this.selectedImage.parent.path}/`;
+      const targetPath = `${folder}${filename}`;
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing && existing !== this.selectedImage) throw new Error(`A file already exists: ${targetPath}`);
+      if (targetPath !== this.selectedImage.path) await this.app.fileManager.renameFile(this.selectedImage, targetPath);
+      await this.app.fileManager.processFrontMatter(this.noteFile, (frontmatter) => {
+        frontmatter[this.propertyName] = `[[${targetPath}]]`;
+        for (const entry of this.sourceEntries) {
+          if (entry.select.value) frontmatter[entry.property] = `[[${entry.select.value}]]`;
+        }
+        if (!this.categorySelect?.value && "Category" in frontmatter) frontmatter.Category = name;
+      });
+      new Notice(`Renamed to ${filename}`);
+      this.close();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Could not rename the media.");
+      button.disabled = false;
+    }
+  }
+}
+
+class BulkCategoryModal extends Modal {
+  constructor(plugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.notes = [];
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText("Bulk rename category dependencies");
+    const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
+    root.createEl("p", { text: "Rename a category binding across notes and their Cover attachments." });
+    const oldInput = this.addTextRow(root, "Current category", "");
+    const newInput = this.addTextRow(root, "New category", "");
+    const summary = root.createEl("p", { cls: "asset-renamer-summary", text: "Enter a category to scan the vault." });
+    const actions = root.createDiv({ cls: "asset-renamer-actions" });
+    const scanButton = actions.createEl("button", { text: "Scan dependencies" });
+    const renameButton = actions.createEl("button", { text: "Rename all dependencies", cls: "mod-cta" });
+    renameButton.disabled = true;
+    scanButton.addEventListener("click", () => {
+      this.notes = this.plugin.findCategoryNotes(oldInput.value.trim());
+      const attachmentCount = new Set(this.notes.map(({ image }) => image?.path).filter(Boolean)).size;
+      summary.textContent = `${this.notes.length} note(s), ${attachmentCount} unique attachment(s) found.`;
+      renameButton.disabled = !this.notes.length || !newInput.value.trim() || newInput.value.trim() === oldInput.value.trim();
+    });
+    renameButton.addEventListener("click", async () => {
+      renameButton.disabled = true;
+      try {
+        await this.plugin.bulkRenameCategory(oldInput.value.trim(), newInput.value.trim(), this.notes);
+        this.close();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : "Bulk category rename failed.");
+        renameButton.disabled = false;
+      }
+    });
+  }
+
+  addTextRow(root, label, value) {
+    const row = root.createDiv({ cls: "asset-renamer-row" });
+    row.createSpan({ text: label });
+    return row.createEl("input", { type: "text", value });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+class BulkReloadModal extends Modal {
+  constructor(plugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.records = [];
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText("Bulk reload attachment names");
+    const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
+    root.createEl("p", { text: "Read each note's current values and update only its Cover filename. The timestamp suffix and note metadata are preserved." });
+    const summary = root.createEl("p", { cls: "asset-renamer-summary", text: "Scanning bound attachments..." });
+    const reloadButton = root.createDiv({ cls: "asset-renamer-actions" }).createEl("button", { text: "Reload attachment names", cls: "mod-cta" });
+    reloadButton.disabled = true;
+    this.records = await this.plugin.findCategoryAttachmentRecords();
+    const uniqueImages = new Set(this.records.map(({ image }) => image.path));
+    summary.textContent = `${this.records.length} note(s), ${uniqueImages.size} attachment(s) ready. No values or timestamps will be changed.`;
+    reloadButton.disabled = !this.records.length;
+    reloadButton.addEventListener("click", async () => {
+      reloadButton.disabled = true;
+      try {
+        await this.plugin.reloadAttachmentNames(this.records);
+        this.close();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : "Attachment name reload failed.");
+        reloadButton.disabled = false;
+      }
+    });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+class AssetConfigModal extends Modal {
+  constructor(plugin) { super(plugin.app); this.plugin = plugin; }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText("Asset renamer sources");
+    contentEl.createEl("p", { text: "A record's name is built from its own schema's value lists. These settings only cover notes outside the schema system." });
+    new Setting(contentEl).setName("Fallback config folder").setDesc("Markdown files here become source dropdowns for notes that do not declare a schema.").addText((text) => text.setValue(this.plugin.settings.configFolder).onChange(async (value) => {
+      this.plugin.settings.configFolder = value.trim().replace(/\\/g, "/");
+      await this.plugin.saveSettings();
+    }));
+    new Setting(contentEl).setName("config.base path").setDesc("Bases view generated for the fallback folder. One is always generated for data/config as well.").addText((text) => text.setValue(this.plugin.settings.configBasePath).onChange(async (value) => {
+      this.plugin.settings.configBasePath = value.trim().replace(/\\/g, "/");
+      await this.plugin.saveSettings();
+    }));
+    new Setting(contentEl).setName("Category link prefix").setDesc("Prefix used when binding category values to the Category property.").addText((text) => text.setValue(this.plugin.settings.categoryLinkPrefix).onChange(async (value) => {
+      this.plugin.settings.categoryLinkPrefix = value.trim();
+      await this.plugin.saveSettings();
+    }));
+    const available = this.plugin.metadataMenuMapping.isAvailable();
+    new Setting(contentEl).setName("Metadata Menu mapping").setDesc(available ? "Create selectors for value-list properties in Metadata Menu." : "Metadata Menu is not enabled, so mapping is disabled.").addToggle((toggle) => toggle.setValue(this.plugin.settings.metadataMenuMappingEnabled === true).setDisabled(!available).onChange(async (value) => {
+      this.plugin.settings.metadataMenuMappingEnabled = value;
+      await this.plugin.saveSettings();
+      if (value) await this.plugin.metadataMenuMapping.sync();
+    }));
+    new Setting(contentEl).setName("Generate config.base").setDesc("Create or update both Bases views.").addButton((button) => button.setButtonText("Generate").setCta().onClick(async () => {
+      await this.plugin.generateConfigBase();
+      this.close();
+    }));
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 class SchemaSyncView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -1043,6 +1436,10 @@ class SchemaSyncPlugin extends Plugin {
     this.addRibbonIcon("workflow", "Open schema dashboard", () => {
       void this.openDashboard();
     });
+    // Two icons on purpose. Naming an attachment from a note's own fields is a
+    // separate job from keeping schemas in sync, and is wanted on demand.
+    this.addRibbonIcon("image", "Open asset renamer for active note", () => this.openAssetRenamer(false));
+    this.metadataMenuMapping = new MetadataMenuMapping(this);
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText("Schema Sync: loading");
 
@@ -1137,13 +1534,26 @@ class SchemaSyncPlugin extends Plugin {
       name: "Clean orphaned config notes",
       callback: () => this.cleanOrphanedConfigs(),
     });
+    this.addCommand({ id: "open-asset-renamer", name: "Open asset renamer for active note", checkCallback: (checking) => this.openAssetRenamer(checking) });
+    this.addCommand({ id: "configure-asset-renamer", name: "Configure asset renamer sources", callback: () => new AssetConfigModal(this).open() });
+    this.addCommand({ id: "bulk-rename-category", name: "Bulk rename category dependencies", callback: () => new BulkCategoryModal(this).open() });
+    this.addCommand({ id: "bulk-reload-attachment-names", name: "Bulk reload attachment names from metadata", callback: () => new BulkReloadModal(this).open() });
+    this.addCommand({ id: "generate-config-base", name: "Generate config.base views", callback: () => this.generateConfigBase() });
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+      if (file instanceof TFile && file.extension === "md") {
+        menu.addItem((item) => item.setTitle("Open asset renamer").setIcon("image").onClick(() => new AssetRenamerModal(this, file).open()));
+      }
+    }));
     this.addCommand({
       id: "open-schema-erd",
       name: "Open schema ERD",
       callback: () => this.openBaseNote([...this.schemas.keys()][0]),
     });
 
-    this.app.workspace.onLayoutReady(() => void this.initializeDatabase());
+    this.app.workspace.onLayoutReady(() => {
+      void this.initializeDatabase();
+      void this.metadataMenuMapping.promptIfNeeded();
+    });
   }
 
   // getActiveFile() keeps returning the last opened note even when focus has
@@ -2031,6 +2441,236 @@ class SchemaSyncPlugin extends Plugin {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) return new Notice(`${path} has not been generated yet. Run Sync schema system first.`);
     await this.app.workspace.getLeaf(true).openFile(file);
+  }
+
+  // --- Asset Renamer -------------------------------------------------------
+
+  schemaNameFor(noteFile) {
+    const name = noteFile && this.app.metadataCache.getFileCache(noteFile)?.frontmatter?.implements;
+    return typeof name === "string" && this.schemas.has(name) ? name : null;
+  }
+
+  schemaFieldsFor(noteFile) {
+    const name = this.schemaNameFor(noteFile);
+    return name ? this.schemas.get(name) : null;
+  }
+
+  // README item 10. A record's filename is built from its own schema's value
+  // lists, not from every list in the vault, so the dropdowns already suit the
+  // note in front of you. A note that declares no schema offers nothing — the
+  // renamer is for notes that follow the data pattern. Called with no note (the
+  // Metadata Menu sync, the bulk tools) it means "every list there is".
+  getConfigSourceFiles(noteFile) {
+    const fileAt = (path) => {
+      const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+      return file instanceof TFile ? file : null;
+    };
+    if (noteFile) {
+      const schemaName = this.schemaNameFor(noteFile);
+      if (!schemaName) return [];
+      return Object.entries(this.schemas.get(schemaName))
+        .map(([fieldName, definition]) => configPathFor(schemaName, fieldName, definition))
+        .filter(Boolean)
+        .map(fileAt)
+        .filter(Boolean);
+    }
+    const fromSchemas = [];
+    for (const [schemaName, fields] of this.schemas) {
+      for (const [fieldName, definition] of Object.entries(fields)) {
+        const path = configPathFor(schemaName, fieldName, definition);
+        const file = path && fileAt(path);
+        if (file) fromSchemas.push(file);
+      }
+    }
+    const legacy = this.app.vault.getMarkdownFiles()
+      .filter((file) => file.parent?.path === this.settings.configFolder && !EXCLUDED_CONFIG_FILES.has(file.name.toLowerCase()))
+      .sort((left, right) => {
+        const leftIndex = CONFIG_SOURCE_ORDER.indexOf(left.basename.toLowerCase());
+        const rightIndex = CONFIG_SOURCE_ORDER.indexOf(right.basename.toLowerCase());
+        if (leftIndex !== -1 || rightIndex !== -1) return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
+        return left.name.localeCompare(right.name);
+      });
+    return [...fromSchemas, ...legacy];
+  }
+
+  // A schema-derived list is named for its field, so the property is the file
+  // name verbatim. Only the older hand-made sources need the spelling map.
+  getSourcePropertyName(file) {
+    if (file.parent?.path?.startsWith(`${CONFIG_FOLDER}/`)) return file.basename;
+    const base = String(file.basename).split(".")[0];
+    return LEGACY_SOURCE_PROPERTIES[base.toLowerCase()] ?? base;
+  }
+
+  // A generated list is a markdown table whose header must not be read as a
+  // value; a hand-made one is a plain list. The frontmatter says which.
+  async loadConfigValues(file) {
+    const raw = await this.app.vault.read(file);
+    if (this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor || /^configFor:/m.test(raw)) {
+      return parseConfigValues(raw);
+    }
+    return [...new Set(raw.split(/\r?\n/).map((line) => this.parseLegacyConfigValue(line)).filter(Boolean))];
+  }
+
+  parseLegacyConfigValue(line) {
+    let value = line.trim();
+    if (!value || value.startsWith("//") || /^\|?\s*-{3,}/.test(value)) return "";
+    if (value.startsWith("|")) value = value.split("|").map((cell) => cell.trim()).filter(Boolean)[0] ?? "";
+    const link = value.match(/\[\[([^#|\]]+)/);
+    if (link) value = link[1];
+    if (value.includes(":")) value = value.split(":", 1)[0].trim();
+    return value.replace(/^\|\s*/, "").trim();
+  }
+
+  parseMetadataValue(value) {
+    if (Array.isArray(value)) return value.map((item) => this.parseMetadataValue(item)).find(Boolean) ?? "";
+    if (typeof value !== "string") return "";
+    const text = value.trim().replace(/^['"]|['"]$/g, "");
+    const link = text.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    return (link ? link[1] : text).trim();
+  }
+
+  parseCompositeValues(value) {
+    if (typeof value !== "string") return [];
+    const links = [...value.matchAll(/\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]/g)].map((match) => match[1]);
+    if (links.length) return links;
+    return value.split("_").map((part) => part.trim()).filter(Boolean);
+  }
+
+  getCategoryValue(noteFile) {
+    const value = this.app.metadataCache.getFileCache(noteFile)?.frontmatter?.Category;
+    if (typeof value !== "string") return "";
+    const link = value.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    const target = link ? link[1] : value.trim();
+    if (this.settings.categoryLinkPrefix && target.startsWith(this.settings.categoryLinkPrefix)) return target.slice(this.settings.categoryLinkPrefix.length);
+    return target.startsWith("categories.") ? target.slice("categories.".length) : target;
+  }
+
+  getLinkedFile(noteFile, propertyName) {
+    const value = this.app.metadataCache.getFileCache(noteFile)?.frontmatter?.[propertyName];
+    if (typeof value !== "string") return null;
+    const link = value.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    const path = link ? link[1] : value.trim();
+    const file = path ? this.app.metadataCache.getFirstLinkpathDest(path, noteFile.path) : null;
+    return file instanceof TFile && MEDIA_EXTENSIONS.has(file.extension.toLowerCase()) ? file : null;
+  }
+
+  normalizeToken(value) {
+    return String(value).trim().toLowerCase().replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  }
+
+  findCategoryNotes(category) {
+    if (!category) return [];
+    return this.app.vault.getMarkdownFiles()
+      .map((note) => ({ note, image: this.getLinkedFile(note, "Cover") }))
+      .filter(({ note }) => this.getCategoryValue(note) === category);
+  }
+
+  async findCategoryAttachmentRecords() {
+    const sourceValues = new Map();
+    for (const file of this.getConfigSourceFiles()) sourceValues.set(file.path, await this.loadConfigValues(file));
+    const records = [];
+    for (const note of this.app.vault.getMarkdownFiles()) {
+      const image = this.getLinkedFile(note, "Cover");
+      if (!image || !image.basename.match(/_(\d{8}_\d{6})$/)) continue;
+      const name = this.getFilenameName(note, sourceValues);
+      if (name) records.push({ note, category: this.getCategoryValue(note), name, image });
+    }
+    return records;
+  }
+
+  getFilenameName(noteFile, sourceValues = new Map()) {
+    const frontmatter = this.app.metadataCache.getFileCache(noteFile)?.frontmatter ?? {};
+    const composite = this.parseCompositeValues(frontmatter.Category);
+    const values = this.getConfigSourceFiles(noteFile)
+      .map((file) => {
+        const direct = this.parseMetadataValue(frontmatter[this.getSourcePropertyName(file)]);
+        const candidates = sourceValues.get(file.path) ?? [];
+        if (direct && (!candidates.length || candidates.includes(direct))) return direct;
+        return composite.find((value) => candidates.includes(value)) ?? "";
+      })
+      .filter(Boolean);
+    return this.normalizeToken(values.length ? values.join("_") : composite.join("_"));
+  }
+
+  async bulkRenameCategory(oldCategory, newCategory, notes) {
+    if (!oldCategory || !newCategory || oldCategory === newCategory) throw new Error("Enter two different category values.");
+    const oldToken = this.normalizeToken(oldCategory);
+    const newToken = this.normalizeToken(newCategory);
+    const imageTargets = new Map();
+    for (const { image } of notes) {
+      if (!image || imageTargets.has(image.path)) continue;
+      const prefix = `${oldToken}_`;
+      const newName = image.basename.startsWith(prefix) ? `${newToken}_${image.basename.slice(prefix.length)}` : `${newToken}_${image.basename}`;
+      const folder = image.parent.path === "/" ? "" : `${image.parent.path}/`;
+      imageTargets.set(image.path, `${folder}${newName}.${image.extension}`);
+    }
+    for (const targetPath of imageTargets.values()) {
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing && !imageTargets.has(existing.path)) throw new Error(`A file already exists: ${targetPath}`);
+    }
+    const renamedPaths = new Map();
+    for (const [oldPath, targetPath] of imageTargets) {
+      const image = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(image instanceof TFile)) continue;
+      if (oldPath !== targetPath) await this.app.fileManager.renameFile(image, targetPath);
+      renamedPaths.set(oldPath, targetPath);
+    }
+    for (const { note, image } of notes) {
+      await this.app.fileManager.processFrontMatter(note, (frontmatter) => {
+        frontmatter.Category = `[[${this.settings.categoryLinkPrefix}${newToken}]]`;
+        const newCover = image ? renamedPaths.get(image.path) : null;
+        if (newCover) frontmatter.Cover = `[[${newCover}]]`;
+      });
+    }
+    new Notice(`Updated ${notes.length} note(s) and ${renamedPaths.size} attachment(s).`);
+  }
+
+  async reloadAttachmentNames(records) {
+    const imageTargets = new Map();
+    for (const { image, name } of records) {
+      const suffix = image.basename.match(/_(\d{8}_\d{6})$/)?.[1];
+      if (!suffix) continue;
+      const targetPath = `${image.parent.path === "/" ? "" : `${image.parent.path}/`}${name}_${suffix}.${image.extension}`;
+      const previous = imageTargets.get(image.path);
+      if (previous && previous !== targetPath) throw new Error(`One attachment is bound to conflicting values: ${image.path}`);
+      imageTargets.set(image.path, targetPath);
+    }
+    for (const targetPath of imageTargets.values()) {
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing && !imageTargets.has(existing.path)) throw new Error(`A file already exists: ${targetPath}`);
+    }
+    let renamedCount = 0;
+    for (const [oldPath, targetPath] of imageTargets) {
+      if (oldPath === targetPath) continue;
+      const image = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(image instanceof TFile)) continue;
+      await this.app.fileManager.renameFile(image, targetPath);
+      renamedCount += 1;
+    }
+    new Notice(`Reloaded ${renamedCount} attachment name(s); timestamps and metadata were unchanged.`);
+  }
+
+  // README item 4. One view over the hand-made fallback folder, and one over
+  // data/config, which is where the generated lists actually live now.
+  async generateConfigBase() {
+    const written = [];
+    for (const [path, folder] of [[this.settings.configBasePath, this.settings.configFolder], [`${CONFIG_FOLDER}/config.base`, CONFIG_FOLDER]]) {
+      if (!path || !folder) continue;
+      const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (parent) await this.ensureFolder(parent);
+      const baseName = path.slice(path.lastIndexOf("/") + 1);
+      const content = `views:\n  - type: table\n    name: Configuration records\n    filters:\n      and:\n        - file.inFolder("${folder}")\n        - file.name != "${baseName}"\n    order:\n      - file.name\n      - file.path\n    sort:\n      - property: file.name\n        direction: ASC\n`;
+      await this.writeFile(normalizePath(path), content);
+      written.push(path);
+    }
+    new Notice(`Generated ${written.join(" and ")}.`);
+  }
+
+  openAssetRenamer(checking) {
+    const file = this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || file.extension !== "md") return false;
+    if (!checking) new AssetRenamerModal(this, file).open();
+    return true;
   }
 
   // Turns a field's value list into records, one per row, named after the value.

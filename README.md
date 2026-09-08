@@ -44,16 +44,27 @@ discard one side's hand-written Notes column.
 emits an `image(<field>.path)` formula and the view shows that in place of the
 raw path column.
 
+**4 and 10. Asset Renamer is built in.** The sibling plugin is merged into Schema
+Sync and disabled; its folder is left in place so it can be re-enabled if needed.
+It keeps its own ribbon icon, commands and file-menu entry — naming an attachment
+is a separate job from keeping schemas in sync. Its dropdowns are now built from
+the record's **own schema's** value lists rather than every file in a config
+folder, and a note that declares no schema is offered nothing. `Generate
+config.base` writes a view for `data/config` as well as the fallback folder.
+
+**7. Foreign fields pull through a relation.** Each bound relation emits a
+`<field>_<targetField>` formula per bound target field, so a row can be labelled
+and filtered by the entity it points at. Nothing is written into `fields:` —
+query and labelling only. One hop, so a cycle cannot generate forever.
+
+**8. A value list can be implemented as records.** The ⤓ button on each
+02/Definition row, before the delete button, creates one record per row named
+after the value, with the field and the schema's identity field set to it.
+Existing notes are skipped, so it is safe to press twice.
+
 ### Open
 
-4.I see Realms.config is created by assets renamer. Asssets renmaer not updated to match schema sync yet. 
-- combine 2 plugins but I still want it's 2 separate icon like before so I can call assets renamer when ever i want.![[Pasted image 20260907163318.png]]
-- Update path generate config.basse in \data\config too. Just get the config base path and generete it's there too
-7. If a schema have a foreign key relation -> record able to get the foreigh fied attribute to. Like an orm/jpa. Just able to mapping to query and labeling, this field foreign field not binding to source schema
-8. Add buttons options to implements list in config to records of its schemas with id = item name for PrimaryKey.config. button lay in the 02/definition, before delete button.
-9. .base read attachment as a formula column to get attachments field attribute as image column: image(Cover.path)
-
-10. Assets renamer builtin. It's only read schema's field in config, not all schema in \config. -> mean it's auto filter field to suit each record instant based on the schema. This is of by default if the note is not a record/not match my data pattern(which is rarely happend because my purpose when built assets renamer is to naming file based on schema to built pkm)
+_Nothing outstanding from the original list._
 
 ## Layout
 
@@ -289,8 +300,8 @@ Cleanup only ever touches paths the plugin recorded as generated, so hand-author
 | --- | --- |
 | **Bases** (core) | Consumes `data/base/*.base`. These must be Bases YAML — writing DBML there is what caused "unable to parse file". |
 | **DBML Visualizer** | Renders the fence in `data/AssetDatabase.base.md`. |
-| **Asset Renamer** | Edits `attachment` fields. No configuration needed; it reads frontmatter keys. |
-| **Metadata Menu** | Asset Renamer registers `Select` preset fields from its own config sources. |
+| **Asset Renamer** | Merged in. Its own ribbon icon and commands; builds names from the record's own schema's value lists. The standalone plugin is disabled but left on disk. |
+| **Metadata Menu** | Optionally registers `Select` preset fields from the value lists. |
 
 ## Development
 
