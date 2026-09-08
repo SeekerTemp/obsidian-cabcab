@@ -3097,14 +3097,16 @@ class LineageStore {
     return file;
   }
 
-  // Frontmatter the plugin did not write and is not about to. `implements` is
-  // excluded because it is re-emitted, and the known fields because the caller
-  // has just decided what they should be.
+  /* Everything the caller did not name, carried across untouched.
+   *
+   * Known fields as well as unknown ones: a rewrite says what it is changing,
+   * and a rename that has to move one link must not drop the crop rectangle
+   * beside it. `implements` is the one exclusion, because it is re-emitted.
+   */
   carriedFields(frontmatter, values) {
     const carried = {};
     for (const [key, value] of Object.entries(frontmatter || {})) {
       if (key === "implements") continue;
-      if (INSTANCE_FIELD_ORDER.includes(key)) continue;
       if (values[key] !== undefined) continue;
       carried[key] = value;
     }
@@ -5451,11 +5453,116 @@ class MediaViewerPlugin extends Plugin {
     });
   }
 
-  /* Rename, for the store's maps. MV-RENAME adds the case this does not
-     handle — a tracked file renamed while Obsidian's own link updating is off,
-     which is the only case where this plugin writes on a rename. */
-  handleLineageRename(file, oldPath) {
-    return this.lineage.handleRename(file, oldPath);
+  /* ---------------------------------------------------------------------- *
+   * Renames — MV-RENAME.
+   *
+   * The first act is a map lookup, and for most of a vault it misses. Renaming
+   * or moving a media file with no note does nothing at all: no scan, no
+   * rewrite, no work. Handling is proportional to what has actually been
+   * edited, not to vault size.
+   *
+   * Beyond that there is one case to handle, and it is not the obvious one.
+   * Because `media:` and `source:` are wikilinks in frontmatter, Obsidian's own
+   * link updating rewrites them when a media file moves and the notes stay
+   * correct with no work from this plugin at all. What is left is the user who
+   * has turned that setting off — the only case where a rename makes this
+   * plugin write.
+   *
+   * Children are never renamed. Rename cover.png to hero.png and
+   * cover+clone+260908110422.png keeps its name; only the links change.
+   * Cascading would turn one operation into many that can each fail partway,
+   * and would break every inbound link to a child.
+   * ---------------------------------------------------------------------- */
+
+  async handleLineageRename(file, oldPath) {
+    if (!file || !file.path) return false;
+    // The lookup that misses. Three map reads, no I/O, and for an untracked
+    // file this is the whole of the handling.
+    const tracked =
+      this.lineage.isTracked(oldPath) ||
+      this.lineage.bySource.has(oldPath) ||
+      this.lineage.records.has(oldPath);
+    // The maps move either way: a note renamed by hand is not a tracked media
+    // file, and still has to keep working.
+    this.lineage.handleRename(file, oldPath);
+    if (!tracked) return false;
+    if (!isMediaPath(file.path)) return false;
+    if (this.linkUpdatingEnabled()) {
+      // Obsidian has already rewritten both links. Re-reading the maps is the
+      // whole response; writing again would be a second, redundant edit to
+      // every note in the cascade.
+      this.debug("rename: " + oldPath + " → " + file.path + ", link updating on, nothing to write");
+      return false;
+    }
+    return this.rewriteLineageLinks(file.path, oldPath);
+  }
+
+  /* Obsidian's own "Automatically update internal links".
+   *
+   * Read rather than assumed, and read as `=== true`, because the platform's
+   * default when the key has never been set is off — assuming it on would mean
+   * silently doing nothing in exactly the vault that needs the work.
+   */
+  linkUpdatingEnabled() {
+    const vault = this.app.vault;
+    if (!vault || typeof vault.getConfig !== "function") return false;
+    try {
+      return vault.getConfig("alwaysUpdateLinks") === true;
+    } catch (error) {
+      console.error("Media Viewer: could not read the link-updating setting", error);
+      return false;
+    }
+  }
+
+  /* Rewrite `media:` on the file's own note and `source:` on every child.
+   *
+   * Every rewrite is logged. This is the operation with the widest blast
+   * radius and the least visible failure mode — a cascade that fails partway
+   * leaves lineage half-rewritten, and the vault API offers no way to make it
+   * atomic — so the mitigation is that the console says exactly what was
+   * touched, and Repair lineage exists for what was not.
+   */
+  async rewriteLineageLinks(newPath, oldPath) {
+    const started = Date.now();
+    const rewritten = [];
+    const failed = [];
+
+    const own = this.lineage.recordFor(newPath);
+    if (own) {
+      try {
+        await this.lineage.write(newPath, {});
+        rewritten.push(own.notePath);
+        console.log("Media Viewer: rewrote media: in " + own.notePath + " → " + newPath);
+      } catch (error) {
+        failed.push(own.notePath);
+        console.error("Media Viewer: could not rewrite media: in " + own.notePath, error);
+      }
+    }
+
+    for (const childPath of this.lineage.childrenOf(newPath)) {
+      const child = this.lineage.recordFor(childPath);
+      if (!child) continue;
+      try {
+        await this.lineage.write(childPath, { source: wikilinkFor(newPath) });
+        rewritten.push(child.notePath);
+        console.log("Media Viewer: rewrote source: in " + child.notePath + " → " + newPath);
+      } catch (error) {
+        failed.push(child.notePath);
+        console.error("Media Viewer: could not rewrite source: in " + child.notePath, error);
+      }
+    }
+
+    this.logTiming("rename-cascade", oldPath + " → " + newPath, started, "links=" + rewritten.length);
+    if (failed.length) {
+      new Notice(
+        "Media Viewer: " +
+          failed.length +
+          " lineage note" +
+          (failed.length === 1 ? "" : "s") +
+          " could not be updated — use Repair lineage"
+      );
+    }
+    return rewritten;
   }
 
   refreshLineageViews() {
