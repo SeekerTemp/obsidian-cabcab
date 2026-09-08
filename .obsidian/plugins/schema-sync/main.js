@@ -157,7 +157,7 @@ function withUserNotes(body, raw) {
   ].join("\n");
 }
 
-// Reads back a .config.md table as value -> notes cell, dropping the header and
+// Reads back a value-list table as value -> notes cell, dropping the header and
 // separator rows, so regeneration can union rather than replace.
 function parseConfigRows(raw) {
   const rows = [];
@@ -1284,12 +1284,15 @@ class SchemaSyncPlugin extends Plugin {
       description: { type: "string", required: false, hasDefault: true, defaultValue: "" },
       assetCount: { type: "number", required: false, hasDefault: true, defaultValue: 0 },
     };
-    await Promise.all([SCHEMA_FOLDER, CONFIG_FOLDER, ASSET_FOLDER, BASE_VIEW_FOLDER, DATA_FOLDER].map((folder) => this.ensureFolder(folder)));
-    await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${name}.schema.md`), renderSchemaNote(name, schemaFields, `${CONFIG_FOLDER}/${name}/name.md`, undefined, undefined, this.schemas));
-    await this.app.vault.create(normalizePath(`${CONFIG_FOLDER}/${name}.config.md`), `# ${name} Config\n\n| name | description | assetCount |\n| --- | --- | --- |\n`);
+    // The sample's source table is a hand-authored implementation target, not a
+    // generated value list, so it belongs in the hand-authored config folder.
+    // data/config/ now holds only generated lists, namespaced by schema.
+    await Promise.all([SCHEMA_FOLDER, CONFIG_FOLDER, ROOT_CONFIG_FOLDER, ASSET_FOLDER, BASE_VIEW_FOLDER, DATA_FOLDER].map((folder) => this.ensureFolder(folder)));
+    await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${name}.schema.md`), renderSchemaNote(name, schemaFields, `${ROOT_CONFIG_FOLDER}/${name}.md`, undefined, undefined, this.schemas));
+    await this.app.vault.create(normalizePath(`${ROOT_CONFIG_FOLDER}/${name}.md`), `# ${name} Config\n\n| name | description | assetCount |\n| --- | --- | --- |\n`);
     await this.app.vault.create(normalizePath(`${DATA_FOLDER}/${name}Instance.md`), `---\nimplements: ${name}\nname: Sample ${name}\ndescription: "Sample record"\nassetCount: 0\n---\n\n# Sample ${name}\n`);
     await this.createSampleAsset(name);
-    await this.saveMappings({ [name]: { target: `${CONFIG_FOLDER}/${name}.config.md`, fields: { name: "name", description: "description", assetCount: "assetCount" } } });
+    await this.saveMappings({ [name]: { target: `${ROOT_CONFIG_FOLDER}/${name}.md`, fields: { name: "name", description: "description", assetCount: "assetCount" } } });
     await this.loadSchemas();
     await this.syncBaseViews();
     this.refreshDashboards();
@@ -2150,7 +2153,8 @@ class SchemaSyncPlugin extends Plugin {
     }
   }
 
-  // One .config.md per attribute name, shared across every schema declaring it.
+  // One note per schema plus field, never shared, so a rename is a plain rename
+  // and no two schemas can fight over one list.
   // Values found in records are unioned with whatever the file already holds, so
   // hand-added options are never dropped. These are deliberately not registered
   // as generated paths: they carry user-curated content and must survive a field
