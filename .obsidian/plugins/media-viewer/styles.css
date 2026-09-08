@@ -65,27 +65,116 @@
   color: var(--text-on-accent);
 }
 
-.media-viewer .mv-list {
+.media-viewer .mv-grid {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: var(--size-4-1) 0;
+  /* auto-fill, not auto-fit: an empty last row collapsing to zero would make
+     the final tiles stretch across the pane, which reads as a rendering fault
+     rather than as a layout. */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--size-4-2);
+  align-content: start;
+  padding: var(--size-4-2);
 }
 
-.media-viewer .mv-row {
-  padding: var(--size-2-2) var(--size-4-3);
-  font-size: var(--font-ui-small);
-  color: var(--text-normal);
-  cursor: default;
+.media-viewer .mv-grid.is-hidden {
+  display: none;
+}
+
+.media-viewer .mv-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-1);
+  cursor: pointer;
+  min-width: 0;
+  border: 1px solid transparent;
+}
+
+.media-viewer .mv-tile:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.media-viewer .mv-tile.is-selected {
+  background-color: var(--background-modifier-active-hover, var(--background-modifier-hover));
+  border-color: var(--interactive-accent);
+}
+
+/* A fixed square, so tiles do not reflow as thumbnails arrive one by one —
+   a grid that jumps under the cursor while it loads is worse than a slow one. */
+.media-viewer .mv-tile-frame {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+}
+
+.media-viewer .mv-thumb {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* The placeholder is what an unloaded tile, a video awaiting MV-VTHUMB, and a
+   file that failed to decode all look like — distinguished by the badge. */
+.media-viewer .mv-tile-frame.is-placeholder::after {
+  content: "";
+  width: 32%;
+  height: 32%;
+  border-radius: var(--radius-s);
+  background-color: var(--background-modifier-border);
+}
+
+.media-viewer .mv-tile-frame[data-kind="video"]::before {
+  content: "video";
+  position: absolute;
+  bottom: var(--size-2-1);
+  right: var(--size-2-1);
+  font-size: var(--font-ui-smaller);
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--radius-s);
+  background-color: var(--background-modifier-cover, rgba(0, 0, 0, 0.55));
+  color: var(--text-on-accent);
+}
+
+.media-viewer .mv-tile.is-broken .mv-tile-frame::after {
+  content: "!";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  padding: 0 var(--size-2-2);
+  font-weight: var(--font-bold);
+  background-color: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.media-viewer .mv-tile-name {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.media-viewer .mv-row:hover {
-  background-color: var(--background-modifier-hover);
+.media-viewer .mv-tile.is-selected .mv-tile-name {
+  color: var(--text-normal);
 }
 
 .media-viewer .mv-empty {
+  display: none;
+}
+
+.media-viewer .mv-empty.is-shown {
   display: flex;
   align-items: center;
   justify-content: center;

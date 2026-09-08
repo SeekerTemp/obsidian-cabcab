@@ -29,6 +29,15 @@ const NOTES_MARKER = "<!-- media-viewer:notes -->";
 const ZOOM_MIN = 0.05;
 const ZOOM_MAX = 32;
 
+// Loaded thumbnails held at once. Comfortably more than any pane can show —
+// a wide split at the smallest tile size is around sixty — so eviction only
+// ever reclaims tiles that have scrolled well away.
+const THUMBNAIL_CACHE_SIZE = 240;
+// How far outside the viewport a tile starts loading. Enough that a normal
+// scroll finds thumbnails already there, small enough that a flick through a
+// 500-file folder does not try to load all of it.
+const THUMBNAIL_PRELOAD_MARGIN = "300px 0px";
+
 // Encoding follows the source, because encoding everything to PNG turns a 2 MB
 // JPEG crop into a 15 MB file. Rotation, flipping and cropping never introduce
 // transparency, so a JPEG source stays safely a JPEG.
@@ -290,6 +299,94 @@ function folderForActiveFile(path) {
   return folderOf(path);
 }
 
+/* An LRU keyed by path, holding whatever a thumbnail costs to produce.
+ *
+ * The cap is on entries rather than bytes because the expensive part is not the
+ * decoded pixels — the browser owns those — but the number of live <img>
+ * elements and, once MV-VTHUMB lands, the number of blob URLs that have to be
+ * revoked. Counting entries is a number the eviction path can act on;
+ * estimating bytes is a number it can only guess at.
+ *
+ * `onEvict` is called for every entry that leaves, including on clear(), so a
+ * blob URL always gets revoked exactly once.
+ */
+class LruCache {
+  constructor(capacity, onEvict) {
+    this.capacity = Math.max(1, Math.floor(Number(capacity) || 1));
+    this.onEvict = typeof onEvict === "function" ? onEvict : null;
+    // A Map iterates in insertion order, so the oldest key is the first one —
+    // which is the whole trick, and the reason there is no linked list here.
+    this.entries = new Map();
+  }
+
+  get size() {
+    return this.entries.size;
+  }
+
+  has(key) {
+    return this.entries.has(key);
+  }
+
+  // A hit is a use, so the entry moves to the young end. A get that did not
+  // refresh recency would make this a FIFO queue wearing an LRU's name.
+  get(key) {
+    if (!this.entries.has(key)) return undefined;
+    const value = this.entries.get(key);
+    this.entries.delete(key);
+    this.entries.set(key, value);
+    return value;
+  }
+
+  set(key, value) {
+    if (this.entries.has(key)) {
+      const previous = this.entries.get(key);
+      this.entries.delete(key);
+      // Replacing a key still retires whatever it held; the old value is as
+      // dead as an evicted one.
+      if (previous !== value) this.evicted(key, previous);
+    }
+    this.entries.set(key, value);
+    while (this.entries.size > this.capacity) {
+      const oldest = this.entries.keys().next().value;
+      const stale = this.entries.get(oldest);
+      this.entries.delete(oldest);
+      this.evicted(oldest, stale);
+    }
+    return value;
+  }
+
+  delete(key) {
+    if (!this.entries.has(key)) return false;
+    const value = this.entries.get(key);
+    this.entries.delete(key);
+    this.evicted(key, value);
+    return true;
+  }
+
+  clear() {
+    const entries = Array.from(this.entries.entries());
+    this.entries.clear();
+    for (const [key, value] of entries) this.evicted(key, value);
+  }
+
+  // Eviction runs during scrolling and during folder switches. One thumbnail
+  // that fails to retire must not stop the rest from retiring.
+  evicted(key, value) {
+    if (!this.onEvict) return;
+    try {
+      this.onEvict(key, value);
+    } catch (error) {
+      console.error("Media Viewer: thumbnail eviction failed for " + key, error);
+    }
+  }
+
+  // Oldest first. Testing an LRU without being able to see its order means
+  // testing that it holds things, which is not the interesting half.
+  keysOldestFirst() {
+    return Array.from(this.entries.keys());
+  }
+}
+
 // The pane header shows a folder's name, not its full path — but the vault root
 // has neither, so it gets a word.
 function folderLabelFor(folder) {
@@ -344,6 +441,8 @@ const core = {
   selectionAfterRemoval,
   folderForActiveFile,
   folderLabelFor,
+  LruCache,
+  THUMBNAIL_CACHE_SIZE,
 };
 
 /* ------------------------------------------------------------------------ *
@@ -498,8 +597,11 @@ class MediaIndex {
 
   handleDelete(file) {
     if (!file || !this.byPath.has(file.path)) return false;
+    // Asked before the removal, because afterwards the index no longer knows
+    // where the file was. This is the only moment the answer exists.
+    const successor = this.successorFor(file.path);
     this.remove(file.path);
-    this.emit("delete", file.path);
+    this.emit("delete", file.path, successor);
     return true;
   }
 
@@ -515,8 +617,10 @@ class MediaIndex {
     return true;
   }
 
-  emit(reason, path, oldPath) {
-    if (typeof this.onChange === "function") this.onChange(reason, path, oldPath);
+  // The third argument depends on the reason: the previous path for a rename,
+  // the path selection should fall back to for a delete, absent otherwise.
+  emit(reason, path, detail) {
+    if (typeof this.onChange === "function") this.onChange(reason, path, detail);
   }
 }
 
@@ -526,7 +630,18 @@ class MediaViewerView extends ItemView {
     this.plugin = plugin;
     this.headerEl = null;
     this.folderEl = null;
-    this.listEl = null;
+    this.gridEl = null;
+    this.emptyEl = null;
+    this.observer = null;
+    // path -> tile element, for every tile currently in the DOM.
+    this.tiles = new Map();
+    // Paths whose tile is inside the preload margin right now. The LRU consults
+    // this before it lets a thumbnail go.
+    this.visible = new Set();
+    // path -> tile, capped. Membership means "this tile has its thumbnail".
+    this.thumbnails = new LruCache(THUMBNAIL_CACHE_SIZE, (path, tile) =>
+      this.unloadThumbnail(path, tile)
+    );
   }
 
   getViewType() {
@@ -555,10 +670,21 @@ class MediaViewerView extends ItemView {
     root.empty();
     root.addClass("media-viewer");
     this.buildChrome(root);
+    this.ensureObserver();
     this.render();
   }
 
   async onClose() {
+    if (this.observer) {
+      this.observer.disconnect();
+      this.observer = null;
+    }
+    // clear() runs the eviction callback for every entry, which is how a blob
+    // URL gets revoked exactly once. The tiles are about to go anyway; the
+    // point is that nothing leaks past them.
+    this.thumbnails.clear();
+    this.tiles.clear();
+    this.visible.clear();
     this.contentEl.empty();
   }
 
@@ -578,6 +704,7 @@ class MediaViewerView extends ItemView {
     filter.addEventListener("change", () => {
       this.plugin.setFilter(filter.value);
     });
+    this.filterEl = filter;
 
     this.recursiveEl = this.toggleButton(controls, "Include subfolders", () => {
       this.plugin.setRecursive(!this.settings.recursive);
@@ -587,7 +714,15 @@ class MediaViewerView extends ItemView {
       this.plugin.setFollowActiveFile(!this.settings.followActiveFile);
     });
 
-    this.listEl = root.createDiv({ cls: "mv-list" });
+    this.gridEl = root.createDiv({ cls: "mv-grid" });
+    this.emptyEl = root.createDiv({ cls: "mv-empty" });
+
+    // Delegated, so a folder of 500 files installs one listener rather than
+    // 500 — and so tiles can be added and removed without touching listeners.
+    this.gridEl.addEventListener("click", (event) => {
+      const tile = event.target.closest(".mv-tile");
+      if (tile && tile.dataset.path) this.plugin.select(tile.dataset.path);
+    });
   }
 
   toggleButton(parent, label, onClick) {
@@ -596,9 +731,39 @@ class MediaViewerView extends ItemView {
     return button;
   }
 
-  // A flat list for now; MV-GRID replaces it with lazy-loading thumbnails.
+  /* Lazy loading.
+   *
+   * One observer for the pane, rooted on the scrolling grid, watching every
+   * tile. A tile that scrolls into range loads; a tile that scrolls out stays
+   * loaded until the LRU decides otherwise, because scrolling back is the
+   * common case and reloading on every pass would make that feel worse than
+   * not caching at all. */
+  ensureObserver() {
+    if (this.observer || !this.gridEl) return;
+    if (typeof IntersectionObserver !== "function") return;
+    this.observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const path = entry.target.dataset.path;
+          if (!path) continue;
+          if (entry.isIntersecting) {
+            this.visible.add(path);
+            this.loadThumbnail(entry.target, path);
+          } else {
+            this.visible.delete(path);
+          }
+        }
+      },
+      { root: this.gridEl, rootMargin: THUMBNAIL_PRELOAD_MARGIN }
+    );
+  }
+
+  // Reconcile rather than rebuild. A save inserts one file into a folder of
+  // 500, and rebuilding the grid for it would throw away scroll position, the
+  // selection highlight and every loaded thumbnail — the three complaints the
+  // path-keyed design exists to answer.
   render() {
-    if (!this.listEl) return;
+    if (!this.gridEl) return;
     const folder = this.index.folder;
 
     if (this.folderEl) {
@@ -607,27 +772,166 @@ class MediaViewerView extends ItemView {
     }
     if (this.recursiveEl) this.recursiveEl.toggleClass("is-active", this.settings.recursive);
     if (this.followEl) this.followEl.toggleClass("is-active", this.settings.followActiveFile);
-
-    this.listEl.empty();
-
-    if (folder === null) {
-      this.listEl.createDiv({
-        cls: "mv-empty",
-        text: "Open a media file, or choose Open in Media Viewer on a folder.",
-      });
-      return;
+    if (this.filterEl && this.filterEl.value !== this.settings.filter) {
+      this.filterEl.value = this.settings.filter;
     }
 
-    const paths = this.plugin.visiblePaths();
-    if (!paths.length) {
-      this.listEl.createDiv({ cls: "mv-empty", text: "No media in this folder." });
-      return;
+    const paths = folder === null ? [] : this.plugin.visiblePaths();
+    this.syncTiles(paths);
+
+    const message =
+      folder === null
+        ? "Open a media file, or choose Open in Media Viewer on a folder."
+        : paths.length
+        ? ""
+        : this.settings.filter === "both"
+        ? "No media in this folder."
+        : "No " + (this.settings.filter === "image" ? "images" : "videos") + " in this folder.";
+    this.emptyEl.setText(message);
+    this.emptyEl.toggleClass("is-shown", Boolean(message));
+    this.gridEl.toggleClass("is-hidden", Boolean(message));
+  }
+
+  syncTiles(paths) {
+    const wanted = new Set(paths);
+
+    for (const [path, tile] of Array.from(this.tiles.entries())) {
+      if (wanted.has(path)) continue;
+      this.releaseTile(path, tile);
     }
 
+    // Walk the desired order against the DOM in one pass, inserting what is
+    // missing and moving only what is genuinely out of place. An unchanged
+    // list touches nothing.
+    let cursor = this.gridEl.firstElementChild;
     for (const path of paths) {
-      const row = this.listEl.createDiv({ cls: "mv-row", text: baseNameOf(path) });
-      row.dataset.path = path;
-      row.title = path;
+      let tile = this.tiles.get(path);
+      if (!tile) {
+        tile = this.createTile(path);
+        this.tiles.set(path, tile);
+        this.gridEl.insertBefore(tile, cursor);
+        if (this.observer) this.observer.observe(tile);
+      } else if (tile !== cursor) {
+        this.gridEl.insertBefore(tile, cursor);
+      } else {
+        cursor = cursor.nextElementSibling;
+        this.applySelection(tile, path);
+        continue;
+      }
+      this.applySelection(tile, path);
+    }
+  }
+
+  createTile(path) {
+    const tile = document.createElement("div");
+    tile.className = "mv-tile";
+    tile.dataset.path = path;
+    tile.title = path;
+    tile.setAttribute("role", "option");
+
+    const frame = document.createElement("div");
+    frame.className = "mv-tile-frame";
+    frame.dataset.kind = classifyPath(path);
+    tile.appendChild(frame);
+
+    const caption = document.createElement("div");
+    caption.className = "mv-tile-name";
+    caption.textContent = baseNameOf(path);
+    tile.appendChild(caption);
+
+    return tile;
+  }
+
+  applySelection(tile, path) {
+    tile.toggleClass("is-selected", path === this.plugin.selectedPath);
+  }
+
+  releaseTile(path, tile) {
+    if (this.observer) this.observer.unobserve(tile);
+    this.visible.delete(path);
+    this.thumbnails.delete(path);
+    this.tiles.delete(path);
+    tile.remove();
+  }
+
+  /* Thumbnails.
+   *
+   * Images load through an <img> pointed at the vault's resource path. Videos
+   * get a placeholder here; MV-VTHUMB replaces it with a real frame, and this
+   * is the seam it plugs into.
+   *
+   * The LRU holds the path of every loaded tile. Its eviction callback strips
+   * the image, which is what actually releases the decoded pixels. */
+  loadThumbnail(tile, path) {
+    // get(), not has(): a hit is a use, and the tile should age from now
+    // rather than from whenever it first loaded.
+    if (this.thumbnails.get(path)) return;
+    const file = this.index.fileFor(path);
+    if (!file) return;
+
+    const frame = tile.querySelector(".mv-tile-frame");
+    if (!frame) return;
+
+    this.thumbnails.set(path, tile);
+
+    if (classifyPath(path) !== "image") {
+      frame.addClass("is-placeholder");
+      return;
+    }
+
+    const img = document.createElement("img");
+    img.className = "mv-thumb";
+    img.decoding = "async";
+    img.alt = "";
+    // One bad file must not take down the grid: a decode failure marks the
+    // tile and browsing continues.
+    img.addEventListener("error", () => {
+      tile.addClass("is-broken");
+      img.remove();
+      frame.addClass("is-placeholder");
+    });
+    img.addEventListener("load", () => tile.removeClass("is-broken"));
+    // getResourcePath carries the mtime, so a modified file yields a different
+    // URL and the browser cache is bypassed rather than serving the old pixels.
+    img.src = this.plugin.app.vault.getResourcePath(file);
+    frame.empty();
+    frame.removeClass("is-placeholder");
+    frame.appendChild(img);
+  }
+
+  // Called by the LRU when a path ages out. If the tile is still on screen the
+  // cap has been reached by visible tiles alone, which the cap is sized to
+  // prevent — reload it rather than leaving a hole, on a later turn so the
+  // reload cannot re-enter the eviction it came from.
+  unloadThumbnail(path, tile) {
+    if (!tile || !tile.isConnected) return;
+    const frame = tile.querySelector(".mv-tile-frame");
+    if (frame) {
+      frame.empty();
+      frame.addClass("is-placeholder");
+    }
+    tile.removeClass("is-broken");
+    if (this.visible.has(path)) {
+      window.setTimeout(() => {
+        if (this.visible.has(path) && this.tiles.get(path) === tile) this.loadThumbnail(tile, path);
+      }, 0);
+    }
+  }
+
+  // A modified file needs its thumbnail re-read, because the resource path
+  // changed with the mtime. Dropping it from the cache is enough — the next
+  // observer callback, or this immediate reload, puts it back.
+  reloadThumbnail(path) {
+    const tile = this.tiles.get(path);
+    if (!tile) return;
+    this.thumbnails.delete(path);
+    if (this.visible.has(path)) this.loadThumbnail(tile, path);
+  }
+
+  revealSelection() {
+    const tile = this.tiles.get(this.plugin.selectedPath);
+    if (tile && typeof tile.scrollIntoView === "function") {
+      tile.scrollIntoView({ block: "nearest" });
     }
   }
 }
@@ -636,9 +940,13 @@ class MediaViewerPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
+    // Selection is a path, never an index. This is the decision that lets a
+    // save keep the scroll position and the highlight it started with.
+    this.selectedPath = null;
+
     this.index = new MediaIndex(this.app.vault);
     this.index.recursive = this.settings.recursive;
-    this.index.onChange = () => this.refreshViews();
+    this.index.onChange = (reason, path, oldPath) => this.handleIndexChange(reason, path, oldPath);
 
     this.registerView(VIEW_TYPE_MEDIA_VIEWER, (leaf) => new MediaViewerView(leaf, this));
 
@@ -730,10 +1038,37 @@ class MediaViewerPlugin extends Plugin {
 
   showFolder(folder) {
     if (this.index.folder === folder) return;
+    this.selectedPath = null;
     this.index.setFolder(folder, this.settings.recursive);
     this.settings.lastFolder = this.index.folder;
     void this.saveSettings();
     this.refreshViews();
+  }
+
+  select(path) {
+    if (path !== null && !this.index.has(path)) return false;
+    if (this.selectedPath === path) return false;
+    this.selectedPath = path;
+    this.refreshViews();
+    return true;
+  }
+
+  /* Index changes reach selection here rather than in the view, so the answer
+   * is the same however many panes are open. */
+  handleIndexChange(reason, path, detail) {
+    if (reason === "scan") {
+      // A rescan can drop the selected file — a recursion toggle, say.
+      if (this.selectedPath !== null && !this.index.has(this.selectedPath)) this.selectedPath = null;
+    } else if (reason === "delete" && path === this.selectedPath) {
+      // The file went out from under the viewer, so selection moves to the
+      // neighbour the index picked out before it dropped the entry.
+      this.selectedPath = detail;
+    } else if (reason === "rename" && detail === this.selectedPath) {
+      // Selection follows the file, not the name. A rename through Asset
+      // Renamer should not clear the highlight.
+      this.selectedPath = this.index.has(path) ? path : null;
+    }
+    this.refreshViews(reason, path);
   }
 
   setRecursive(recursive) {
@@ -764,10 +1099,14 @@ class MediaViewerPlugin extends Plugin {
     return this.index.paths.filter((path) => matchesFilter(path, filter));
   }
 
-  refreshViews() {
+  refreshViews(reason, path) {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
       const view = leaf.view;
-      if (view instanceof MediaViewerView) view.render();
+      if (!(view instanceof MediaViewerView)) continue;
+      // A modify changes no membership, only pixels, so the grid is left alone
+      // and one thumbnail is re-read.
+      if (reason === "modify") view.reloadThumbnail(path);
+      else view.render();
     }
   }
 
@@ -794,3 +1133,7 @@ module.exports.core = core;
 // MediaIndex is not pure — it holds a vault — but the vault surface it uses is
 // one method, so it is testable against a stub and worth testing.
 module.exports.MediaIndex = MediaIndex;
+// Exported so the grid's DOM logic — tile reconciliation, lazy loading and
+// thumbnail eviction — can be driven against a stub document.
+module.exports.MediaViewerView = MediaViewerView;
+module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;

@@ -290,10 +290,10 @@ group("rename", () => {
 });
 
 group("change notification", () => {
-  test("reports the reason and the path touched", () => {
+  test("reports the reason, the path touched, and the per-reason detail", () => {
     const { index } = indexOver(["data/assets/a.png"]);
     const seen = [];
-    index.onChange = (reason, path, oldPath) => seen.push([reason, path, oldPath]);
+    index.onChange = (reason, path, detail) => seen.push([reason, path, detail]);
     index.handleCreate(file("data/assets/b.png"));
     index.handleModify(file("data/assets/b.png"));
     index.handleRename(file("data/assets/c.png"), "data/assets/b.png");
@@ -302,8 +302,26 @@ group("change notification", () => {
       ["create", "data/assets/b.png", undefined],
       ["modify", "data/assets/b.png", undefined],
       ["rename", "data/assets/c.png", "data/assets/b.png"],
-      ["delete", "data/assets/c.png", undefined],
+      ["delete", "data/assets/c.png", "data/assets/a.png"],
     ]);
+  });
+
+  test("a delete carries the successor, computed before the entry was dropped", () => {
+    const { index } = indexOver(["data/assets/a.png", "data/assets/b.png", "data/assets/c.png"]);
+    const seen = [];
+    index.onChange = (reason, path, detail) => seen.push(detail);
+    index.handleDelete(file("data/assets/b.png"));
+    deepEqual(seen, ["data/assets/c.png"], "the following entry");
+  });
+
+  test("deleting the last entry reports the previous one, and the only entry reports nothing", () => {
+    const { index } = indexOver(["data/assets/a.png", "data/assets/b.png"]);
+    let detail;
+    index.onChange = (reason, path, value) => (detail = value);
+    index.handleDelete(file("data/assets/b.png"));
+    equal(detail, "data/assets/a.png");
+    index.handleDelete(file("data/assets/a.png"));
+    equal(detail, null, "nothing left to fall back to");
   });
 
   test("stays quiet for events about other folders", () => {

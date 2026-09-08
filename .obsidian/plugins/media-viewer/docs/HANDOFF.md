@@ -97,11 +97,11 @@ Not part of the first build. The data it needs already exists after M4.
 
 ## Progress
 
-- [ ] 1 `MV-SCAFFOLD`
-- [ ] 2 `MV-CORE`
-- [ ] 3 `MV-INDEX`
-- [ ] 4 `MV-FOLDER`
-- [ ] 5 `MV-GRID`
+- [x] 1 `MV-SCAFFOLD`
+- [x] 2 `MV-CORE`
+- [x] 3 `MV-INDEX`
+- [x] 4 `MV-FOLDER`
+- [x] 5 `MV-GRID`
 - [ ] 6 `MV-IMAGE`
 - [ ] 7 `MV-LAYOUT`
 - [ ] 8 `MV-VIDEO`
