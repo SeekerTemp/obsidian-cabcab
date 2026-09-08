@@ -177,7 +177,9 @@ configFor: [Verse.Culture, LifeForm.Culture]
 | [[Nomadic clans]] |  |
 ```
 
-Regeneration **unions** — rows added by hand survive, even when no record currently uses that value, and the `Notes` cell on each row is carried across. Fields named `id` or `name` get no list, being identity keys rather than categories.
+Regeneration **unions** — rows added by hand survive, even when no record currently uses that value, and the `Notes` cell on each row is carried across.
+
+A **primary key gets a list like any other field**: its rows are the set of instances that exist. That list is what a foreign key points at, and what the ⤓ button turns into records with `id` set to the row's name. Only two kinds of field have no list — `attachment` fields, which hold media rather than categories, and unbound fields, which are written nowhere.
 
 ## Writing in generated files
 

@@ -93,9 +93,11 @@ test("a relation field has no config of its own", () => {
   assert.strictEqual(configPathFor("Verse", "Realm", { type: "string", bind: true, relation: { target: "Realm" } }), null);
 });
 
-test("an identity field has no config", () => {
-  assert.strictEqual(configPathFor("LifeForm", "id", { type: "string", bind: true, required: true }), null);
-  assert.strictEqual(configPathFor("LifeForm", "name", STRING), null);
+test("an identity field gets a config — it is the list of instances", () => {
+  // A primary key's list is what a foreign key points at, and what ⤓ turns into
+  // records with id = the row's name.
+  assert.strictEqual(configPathFor("LifeForm", "id", { type: "string", bind: true, required: true }), "data/config/LifeForm/id.md");
+  assert.strictEqual(configPathFor("LifeForm", "name", STRING), "data/config/LifeForm/name.md");
 });
 
 test("a non-string field has no config", () => {
@@ -136,20 +138,27 @@ test("a relation links to the target schema's own-name config", () => {
   assert.strictEqual(fieldReferenceLink("Verse", "Realm", field, SCHEMAS), "[[Realm/Realm\\|Realm]]");
 });
 
-test("a relation whose target has no own-name field links to its first list", () => {
+test("a relation whose target has no own-name field links to its primary key", () => {
+  // LifeForm has no LifeForm field, so the first list wins — its `id`.
   const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
-  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm/trait\\|owner]]");
+  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm/id\\|owner]]");
 });
 
 test("a relation to an entity with no lists links to its schema note", () => {
-  const schemas = new Map([["Ghost", { id: { type: "string", required: true } }]]);
+  const schemas = new Map([["Ghost", { cover: { type: "attachment" } }]]);
   const field = { type: "string", bind: true, relation: { target: "Ghost" } };
   assert.strictEqual(fieldReferenceLink("Pack", "haunt", field, schemas), "[[Ghost.schema\\|haunt]]");
 });
 
 test("a field with no config is plain text", () => {
-  assert.strictEqual(fieldReferenceLink("LifeForm", "id", SCHEMAS.get("LifeForm").id, SCHEMAS), "id");
+  // An attachment holds media, and an unbound field is written nowhere, so
+  // neither has a list. Everything else does.
+  assert.strictEqual(fieldReferenceLink("LifeForm", "cover", SCHEMAS.get("LifeForm").cover, SCHEMAS), "cover");
   assert.strictEqual(fieldReferenceLink("LifeForm", "attachment", SCHEMAS.get("LifeForm").attachment, SCHEMAS), "attachment");
+});
+
+test("the primary key links to its own list", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "id", SCHEMAS.get("LifeForm").id, SCHEMAS), "[[LifeForm/id\\|id]]");
 });
 
 test("the rendered table round trips back to plain field names", () => {
@@ -423,17 +432,17 @@ test("a relation points at the target's own value list", () => {
   assert.strictEqual(t.link, "Realm/Realm");
 });
 
-test("a relation whose target has no same-named field falls to its first list", () => {
-  // LifeForm has no LifeForm field, but it does have trait. A list is what the
-  // button is for, so it goes there rather than to the schema note.
+test("a relation whose target has no same-named field falls to its primary key", () => {
+  // LifeForm has no LifeForm field. Its first list is `id`, the primary key,
+  // which is the set of LifeForm instances a foreign key can point at.
   const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
   const t = fieldReferenceTarget("Pack", "owner", field, SCHEMAS);
-  assert.strictEqual(t.path, "data/config/LifeForm/trait.md");
-  assert.strictEqual(t.link, "LifeForm/trait");
+  assert.strictEqual(t.path, "data/config/LifeForm/id.md");
+  assert.strictEqual(t.link, "LifeForm/id");
 });
 
 test("a relation to an entity with no lists at all falls back to its schema", () => {
-  const schemas = new Map([["Ghost", { id: { type: "string", required: true } }]]);
+  const schemas = new Map([["Ghost", { cover: { type: "attachment" } }]]);
   const field = { type: "string", bind: true, relation: { target: "Ghost" } };
   const t = fieldReferenceTarget("Pack", "haunt", field, schemas);
   assert.strictEqual(t.path, "data/schema/Ghost.schema.md");
@@ -441,7 +450,7 @@ test("a relation to an entity with no lists at all falls back to its schema", ()
 });
 
 test("a field with no list still has somewhere to open, but no link", () => {
-  for (const name of ["id", "cover", "attachment"]) {
+  for (const name of ["cover", "attachment"]) {
     const t = fieldReferenceTarget("LifeForm", name, SCHEMAS.get("LifeForm")[name], SCHEMAS);
     assert.strictEqual(t.path, "data/schema/LifeForm.schema.md", name);
     assert.strictEqual(t.link, null, name);

@@ -356,7 +356,9 @@ function handAddedFields(raw) {
 // open-config button so the two cannot drift apart.
 function configPathFor(schemaName, fieldName, definition) {
   if (!definition || definition.type !== "string" || definition.relation?.target || !isBound(definition)) return null;
-  if (IDENTITY_FIELDS.has(String(fieldName).toLowerCase())) return null;
+  // Identity fields get a list like any other. A primary key's list is the set
+  // of instances that exist — it is what a foreign key points at, and what the
+  // ⤓ button turns into records with id = the row's name.
   return `${CONFIG_FOLDER}/${schemaName}/${fieldName}.md`;
 }
 
