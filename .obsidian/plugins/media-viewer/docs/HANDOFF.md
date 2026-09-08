@@ -130,7 +130,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 16 `MV-OVERLAY`
 - [x] 17 `MV-TRANSFORM`
 - [x] 18 `MV-SAVE`
-- [ ] 19 `MV-SCHEMA`
+- [x] 19 `MV-SCHEMA`
 - [ ] 20 `MV-STORE`
 - [ ] 21 `MV-TRACK`
 - [ ] 22 `MV-RESOLVE`
