@@ -2,7 +2,10 @@
 //
 //   node tests/index.test.js
 //
-// The vault is stubbed down to the one method the index uses, getFiles().
+// The vault is stubbed as a folder tree, which is what the index reads: it asks
+// for its folder and walks that folder's children. getFiles() is kept because
+// the index falls back to it when a folder cannot be resolved, and because a
+// test can then prove the fallback is not what is normally taken.
 const { MediaIndex, core } = require("./load-plugin.js");
 const { group, test, equal, deepEqual, ok, report } = require("./harness.js");
 
@@ -18,9 +21,43 @@ function vaultOf(paths) {
   const files = paths.map(file);
   return {
     files,
+    // Counted, so a test can show the tree is what gets read.
+    getFilesCalls: 0,
     getFiles() {
+      this.getFilesCalls += 1;
       return this.files;
     },
+
+    /* The tree, rebuilt from the flat list on every ask. Obsidian keeps a live
+       one; rebuilding here keeps add() and drop() to one line each and cannot
+       drift from the list they maintain. A folder is a node with children, a
+       file is a node without — the same discrimination the index makes. */
+    tree() {
+      const root = { path: "", children: [] };
+      const folders = new Map([["", root]]);
+      const folderFor = (path) => {
+        if (folders.has(path)) return folders.get(path);
+        const slash = path.lastIndexOf("/");
+        const parent = folderFor(slash === -1 ? "" : path.slice(0, slash));
+        const node = { path, children: [] };
+        folders.set(path, node);
+        parent.children.push(node);
+        return node;
+      };
+      for (const entry of this.files) {
+        const slash = entry.path.lastIndexOf("/");
+        folderFor(slash === -1 ? "" : entry.path.slice(0, slash)).children.push(entry);
+      }
+      return { root, folders };
+    },
+    getRoot() {
+      return this.tree().root;
+    },
+    getFolderByPath(path) {
+      const found = this.tree().folders.get(path);
+      return found || null;
+    },
+
     add(path) {
       const created = file(path);
       this.files.push(created);
@@ -43,6 +80,72 @@ function indexOver(paths, folder, recursive) {
   return { index, vault };
 }
 
+group("a folder is read from the vault's tree", () => {
+  test("its own children, not every file in the vault", async () => {
+    const vault = vaultOf(["data/assets/cover.png", "other/elsewhere.png", "top.png"]);
+    const index = new MediaIndex(vault);
+    index.setFolder("data/assets");
+    deepEqual(index.paths, ["data/assets/cover.png"]);
+    equal(vault.getFilesCalls, 0, "the whole vault was never listed");
+  });
+
+  test("a folder of 20 in a vault of thousands costs the folder", () => {
+    // The point of the change, stated as the thing that would fail if the
+    // scan went back to filtering everything.
+    const many = [];
+    for (let n = 0; n < 500; n += 1) many.push("elsewhere/f" + n + ".png");
+    many.push("data/assets/cover.png");
+    const vault = vaultOf(many);
+    const index = new MediaIndex(vault);
+    index.setFolder("data/assets");
+    deepEqual(index.paths, ["data/assets/cover.png"]);
+    equal(vault.getFilesCalls, 0);
+  });
+
+  test("the vault root is a folder like any other", () => {
+    const vault = vaultOf(["top.png", "data/assets/cover.png"]);
+    const index = new MediaIndex(vault);
+    index.setFolder("");
+    deepEqual(index.paths, ["top.png"], "the root's own children, not the tree below it");
+    equal(vault.getFilesCalls, 0);
+  });
+
+  test("a recursive scan walks the subtree", () => {
+    const vault = vaultOf([
+      "data/assets/cover.png",
+      "data/assets/deep/inner.png",
+      "data/assets/deep/deeper/inmost.png",
+      "other/elsewhere.png",
+    ]);
+    const index = new MediaIndex(vault);
+    index.setFolder("data/assets", true);
+    deepEqual(index.paths, [
+      "data/assets/cover.png",
+      "data/assets/deep/deeper/inmost.png",
+      "data/assets/deep/inner.png",
+    ]);
+    equal(vault.getFilesCalls, 0);
+  });
+
+  test("a folder the vault cannot resolve falls back rather than emptying the pane", () => {
+    // A path deleted underneath the pane, or an Obsidian without
+    // getFolderByPath. The fallback filters the flat list to the same answer.
+    const vault = vaultOf(["data/assets/cover.png"]);
+    delete vault.getFolderByPath;
+    const index = new MediaIndex(vault);
+    index.setFolder("data/assets");
+    deepEqual(index.paths, ["data/assets/cover.png"]);
+    ok(vault.getFilesCalls > 0, "by the slower road");
+  });
+
+  test("a folder that does not exist is empty, not an error", () => {
+    const vault = vaultOf(["data/assets/cover.png"]);
+    const index = new MediaIndex(vault);
+    index.setFolder("data/missing");
+    deepEqual(index.paths, []);
+  });
+});
+
 group("scanning a folder", () => {
   test("lists the folder's media and nothing else", () => {
     const { index } = indexOver([
@@ -55,7 +158,10 @@ group("scanning a folder", () => {
     deepEqual(index.paths, ["data/assets/clip.mp4", "data/assets/cover.png"]);
   });
 
-  test("sidecar notes never appear in the grid", () => {
+  // Lineage notes live under data/ now, but a note left beside its media by an
+  // earlier version must still stay out of the grid — and does, because markdown
+  // is not a media extension.
+  test("notes never appear in the grid, wherever they sit", () => {
     const { index } = indexOver([
       "data/assets/cover.png",
       "data/assets/cover.instance.md",
@@ -275,7 +381,7 @@ group("rename", () => {
     deepEqual(index.paths, ["data/assets/a.png"]);
   });
 
-  test("renaming a media file into a sidecar name removes it from the grid", () => {
+  test("renaming a media file to markdown removes it from the grid", () => {
     const { index } = indexOver(["data/assets/a.png"]);
     index.handleRename(file("data/assets/a.instance.md"), "data/assets/a.png");
     deepEqual(index.paths, []);

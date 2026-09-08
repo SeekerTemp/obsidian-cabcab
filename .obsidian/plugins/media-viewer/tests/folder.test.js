@@ -20,7 +20,7 @@ group("which file moves the pane", () => {
     equal(core.folderForActiveFile("data/notes/thoughts.md"), null);
   });
 
-  test("a sidecar does not move the pane, even beside media", () => {
+  test("a note beside media does not move the pane either", () => {
     equal(core.folderForActiveFile("data/assets/cover.instance.md"), null);
   });
 

@@ -23,7 +23,8 @@ const DEFAULT_SETTINGS = {
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "avif"];
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mkv", "mov", "avi", "m4v", "ogv"];
-const SIDECAR_SUFFIX = ".instance.md";
+// Everything a lineage note writes below this marker is the user's, and is
+// carried across every rewrite — the convention Schema Sync established here.
 const NOTES_MARKER = "<!-- media-viewer:notes -->";
 
 const ZOOM_MIN = 0.05;
@@ -161,10 +162,6 @@ function classifyPath(path) {
 
 function isMediaPath(path) {
   return classifyPath(path) !== "other";
-}
-
-function isSidecarPath(path) {
-  return baseNameOf(path).toLowerCase().endsWith(SIDECAR_SUFFIX);
 }
 
 // The filter the grid applies. "both" is the default; "image" and "video" are
@@ -450,47 +447,28 @@ function clonePathFor(sourcePath, taken, date) {
   return uniquePath(folderOf(sourcePath), stem, extension, taken);
 }
 
-// <stem>+frame+<ms>ms+<yymmddHHMMSS>.png. Milliseconds are floored, so the name
-// names a frame that was actually displayed rather than one rounded past.
-function framePathFor(sourcePath, milliseconds, taken, date) {
-  const ms = Math.max(0, Math.floor(Number(milliseconds) || 0));
-  const stem = stemOf(sourcePath) + "+frame+" + ms + "ms+" + timestampFor(date);
+/* <stem>+frame+<yymmddHHMMSS>.png.
+ *
+ * The name used to carry the capture's position in its source, as
+ * +frame+1234ms+ — data encoded into a filename by an app that had nowhere else
+ * to put it. The lineage note records that position exactly, and nothing ever
+ * read it back out of the name. What the timestamp is for is a name that
+ * collides with nothing without a lookup, and that sorts. */
+function framePathFor(sourcePath, taken, date) {
+  const stem = stemOf(sourcePath) + "+frame+" + timestampFor(date);
   return uniquePath(folderOf(sourcePath), stem, "png", taken);
 }
 
-// A sidecar is the media stem plus ".instance.md". Where that stem is already
-// taken — because cover.png and cover.mp4 sit in one folder — the extension is
-// folded in: "cover.mp4.instance.md". Discovery tries both forms, and `media:`
-// settles any remaining doubt.
-function sidecarCandidatesFor(mediaPath) {
-  const folder = folderOf(mediaPath);
-  const extension = extensionOf(mediaPath);
-  const plain = joinPath(folder, stemOf(mediaPath) + SIDECAR_SUFFIX);
-  if (!extension) return [plain];
-  return [plain, joinPath(folder, stemOf(mediaPath) + "." + extension + SIDECAR_SUFFIX)];
-}
-
-// The path a sidecar write should use. The plain form wins unless something
-// already holds it, in which case the extension-folded form is tried, then
-// numbered.
-function sidecarPathFor(mediaPath, taken) {
-  const exists = typeof taken === "function" ? taken : () => false;
-  const candidates = sidecarCandidatesFor(mediaPath);
-  for (const candidate of candidates) {
-    if (!exists(candidate)) return candidate;
-  }
-  const last = candidates[candidates.length - 1];
-  const stem = baseNameOf(last).slice(0, -SIDECAR_SUFFIX.length);
-  return uniquePath(folderOf(last), stem, "instance.md", exists);
-}
-
-// A sidecar names its media by stem, so the reverse mapping strips the suffix.
-// Only a hint for discovery — `media:` is authoritative.
-function mediaStemForSidecar(sidecarPath) {
-  const name = baseNameOf(sidecarPath);
-  if (!name.toLowerCase().endsWith(SIDECAR_SUFFIX)) return null;
-  return name.slice(0, -SIDECAR_SUFFIX.length);
-}
+/* Gone from here: sidecarCandidatesFor, sidecarPathFor and mediaStemForSidecar.
+ *
+ * They built and parsed the name of a note sitting beside its media, so that
+ * one could be found from the other — the way a program with no index finds a
+ * file, by guessing what it is called. Obsidian has an index: metadataCache
+ * reaches every note's frontmatter, so MV-STORE finds a note by the `media:`
+ * link it declares, wherever it lives and whatever it is named. A note the user
+ * moves or renames by hand keeps working, because nothing depends on where it
+ * is.
+ */
 
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
@@ -537,7 +515,8 @@ function sortedInsertIndex(paths, path) {
 // not swap a folder of images for an empty list.
 function folderForActiveFile(path) {
   if (!path) return null;
-  if (isSidecarPath(path)) return null;
+  // A lineage note is markdown, so it is not media, so it does not move the
+  // pane — the same rule that covers every other note, with no special case.
   if (!isMediaPath(path)) return null;
   return folderOf(path);
 }
@@ -651,7 +630,6 @@ function selectionAfterRemoval(paths, removedIndex) {
 const core = {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
-  SIDECAR_SUFFIX,
   NOTES_MARKER,
   ZOOM_MIN,
   ZOOM_MAX,
@@ -664,7 +642,6 @@ const core = {
   classifyExtension,
   classifyPath,
   isMediaPath,
-  isSidecarPath,
   matchesFilter,
   mimeForExtension,
   outputExtensionFor,
@@ -704,9 +681,6 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
-  sidecarCandidatesFor,
-  sidecarPathFor,
-  mediaStemForSidecar,
   compareMediaPaths,
   isInFolder,
   sortedInsertIndex,
@@ -731,9 +705,14 @@ const core = {
  * that this index also listens for, so a save that inserts its own new file
  * would otherwise add it twice.
  *
- * The scan is `vault.getFiles()` filtered by folder and extension — no disk
- * reads and no worker queue. Sidecar notes are excluded, as is every non-media
- * file.
+ * The scan asks the vault for the folder and walks its own children — no disk
+ * reads and no worker queue. Everything that is not image or video is excluded,
+ * which is what keeps markdown out of the grid.
+ *
+ * It used to filter `vault.getFiles()`, reading every file in the vault to
+ * answer a question about one folder: the habit of a program with no tree to
+ * ask. Obsidian holds the tree, so a folder of 20 costs 20 rather than the size
+ * of the vault, and a folder that does not exist costs nothing at all.
  */
 class MediaIndex {
   constructor(vault) {
@@ -775,12 +754,12 @@ class MediaIndex {
     return this.order[index];
   }
 
-  // Whether a vault file belongs in this index at all. Sidecars never appear in
-  // the grid, and neither does anything that is not image or video.
+  // Whether a vault file belongs in this index at all. Only image and video,
+  // which is what keeps lineage notes out of the grid now that they are
+  // ordinary markdown living elsewhere.
   accepts(file) {
     if (!file || typeof file.path !== "string") return false;
     if (this.folder === null) return false;
-    if (isSidecarPath(file.path)) return false;
     if (!isMediaPath(file.path)) return false;
     return isInFolder(file.path, this.folder, this.recursive);
   }
@@ -805,8 +784,7 @@ class MediaIndex {
       this.emit("scan");
       return this.order;
     }
-    const files = this.vault && typeof this.vault.getFiles === "function" ? this.vault.getFiles() : [];
-    for (const file of files) {
+    for (const file of this.filesInFolder()) {
       if (!this.accepts(file)) continue;
       this.byPath.set(file.path, file);
       this.order.push(file.path);
@@ -814,6 +792,59 @@ class MediaIndex {
     this.order.sort(compareMediaPaths);
     this.emit("scan");
     return this.order;
+  }
+
+  /* The candidate files for the current folder.
+   *
+   * A folder's `children` holds files and folders together; a child with its
+   * own `children` is a folder, which is all the discrimination needed here and
+   * avoids importing TFolder into a class that otherwise touches one vault
+   * method. Recursion is depth-first and iterative, since a vault can nest
+   * further than a comfortable stack.
+   *
+   * Falls back to `getFiles()` when the vault cannot resolve the folder — an
+   * older API, or a path that has just been deleted underneath the pane. The
+   * fallback filters by folder exactly as the caller's `accepts` does, so the
+   * result is the same list by a slower road. */
+  filesInFolder() {
+    const root = this.folderObject();
+    if (!root) {
+      if (!this.vault || typeof this.vault.getFiles !== "function") return [];
+      return this.vault.getFiles();
+    }
+    const files = [];
+    const pending = [root];
+    while (pending.length) {
+      const folder = pending.pop();
+      const children = folder && Array.isArray(folder.children) ? folder.children : [];
+      for (const child of children) {
+        if (Array.isArray(child.children)) {
+          if (this.recursive) pending.push(child);
+          continue;
+        }
+        files.push(child);
+      }
+    }
+    return files;
+  }
+
+  // The vault root is "", which getFolderByPath does not answer to on every
+  // version — getRoot() is the one that does.
+  folderObject() {
+    const vault = this.vault;
+    if (!vault) return null;
+    if (this.folder === "") {
+      return typeof vault.getRoot === "function" ? vault.getRoot() : null;
+    }
+    if (typeof vault.getFolderByPath === "function") {
+      const folder = vault.getFolderByPath(this.folder);
+      if (folder) return folder;
+    }
+    if (typeof vault.getAbstractFileByPath === "function") {
+      const entry = vault.getAbstractFileByPath(this.folder);
+      if (entry && Array.isArray(entry.children)) return entry;
+    }
+    return null;
   }
 
   // Idempotent by path: a file already present updates its handle — the vault

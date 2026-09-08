@@ -106,23 +106,20 @@ group("extension classification", () => {
   });
 });
 
-group("sidecar recognition", () => {
-  test("recognises a sidecar by suffix, case-insensitively", () => {
-    equal(core.isSidecarPath("data/assets/cover.instance.md"), true);
-    equal(core.isSidecarPath("data/assets/cover.mp4.instance.md"), true);
-    equal(core.isSidecarPath("data/assets/COVER.INSTANCE.MD"), true);
+group("lineage notes are not media", () => {
+  // There is no longer a sidecar suffix to recognise. Lineage notes are
+  // markdown records found through metadataCache, and the one rule the grid
+  // needs is the one it already had: markdown is not media.
+  test("a note never reads as media, whatever it is called", () => {
+    equal(core.isMediaPath("MyVault/data/media/cover.md"), false);
+    equal(core.isMediaPath("data/assets/cover.instance.md"), false);
+    equal(core.isMediaPath("data/assets/cover.png"), true);
   });
 
-  test("an ordinary note is not a sidecar", () => {
-    equal(core.isSidecarPath("data/assets/cover.md"), false);
-    equal(core.isSidecarPath("data/assets/instance.md"), false, "bare instance.md has no stem");
-    equal(core.isSidecarPath("data/assets/cover.png"), false);
-  });
-
-  test("mediaStemForSidecar strips the suffix, and refuses a non-sidecar", () => {
-    equal(core.mediaStemForSidecar("data/assets/cover.instance.md"), "cover");
-    equal(core.mediaStemForSidecar("data/assets/cover.mp4.instance.md"), "cover.mp4");
-    equal(core.mediaStemForSidecar("data/assets/cover.md"), null);
+  test("and a note never moves the pane", () => {
+    equal(core.folderForActiveFile("MyVault/data/media/cover.md"), null);
+    equal(core.folderForActiveFile("data/assets/cover.instance.md"), null);
+    equal(core.folderForActiveFile("data/assets/cover.png"), "data/assets");
   });
 });
 
@@ -334,70 +331,41 @@ group("clone paths", () => {
 });
 
 group("frame-capture paths", () => {
-  test("carries the position in milliseconds and always writes PNG", () => {
+  test("named for when it was taken, and always PNG", () => {
     equal(
-      core.framePathFor("data/assets/clip.mp4", 1500, NEVER, FIXED_DATE),
-      "data/assets/clip+frame+1500ms+260908110422.png"
+      core.framePathFor("data/assets/clip.mp4", NEVER, FIXED_DATE),
+      "data/assets/clip+frame+260908110422.png"
     );
   });
 
-  test("floors fractional milliseconds to a frame that was actually shown", () => {
+  test("the position in the source is not in the name", () => {
+    // It used to be, as +frame+1500ms+ — data encoded into a filename by an
+    // app with nowhere else to put it. The note records it exactly, and
+    // nothing ever read it back out of the name.
+    const path = core.framePathFor("a/clip.mp4", NEVER, FIXED_DATE);
+    equal(path.includes("ms+"), false);
+  });
+
+  test("two captures in the same second collide and number", () => {
+    const first = core.framePathFor("a/clip.mp4", NEVER, FIXED_DATE);
     equal(
-      core.framePathFor("a/clip.mp4", 1500.99, NEVER, FIXED_DATE),
-      "a/clip+frame+1500ms+260908110422.png"
+      core.framePathFor("a/clip.mp4", takenIn([first]), FIXED_DATE),
+      "a/clip+frame+260908110422.1.png"
     );
   });
 
-  test("a negative or unreadable position becomes zero", () => {
-    equal(core.framePathFor("a/clip.mp4", -5, NEVER, FIXED_DATE), "a/clip+frame+0ms+260908110422.png");
-    equal(core.framePathFor("a/clip.mp4", NaN, NEVER, FIXED_DATE), "a/clip+frame+0ms+260908110422.png");
-  });
-
-  test("two captures of the same frame collide and number", () => {
-    const first = core.framePathFor("a/clip.mp4", 1500, NEVER, FIXED_DATE);
-    equal(
-      core.framePathFor("a/clip.mp4", 1500, takenIn([first]), FIXED_DATE),
-      "a/clip+frame+1500ms+260908110422.1.png"
-    );
+  test("a capture of a source at the vault root writes to the vault root", () => {
+    equal(core.framePathFor("clip.mp4", NEVER, FIXED_DATE), "clip+frame+260908110422.png");
   });
 });
 
-group("sidecar paths", () => {
-  test("the plain form is the default", () => {
-    equal(core.sidecarPathFor("data/assets/cover.png", NEVER), "data/assets/cover.instance.md");
-  });
-
-  test("both forms are offered for discovery", () => {
-    deepEqual(core.sidecarCandidatesFor("data/assets/cover.png"), [
-      "data/assets/cover.instance.md",
-      "data/assets/cover.png.instance.md",
-    ]);
-  });
-
-  test("cover.png and cover.mp4 in one folder do not fight over one note", () => {
-    const png = core.sidecarPathFor("data/assets/cover.png", NEVER);
-    equal(png, "data/assets/cover.instance.md");
-    equal(
-      core.sidecarPathFor("data/assets/cover.mp4", takenIn([png])),
-      "data/assets/cover.mp4.instance.md",
-      "the extension is folded in once the plain stem is taken"
-    );
-  });
-
-  test("with both forms taken it numbers rather than overwriting", () => {
-    const taken = takenIn(["a/cover.instance.md", "a/cover.png.instance.md"]);
-    equal(core.sidecarPathFor("a/cover.png", taken), "a/cover.png.1.instance.md");
-  });
-
-  test("a media file with no extension has only the plain form", () => {
-    deepEqual(core.sidecarCandidatesFor("a/cover"), ["a/cover.instance.md"]);
-    equal(core.sidecarPathFor("a/cover", takenIn(["a/cover.instance.md"])), "a/cover.1.instance.md");
-  });
-
-  test("a sidecar path round-trips back to the media stem", () => {
-    const path = core.sidecarPathFor("data/assets/cover.mp4", takenIn(["data/assets/cover.instance.md"]));
-    equal(core.mediaStemForSidecar(path), "cover.mp4");
-  });
-});
+/* Gone with the mechanism: the sidecar-path group.
+ *
+ * It verified a collision sequence — cover.instance.md, then
+ * cover.png.instance.md when cover.png and cover.mp4 shared a folder, then
+ * numbered forms beyond that — for finding a note beside its media by name.
+ * MV-STORE finds notes through metadataCache instead, so there is no name to
+ * build and no collision to sequence. What replaces these tests is MV-STORE's
+ * own: that a note is still found after being moved and renamed by hand. */
 
 report("core");
