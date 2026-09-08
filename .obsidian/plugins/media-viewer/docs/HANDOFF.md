@@ -20,6 +20,16 @@ Rules that hold for every task:
 - A task is done when its **Verify** line actually passes, not when the code
   looks right.
 
+**Revised after M2.** Four mechanisms ported from the desktop app were retired
+once it was clear each solved a problem Obsidian does not have: sidecar notes
+found by filename, provenance encoded into filenames, a private log file, and a
+vault-wide scan to list one folder. Lineage notes became records in this vault's
+schema system. Tasks 19–26 and 31 are rewritten accordingly, task 12 lost the
+millisecond payload from its filename, and tasks 25–26 are gone entirely; the
+design doc's revision note carries the reasoning. Tasks 1–10 are unaffected and
+stay done — except for the dead path builders task 2 left in `core`, removed
+with the retirement.
+
 ---
 
 ## M1 — Browse
@@ -28,7 +38,7 @@ Rules that hold for every task:
 | --- | --- | --- | --- | --- | --- |
 | 1 | `MV-SCAFFOLD` | Plugin loads: `manifest.json` (`isDesktopOnly: true`), `main.js`, `styles.css`, ribbon icon opening an empty `ItemView` | all three files | — | Plugin appears in settings, ribbon opens an empty pane |
 | 2 | `MV-CORE` | `core` block + node test harness: extension classification, zoom clamping, clone-path and sidecar-path builders with collision suffixes | `main.js`, `tests/core.test.js` | 1 | `node tests/core.test.js` passes |
-| 3 | `MV-INDEX` | `MediaIndex`: ordered media for one folder from `vault.getFiles()`; `create`/`modify`/`delete`/`rename` handling, **idempotent by path**; `.instance.md` never listed | `main.js` | 2 | Adding a file to the folder updates the list once, not twice |
+| 3 | `MV-INDEX` | `MediaIndex`: ordered media for one folder from that folder's own `children`; `create`/`modify`/`delete`/`rename` handling, **idempotent by path**; markdown never listed | `main.js` | 2 | Adding a file to the folder updates the list once, not twice |
 | 4 | `MV-FOLDER` | Folder selection: pane follows the active file, **Open in Media Viewer** on a folder's context menu, last folder remembered | `main.js` | 3 | Clicking a PNG shows its folder; restart restores it |
 | 5 | `MV-GRID` | Thumbnail grid: `IntersectionObserver` lazy loading, LRU cap, selection keyed by **path**, image/video/both filter | `main.js`, `styles.css` | 4 | 500-file folder scrolls smoothly; only visible thumbs load |
 | 6 | `MV-IMAGE` | Image viewer: wheel and `W`/`S` zoom, pan, fit-to-pane, reset to 100%, `A`/`D` sibling navigation | `main.js`, `styles.css` | 5 | Zoom, pan and keyboard navigation all work |
@@ -41,8 +51,8 @@ Rules that hold for every task:
 | 8 | `MV-VIDEO` | Video viewer: `Space` play/pause, scrub bar, position and duration readout, `W`/`S` seek ±5s, frame-step | `main.js`, `styles.css` | 6 | An mp4 plays, scrubs and frame-steps |
 | 9 | `MV-SPEED` | Playback speed 0.25x–4x | `main.js` | 8 | Speed control changes playback rate |
 | 10 | `MV-VTHUMB` | Video thumbnails: seek to 1s, draw once to canvas, cache as blob URL | `main.js` | 8 | Videos show real frames in the grid |
-| 11 | `MV-REVERSE` | Reverse playback by stepping `currentTime` under `requestAnimationFrame`; **measure achieved frame rate**; reduced-resolution scrub fallback | `main.js` | 9, 21 | Reverse plays; the measured rate is logged. If unusable on real files, say so — dropping this is allowed |
-| 12 | `MV-FRAME` | Frame capture to `<stem>+frame+<ms>ms+<ts>.png` | `main.js` | 10 | Captured PNG matches the displayed frame |
+| 11 | `MV-REVERSE` | Reverse playback by stepping `currentTime` under `requestAnimationFrame`; **measure achieved frame rate**; reduced-resolution scrub fallback | `main.js` | 9 | Reverse plays; the measured rate reaches the console. If unusable on real files, say so — dropping this is allowed |
+| 12 | `MV-FRAME` | Frame capture to `<stem>+frame+<ts>.png`, its source position recorded in the note rather than in the name | `main.js` | 10 | Captured PNG matches the displayed frame |
 
 ## M3 — Edit
 
@@ -59,28 +69,31 @@ Rules that hold for every task:
 
 | # | Keyword | Goal | Touches | Needs | Verify |
 | --- | --- | --- | --- | --- | --- |
-| 19 | `MV-STORE` | `LineageStore`: read, write and discover `.instance.md`; `media:` authoritative over filename; notes marker preserved on every rewrite | `main.js`, `tests/core.test.js` | 18 | A note round-trips with text below the marker intact |
-| 20 | `MV-TRACK` | Note written on every derived save (with `crop`, `transform`, `status`, `labels`), **plus a root note for the source**. Viewing writes nothing. **Mark as reviewed** command | `main.js` | 19 | One crop produces two notes. Opening a file produces none |
-| 21 | `MV-RESOLVE` | `MetadataResolver`: walk the `source:` chain, first declaring ancestor wins, cycle guard, 32-hop cap, missing-ancestor reporting | `main.js`, `tests/core.test.js` | 20 | Editing a parent field changes what a grandchild resolves |
-| 22 | `MV-PANEL` | Lineage panel: parent, children, and which fields are inherited from where | `main.js`, `styles.css` | 21 | The chain is visible and navigable |
-| 23 | `MV-RENAME` | `rename` handling: **short-circuit on untracked files**, sidecar follows its own media, every `source:` link rewritten, children never renamed | `main.js` | 22 | Rename a parent via Asset Renamer with Obsidian link-updating **off** — children still resolve |
-| 24 | `MV-REPAIR` | **Repair lineage** for a missing or broken note; vault-wide lineage break report; dangling `source:` reported never silently fixed | `main.js` | 23 | Deleting a note and repairing restores it |
+| 19 | `MV-SCHEMA` | `data/schema/MediaInstance.schema.md` in this vault's schema style: `media`, `source`, `op`, `crop`, `transform`, `width`, `height`, `created`, `status`, `labels` | `data/schema/` | 18 | Schema Sync accepts it and the base view lists it |
+| 20 | `MV-STORE` | `LineageStore`: read and write `MediaInstance` records; **discovery through `metadataCache`, never through filenames**; media→note and media→children maps kept current from `metadataCache.on("changed")`; notes marker preserved on every rewrite | `main.js`, `tests/core.test.js` | 19 | A note round-trips with text below the marker intact, and is still found after being moved and renamed by hand |
+| 21 | `MV-TRACK` | Note written on every derived save (with `crop`, `transform`, `status`, `labels`), **plus a root note for the source**. Viewing writes nothing. **Mark as reviewed** command | `main.js` | 20 | One crop produces two notes. Opening a file produces none |
+| 22 | `MV-RESOLVE` | `MetadataResolver`: walk the `source:` chain, first declaring ancestor wins, cycle guard, 32-hop cap, missing-ancestor reporting | `main.js`, `tests/core.test.js` | 21 | Editing a parent field changes what a grandchild resolves |
+| 23 | `MV-PANEL` | Lineage panel: parent, children, and which fields are inherited from where | `main.js`, `styles.css` | 22 | The chain is visible and navigable |
+| 24 | `MV-RENAME` | `rename` handling: **short-circuit on untracked files**; links rewritten **only when Obsidian's own link updating is off**, since otherwise the platform has already done it; children never renamed | `main.js` | 23 | Rename a parent via Asset Renamer with link-updating off, then again with it on — children resolve either way, and the second case writes nothing |
+| 25 | `MV-REPAIR` | **Repair lineage** for a missing or broken note; vault-wide lineage break report; dangling `source:` reported never silently fixed | `main.js` | 24 | Deleting a note and repairing restores it |
 
 ## M5 — Diagnostics
 
-Build `MV-LOG` early if anything above is hard to debug — task 11 already depends
-on it for its frame-rate measurement.
+`MV-LOG` is gone. It was a ring buffer, a debounce and a file writer built to
+replace the old app's `logs/app_crash.log` — a crash log written because a PyQt
+process that dies takes everything with it. Electron's console does not die, and
+already filters, persists and is one keystroke away. What the log was for is
+kept in the failure paths every task already writes.
 
 | # | Keyword | Goal | Touches | Needs | Verify |
 | --- | --- | --- | --- | --- | --- |
-| 25 | `MV-LOG` | `DebugLog`: 2000-entry ring buffer, 500 ms debounced flush to `.obsidian/plugins/media-viewer/debug.log`, structured greppable lines, `window.onerror` and `unhandledrejection` capture, off by default | `main.js`, `.gitignore` | 1 | Toggle on, cause an error, `cat` the log and see it |
-| 26 | `MV-TIMING` | Timings for scan, first-visible-thumbs, decode, encode, save and resolution; rename cascades log every rewritten link; **Copy debug log** command | `main.js` | 25 | Log shows `ms=` for each operation |
+| 26 | `MV-TIMING` | Timings logged to the console behind a debug setting: scan, first-visible-thumbs, decode, encode, save, resolution, reverse-playback frame rate; rename cascades log every rewritten link | `main.js` | 1 | The console shows `ms=` for each operation |
 
 ## M6 — Polish
 
 | # | Keyword | Goal | Touches | Needs | Verify |
 | --- | --- | --- | --- | --- | --- |
-| 27 | `MV-ERRORS` | Every row of the spec's error-handling table, guarded so one bad file never kills the grid; failed save keeps the edit session open | `main.js` | 24 | A folder of corrupt files still browses |
+| 27 | `MV-ERRORS` | Every row of the spec's error-handling table, guarded so one bad file never kills the grid; failed save keeps the edit session open | `main.js` | 25 | A folder of corrupt files still browses |
 | 28 | `MV-SETTINGS` | Settings tab: recursive scan, JPEG/WebP quality, sidecar creation, debug logging | `main.js` | 27 | Settings persist across reload |
 | 29 | `MV-PERF` | Manual performance pass at 20 / 100 / 500+ files; record numbers in this file | — | 28 | Numbers recorded below |
 | 30 | `MV-README` | Plugin `README.md` in the vault's documentation style | `README.md` | 29 | — |
@@ -91,7 +104,7 @@ Not part of the first build. The data it needs already exists after M4.
 
 | # | Keyword | Goal | Needs |
 | --- | --- | --- | --- |
-| 31 | `MV-OVERVIEW` | Unreviewed list (all vault media minus those with notes), unlabelled list, lineage breaks, filter by `status:` and folder | 24 |
+| 31 | `MV-OVERVIEW` | Unreviewed list (all vault media minus those with notes), unlabelled list, lineage breaks, filter by `status:` and folder. A Base over `implements: MediaInstance` answers much of this without a tab at all — check that before building one | 25 |
 
 ---
 
@@ -115,19 +128,23 @@ Not part of the first build. The data it needs already exists after M4.
 - [ ] 16 `MV-OVERLAY`
 - [ ] 17 `MV-TRANSFORM`
 - [ ] 18 `MV-SAVE`
-- [ ] 19 `MV-STORE`
-- [ ] 20 `MV-TRACK`
-- [ ] 21 `MV-RESOLVE`
-- [ ] 22 `MV-PANEL`
-- [ ] 23 `MV-RENAME`
-- [ ] 24 `MV-REPAIR`
-- [ ] 25 `MV-LOG`
+- [ ] 19 `MV-SCHEMA`
+- [ ] 20 `MV-STORE`
+- [ ] 21 `MV-TRACK`
+- [ ] 22 `MV-RESOLVE`
+- [ ] 23 `MV-PANEL`
+- [ ] 24 `MV-RENAME`
+- [ ] 25 `MV-REPAIR`
 - [ ] 26 `MV-TIMING`
 - [ ] 27 `MV-ERRORS`
 - [ ] 28 `MV-SETTINGS`
 - [ ] 29 `MV-PERF`
 - [ ] 30 `MV-README`
 - [ ] 31 `MV-OVERVIEW` (deferred)
+
+Retired after M2, and not to be picked up again: `MV-LOG`, which was 25. The
+numbering keeps its gaps rather than shifting, so that a commit message naming a
+task still names the same one.
 
 ## Performance numbers
 

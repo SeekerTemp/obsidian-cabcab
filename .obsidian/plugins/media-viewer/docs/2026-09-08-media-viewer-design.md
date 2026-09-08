@@ -3,6 +3,14 @@
 A vault media browser, viewer and non-destructive editor with **asset lineage**,
 ported from the PyQt5 "Local Asset Renamer" desktop app.
 
+> **Revised 2026-09-08, after M2.** The first draft carried four mechanisms
+> across from an app that had no vault to live in: sidecar notes found by
+> filename, provenance encoded into filenames, a private log file, and a
+> vault-wide scan to list one folder. Each solved a problem Obsidian does not
+> have. They are retired below, and lineage notes become **records in this
+> vault's existing schema system** rather than a private format beside the
+> images. What is built in M1 and M2 is unaffected.
+
 The renaming half of that app does not come across — Asset Renamer already owns
 renaming in this vault. What comes across instead is a claim the old app could
 never make: because every edit happens inside a vault, a derived file can carry a
@@ -13,8 +21,7 @@ move.
 
 **In.** Media browsing in a dockable pane, image viewing with zoom, video
 playback with speed and reverse, crop, rotate, flip, resize, video frame
-capture, `.instance.md` lineage notes with inherited metadata, and a runtime
-debug log.
+capture, and `MediaInstance` lineage records with inherited metadata.
 
 **Out.** Renaming, category dropdowns, the JSON preset editor, the old app's
 Page 2 entirely, its `FolderBrowserWidget` folder tree, folders outside the
@@ -39,23 +46,45 @@ memory, and iOS restricts video-to-canvas capture.
 
 ## Lineage
 
-The centrepiece. Every managed media file is paired with a sidecar note:
+The centrepiece. Every managed media file has a note recording where it came
+from — a **record in this vault's schema system**, not a file beside the image:
 
 ```
 data/assets/cover.png
-data/assets/cover.instance.md
 data/assets/cover+clone+260908110422.png
-data/assets/cover+clone+260908110422.instance.md
+MyVault/data/media/cover.md
+MyVault/data/media/cover+clone+260908110422.md
 ```
 
 One note type, not two. A root asset's note simply declares no `source:`, so
 lineage is a chain of the same thing rather than two formats meeting in the
 middle — and a root that later turns out to have a parent needs no migration.
 
+### Why records, not sidecars
+
+The first draft put `cover.instance.md` next to `cover.png` and found it by
+matching stems, with a folded-in extension for `cover.png` versus `cover.mp4`
+and numeric suffixes beyond that. That is how a program with no index finds a
+file: by guessing its name.
+
+This vault has an index. `metadataCache` reaches every note's frontmatter, so a
+note declaring `media: "[[cover.png]]"` is found by what it *says*, wherever it
+sits and whatever it is called. Discovery by filename was solving a problem the
+platform had already solved, and it cost three functions in `core`, a collision
+convention, and most of the rename task.
+
+It also puts the notes where the vault's other records live. `data/schema/`
+already describes records with `attachment`-typed fields; Schema Sync already
+keeps them honest; Bases already query them. A private format beside the images
+would be a second system doing a job this vault has one for.
+
 ### Note format
+
+A record like any other, declaring the schema it implements:
 
 ```yaml
 ---
+implements: MediaInstance
 media:  "[[cover+clone+260908110422.png]]"
 source: "[[cover.png]]"
 op: crop
@@ -71,10 +100,26 @@ labels: []
 <!-- media-viewer:notes -->
 ```
 
-`media:` is the **authoritative** pairing — the filename match is only how notes
-are discovered, so a note whose name has drifted still works. `crop` is stored in
-oriented-source pixels, the same space the crop overlay works in, so the
-derivation is reproducible rather than merely descriptive.
+`media:` is the **authoritative** pairing, and now the only one: nothing infers
+a pairing from a filename. `crop` is stored in oriented-source pixels, the same
+space the crop overlay works in, so the derivation is reproducible rather than
+merely descriptive.
+
+`data/schema/MediaInstance.schema.md` declares these fields the way every other
+schema in this vault does, which is what lets Schema Sync validate them and
+Bases query them without this plugin exposing anything of its own.
+
+### Finding a note
+
+`LineageStore` builds two maps once, from `metadataCache` alone, and keeps them
+current from `metadataCache.on("changed")`:
+
+- media path → its note
+- media path → the notes naming it as `source:`
+
+No filename convention, no directory listing, no candidate paths to try in
+order. A note the user moves or renames by hand keeps working, because nothing
+ever depended on where it was.
 
 `status:` is one of `edited`, `reviewed` or any value you set by hand, and
 `labels:` is a free list. Neither is used by this plugin's logic — they exist so
@@ -146,24 +191,25 @@ act is a map lookup, and for most of the vault that lookup misses and the event
 is dropped. Handling is therefore proportional to what you have actually edited,
 not to vault size.
 
-For tracked files, the plugin handles vault `rename` events itself rather than
-relying on Obsidian's "automatically update internal links" setting, which the
-user may have turned off:
+Because `media:` and `source:` are wikilinks in frontmatter, Obsidian's own
+link-updating rewrites them when a media file moves, and the notes stay correct
+with no work from this plugin at all. Nothing follows a media file: the note is
+a record in `data/`, and it stays where it is.
+
+That leaves one case worth handling — a user who has turned "automatically
+update internal links" **off**:
 
 | Event | Response |
 | --- | --- |
-| A media file is renamed or moved | Its own sidecar note is renamed and moved alongside it, and its `media:` link is rewritten |
-| A media file is renamed or moved | Every `source:` link pointing at it is rewritten, wherever those children live |
+| A tracked media file is renamed, link updating on | Obsidian rewrites both links; the plugin re-reads its maps and does nothing else |
+| A tracked media file is renamed, link updating off | The plugin rewrites `media:` and every `source:` naming it, which is the only case where it writes on a rename |
 | A media file is deleted | Children keep their `source:`, which now dangles and is reported in the pane |
-| A sidecar note is renamed by hand | Nothing breaks — `media:` is authoritative |
+| A note is renamed or moved by hand | Nothing breaks — the pairing is `media:`, never the location |
 
 **Children are never renamed.** Rename `cover.png` to `hero.png` and
 `cover+clone+260908110422.png` keeps its name; only the links change. Cascading
 the rename would turn one operation into many that can each fail partway, and
 would break every inbound link to a child.
-
-A sidecar is renamed with its own media file because that pairing is what makes
-notes discoverable — but nothing depends on it, since `media:` is authoritative.
 
 ### Why this reaches Asset Renamer
 
@@ -177,15 +223,14 @@ between the two plugins and no code shared. The vault is the interface.
 | Unit | Responsibility | Depends on |
 | --- | --- | --- |
 | `core` | Crop mapping, clone paths, transform maths, zoom clamping, extension classification, chain resolution | nothing |
-| `MediaIndex` | Ordered media list for one vault folder, from `vault.getFiles()` | vault |
-| `LineageStore` | Reads and writes `.instance.md`, maps media to note and parent to children | vault, metadata cache |
+| `MediaIndex` | Ordered media list for one vault folder, from that folder's own children | vault |
+| `LineageStore` | Reads and writes `MediaInstance` records, maps media to note and parent to children through `metadataCache` | vault, metadata cache |
 | `MetadataResolver` | Walks the `source:` chain to resolve an inherited field | core, LineageStore |
 | `ThumbnailCache` | Lazy thumbnails driven by `IntersectionObserver`, LRU-capped | MediaIndex |
 | `ViewerSurface` | Image mode (zoom, pan) and video mode (scrub, speed, reverse, frame-step) | MediaIndex |
 | `EditSession` | Non-destructive transform state, undo/redo, canvas render, encode | core |
 | `CropOverlay` | Drag-select with eight handles, aspect lock, source-pixel readout | core, EditSession |
 | `FrameCapture` | Video frame to bitmap, handed to `EditSession` | ViewerSurface, EditSession |
-| `DebugLog` | Ring buffer, debounced file flush, error capture, timings | vault adapter |
 
 Cropping happens **on the viewer in place**, not in a modal. The old
 `CropImageDialog` was a second copy of the viewer with its own scroll area and
@@ -205,8 +250,14 @@ The plugin still scans, because a grid and prev/next navigation need a list:
 - The last folder is remembered across restarts.
 - Scanning is non-recursive by default, with a recursive toggle.
 
-The scan itself is `vault.getFiles()` filtered by folder and extension — no disk
-reads, no worker queue, none of the old app's thumbnail machinery.
+The scan reads the folder's own `children` and filters by extension — the vault
+already holds the tree, so asking it for one folder costs that folder rather
+than the whole vault. A recursive scan walks the subtree. No disk reads, no
+worker queue, none of the old app's thumbnail machinery.
+
+The first draft filtered `vault.getFiles()`, which reads every file in the vault
+to answer a question about one folder: the directory-scan habit of a program
+that had no tree to ask.
 
 ## Data flow
 
@@ -218,7 +269,7 @@ folder → MediaIndex → thumbnail grid + ViewerSurface
                       EditSession   (rotate → flip → crop → resize)
                             ↓ Save
         encode → vault.createBinary(<stem>+clone+<ts>.<ext>)
-               → LineageStore.write(<stem>+clone+<ts>.instance.md)
+               → LineageStore.write(a MediaInstance record under data/)
                             ↓
         index inserts by path, selection follows to the new file
 ```
@@ -247,7 +298,9 @@ is bypassed. `delete` and `rename` update the map; if the affected file was
 selected, selection moves to the following entry, or the previous one at the end
 of the list.
 
-`.instance.md` files never appear in the grid.
+Notes never appear in the grid, which follows from the grid holding media
+extensions only — it needs no rule of its own now that the notes are markdown
+records living elsewhere.
 
 ### Transform pipeline
 
@@ -259,7 +312,7 @@ decode → rotate (0/90/180/270) → flipH → flipV → crop → resize → enc
 
 The crop rectangle is stored in the coordinate space of the **oriented** image —
 after rotation and flips — because that is the space the user drew it in, and it
-is the space written into the `.instance.md` note. Changing rotation with a crop
+is the space written into the lineage record. Changing rotation with a crop
 already set rotates the stored rectangle by the delta, so the same region stays
 selected. Without a fixed order, crop-then-rotate and rotate-then-crop silently
 disagree, undo becomes undefined, and the recorded provenance stops describing
@@ -304,19 +357,20 @@ stays safely a JPEG.
 
 ### Output naming
 
-Beside the source, collision-safe, carrying the old app's convention:
+Beside the source, collision-safe:
 
 - Edits: `<stem>+clone+<yymmddHHMMSS>.<ext>`, then `.1`, `.2` … on collision.
-- Frame captures: `<stem>+frame+<ms>ms+<yymmddHHMMSS>.png`.
-- Sidecars: the media file's stem plus `.instance.md` —
-  `cover+clone+260908110422.png` pairs with
-  `cover+clone+260908110422.instance.md`. Where a stem is already taken, because
-  `cover.png` and `cover.mp4` sit in one folder, the extension is folded in:
-  `cover.mp4.instance.md`. Discovery tries both forms, and `media:` settles any
-  remaining doubt.
+- Frame captures: `<stem>+frame+<yymmddHHMMSS>.png`.
 
-The name records that a file is derived; the note records what it was derived
-from. The name is a convenience, the note is the truth.
+The timestamp earns its place: it makes a name collision-free without a lookup,
+and it sorts. What has gone is the old app's habit of encoding data into the
+name — a capture used to carry `+frame+1234ms+`, its position in the source,
+which the note now records exactly and which nothing ever read back out of the
+filename.
+
+The name records **that** a file is derived; the note records what it was
+derived from. The name is a convenience, the note is the truth — and the note is
+now the only copy.
 
 ### Undo
 
@@ -330,30 +384,35 @@ has been written.
 Implemented by stepping `currentTime` backwards under `requestAnimationFrame`.
 This is honestly best-effort: on long H.264 files with sparse keyframes it can
 fall to a few frames per second and thrash the disk. It ships behind measurement
-— the debug log records achieved frame rate — and falls back to reduced-
-resolution reverse scrubbing if the measured rate is unusable on real files.
+— the achieved frame rate is measured and reported to the console — and falls
+back to reduced-resolution reverse scrubbing if the measured rate is unusable on
+real files.
 
-## Debug log
+## Diagnostics
 
-Off by default; a settings toggle turns it on. When logging every animation
-frame during reverse playback, the log is itself a performance problem, so this
-is not a thing to leave running.
+The old app crash-logged to `logs/app_crash.log` because a PyQt process that
+dies takes everything with it. A plugin runs inside Electron, where the devtools
+console is always there, survives the failure, filters, and is one keystroke
+away. Building a ring buffer, a debounce, a file writer and a **Copy debug log**
+command to reproduce a worse version of it was the clearest carried-over
+mechanism in the first draft, and it is dropped.
 
-- In-memory **ring buffer**, last 2000 entries.
-- Flushed to `.obsidian/plugins/media-viewer/debug.log` on a 500 ms debounce,
-  and immediately on any error and on plugin unload.
-- One structured line per entry, greppable rather than prose:
-  `2026-09-08T11:04:22.118Z | WARN | EditSession | encode.slow | path=a.png ms=1840 bytes=2119433`
-- `window.onerror` and `unhandledrejection` are captured, so a failure mid-drag
-  reaches the file instead of only the devtools console.
-- Timed operations are the ones that historically hurt: folder scan, first
-  visible thumbnails, decode, encode, save, lineage resolution, and
-  reverse-playback frame rate.
+What is kept is the discipline that made it worth having, expressed in what the
+plugin already does:
+
+- Every failure path already reports through `console.error` with the operation
+  and the path, and shows a `Notice` where the user needs to know. That is the
+  behaviour the log was for.
+- The operations that historically hurt — folder scan, first visible thumbnails,
+  decode, encode, save, lineage resolution, reverse-playback frame rate — are
+  timed and logged with `ms=` when a **debug logging** setting is on, so the
+  numbers M6's performance pass needs can be read off the console.
 - Rename cascades log every link they rewrite, since that is the operation with
   the widest blast radius and the least visible failure mode.
-- A **Copy debug log** command puts the buffer on the clipboard.
 
-`debug.log` is git-ignored.
+Nothing is written to disk, so there is no log file to git-ignore, no flush to
+get wrong on unload, and nothing that is itself a performance problem while
+reverse playback logs every animation frame.
 
 ## Error handling
 
@@ -402,7 +461,7 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 | UC-25 | Repair a file whose note is missing or broken |
 | UC-26 | Find lineage breaks across the vault |
 | UC-27 | Keep browsing when a folder contains corrupt or unsupported files |
-| UC-28 | Turn on debug logging, reproduce a fault, and hand over the log |
+| UC-28 | Turn on debug logging, reproduce a fault, and read the timings in the console |
 | UC-29 | Keep working when files change on disk underneath the pane |
 | UC-30 | See which media in the vault has never been reviewed |
 | UC-31 | See which reviewed media carries no labels |
@@ -432,7 +491,7 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 - [ ] Video thumbnails: seek to 1s, draw once to canvas, cache
 - [ ] Reverse playback under `requestAnimationFrame`, with measured frame rate
 - [ ] Reduced-resolution reverse-scrub fallback if the measurement is poor
-- [ ] Frame capture to PNG, named `<stem>+frame+<ms>ms+<ts>.png`
+- [ ] Frame capture to PNG, named `<stem>+frame+<ts>.png`, its position recorded in the note
 
 ### M3 — Edit
 
@@ -447,14 +506,15 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 
 ### M4 — Lineage
 
-- [ ] `LineageStore`: read, write and discover `.instance.md`, with `media:` authoritative
+- [ ] `data/schema/MediaInstance.schema.md`, in this vault's schema style
+- [ ] `LineageStore`: read and write `MediaInstance` records; discovery through `metadataCache`, never through filenames
 - [ ] Note written on every derived save, carrying `crop` and `transform`
 - [ ] Root note created when a file is used as an edit source
 - [ ] **Mark as reviewed** command; viewing never writes a note
 - [ ] `status:` and `labels:` fields, inherited like any other
 - [ ] `MetadataResolver`: chain walk, cycle guard, 32-hop cap, break reporting
 - [ ] Lineage panel: parent, children, and which fields are inherited from where
-- [ ] `rename` handling: sidecar follows its media; `source:` links rewritten; children never renamed
+- [ ] `rename` handling: links rewritten only when Obsidian's link updating is off; children never renamed
 - [ ] `delete` handling: dangling `source:` reported, never silently repaired
 - [ ] **Repair lineage** for a file whose note is missing or broken
 - [ ] Vault-wide lineage break report
@@ -466,23 +526,21 @@ Scoped here so the note format does not need migrating later; not built in this
 pass. The data it needs already exists.
 
 - [ ] Unreviewed list: all vault media minus those `LineageStore` holds a note for
+      (a Base over `implements: MediaInstance` answers most of this on its own)
 - [ ] Unlabelled list: tracked media whose resolved `labels:` is empty
 - [ ] Lineage break list
 - [ ] Filter by `status:` and by folder
 
 ### M6 — Diagnostics
 
-- [ ] `DebugLog`: ring buffer, debounced flush, structured lines
-- [ ] `window.onerror` and `unhandledrejection` capture
-- [ ] Timings for scan, first-visible-thumbs, decode, encode, save, resolution
+- [ ] Timings for scan, first-visible-thumbs, decode, encode, save, resolution,
+      logged to the console behind the debug setting
 - [ ] Rename cascades log every rewritten link
-- [ ] Settings toggle, off by default; **Copy debug log** command
-- [ ] `.gitignore` entry for `debug.log`
 
 ### M7 — Resilience and polish
 
 - [ ] Guarded failure paths for every row in the error-handling table
-- [ ] Settings: recursive scan, JPEG/WebP quality, sidecar creation, debug logging
+- [ ] Settings: recursive scan, JPEG/WebP quality, lineage note creation, debug logging
 - [ ] Node tests over `core` with a stubbed `require("obsidian")`
 - [ ] Manual performance pass at 20 / 100 / 500+ files
 - [ ] `README.md` for the plugin
@@ -495,7 +553,7 @@ generators do. Covered there:
 - Crop mapping at many zoom levels, in every rotation and flip combination,
   including selections that overhang the image edge.
 - Crop-rectangle carry-over when rotation changes after a crop is set.
-- Clone-path, frame-capture-path and sidecar-path collision sequences.
+- Clone-path and frame-capture-path collision sequences.
 - Transform dimension maths, including 90° rotation of non-square images.
 - Zoom clamping at both limits.
 - Extension classification, including unknown and uppercase extensions.
