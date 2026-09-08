@@ -3,6 +3,10 @@
 // zero-dependency shape of the plugin itself.
 const results = { passed: 0, failed: 0, failures: [] };
 let currentGroup = "";
+// Tests declare themselves synchronously but may run asynchronously. Each one
+// is queued as a thunk and awaited in order by report(), so an async failure
+// is a reported failure rather than an unhandled rejection.
+const queue = [];
 
 function group(name, body) {
   currentGroup = name;
@@ -12,13 +16,18 @@ function group(name, body) {
 
 function test(name, body) {
   const label = currentGroup ? currentGroup + " > " + name : name;
-  try {
-    body();
-    results.passed += 1;
-  } catch (error) {
-    results.failed += 1;
-    results.failures.push({ label, message: error && error.message ? error.message : String(error) });
-  }
+  queue.push(async () => {
+    try {
+      await body();
+      results.passed += 1;
+    } catch (error) {
+      results.failed += 1;
+      results.failures.push({
+        label,
+        message: error && error.message ? error.message : String(error),
+      });
+    }
+  });
 }
 
 function show(value) {
@@ -57,9 +66,11 @@ function close(actual, expected, tolerance, note) {
   }
 }
 
-// Called at the end of a test file. Exits non-zero on failure so the command
-// line, and anything driving it, sees the result rather than having to read it.
-function report(title) {
+// Called at the end of a test file. Runs everything queued, then exits
+// non-zero on failure so the command line, and anything driving it, sees the
+// result rather than having to read it.
+async function report(title) {
+  for (const run of queue) await run();
   const total = results.passed + results.failed;
   if (results.failed) {
     console.log("");

@@ -1,6 +1,18 @@
-const { Plugin, ItemView } = require("obsidian");
+const { Plugin, ItemView, TFile, TFolder } = require("obsidian");
 
 const VIEW_TYPE_MEDIA_VIEWER = "media-viewer-pane";
+
+// Deliberately small. Anything the user can see in the pane header lives here
+// so the pane comes back the way they left it, and nothing else does.
+const DEFAULT_SETTINGS = {
+  lastFolder: null,
+  recursive: false,
+  filter: "both",
+  // Following is what makes the pane feel connected to the file explorer, so
+  // it starts on. Choosing a folder from its context menu pins the pane, which
+  // is the only way an explicit choice can survive the next click.
+  followActiveFile: true,
+};
 
 /* ------------------------------------------------------------------------ *
  * core — pure functions. No Obsidian API, no I/O, no `this`.
@@ -268,6 +280,25 @@ function sortedInsertIndex(paths, path) {
   return low;
 }
 
+// Which folder the pane should follow to, given the file the workspace just
+// made active. Only media files move the pane: opening a markdown note should
+// not swap a folder of images for an empty list.
+function folderForActiveFile(path) {
+  if (!path) return null;
+  if (isSidecarPath(path)) return null;
+  if (!isMediaPath(path)) return null;
+  return folderOf(path);
+}
+
+// The pane header shows a folder's name, not its full path — but the vault root
+// has neither, so it gets a word.
+function folderLabelFor(folder) {
+  if (folder === null || folder === undefined) return "";
+  const clean = normaliseSeparators(folder).replace(/\/+$/, "");
+  if (clean === "") return "Vault root";
+  return baseNameOf(clean);
+}
+
 // When the displayed file disappears, selection moves to the entry that took
 // its place — which at the end of the list is the one before it. Returns null
 // only when nothing is left to select.
@@ -311,6 +342,8 @@ const core = {
   isInFolder,
   sortedInsertIndex,
   selectionAfterRemoval,
+  folderForActiveFile,
+  folderLabelFor,
 };
 
 /* ------------------------------------------------------------------------ *
@@ -491,6 +524,9 @@ class MediaViewerView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
+    this.headerEl = null;
+    this.folderEl = null;
+    this.listEl = null;
   }
 
   getViewType() {
@@ -498,28 +534,111 @@ class MediaViewerView extends ItemView {
   }
 
   getDisplayText() {
-    return "Media Viewer";
+    const folder = this.plugin.index.folder;
+    return folder === null ? "Media Viewer" : "Media Viewer: " + folderLabelFor(folder);
   }
 
   getIcon() {
     return "image";
   }
 
+  get index() {
+    return this.plugin.index;
+  }
+
+  get settings() {
+    return this.plugin.settings;
+  }
+
   async onOpen() {
     const root = this.contentEl;
     root.empty();
     root.addClass("media-viewer");
-    root.createDiv({ cls: "mv-empty", text: "No folder selected." });
+    this.buildChrome(root);
+    this.render();
   }
 
   async onClose() {
     this.contentEl.empty();
   }
+
+  buildChrome(root) {
+    const header = root.createDiv({ cls: "mv-header" });
+    this.headerEl = header;
+
+    this.folderEl = header.createDiv({ cls: "mv-folder", text: "No folder" });
+
+    const controls = header.createDiv({ cls: "mv-controls" });
+
+    const filter = controls.createEl("select", { cls: "dropdown mv-filter" });
+    for (const [value, label] of [["both", "All media"], ["image", "Images"], ["video", "Videos"]]) {
+      filter.createEl("option", { value, text: label });
+    }
+    filter.value = this.settings.filter;
+    filter.addEventListener("change", () => {
+      this.plugin.setFilter(filter.value);
+    });
+
+    this.recursiveEl = this.toggleButton(controls, "Include subfolders", () => {
+      this.plugin.setRecursive(!this.settings.recursive);
+    });
+
+    this.followEl = this.toggleButton(controls, "Follow the active file", () => {
+      this.plugin.setFollowActiveFile(!this.settings.followActiveFile);
+    });
+
+    this.listEl = root.createDiv({ cls: "mv-list" });
+  }
+
+  toggleButton(parent, label, onClick) {
+    const button = parent.createEl("button", { cls: "mv-toggle", text: label, attr: { type: "button" } });
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  // A flat list for now; MV-GRID replaces it with lazy-loading thumbnails.
+  render() {
+    if (!this.listEl) return;
+    const folder = this.index.folder;
+
+    if (this.folderEl) {
+      this.folderEl.setText(folder === null ? "No folder" : folderLabelFor(folder));
+      this.folderEl.title = folder === null ? "" : folder;
+    }
+    if (this.recursiveEl) this.recursiveEl.toggleClass("is-active", this.settings.recursive);
+    if (this.followEl) this.followEl.toggleClass("is-active", this.settings.followActiveFile);
+
+    this.listEl.empty();
+
+    if (folder === null) {
+      this.listEl.createDiv({
+        cls: "mv-empty",
+        text: "Open a media file, or choose Open in Media Viewer on a folder.",
+      });
+      return;
+    }
+
+    const paths = this.plugin.visiblePaths();
+    if (!paths.length) {
+      this.listEl.createDiv({ cls: "mv-empty", text: "No media in this folder." });
+      return;
+    }
+
+    for (const path of paths) {
+      const row = this.listEl.createDiv({ cls: "mv-row", text: baseNameOf(path) });
+      row.dataset.path = path;
+      row.title = path;
+    }
+  }
 }
 
 class MediaViewerPlugin extends Plugin {
   async onload() {
+    await this.loadSettings();
+
     this.index = new MediaIndex(this.app.vault);
+    this.index.recursive = this.settings.recursive;
+    this.index.onChange = () => this.refreshViews();
 
     this.registerView(VIEW_TYPE_MEDIA_VIEWER, (leaf) => new MediaViewerView(leaf, this));
 
@@ -540,6 +659,116 @@ class MediaViewerPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.index.handleRename(file, oldPath))
     );
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => this.followActiveFile(file))
+    );
+
+    // Obsidian's file explorer already is the folder tree the desktop app
+    // hand-built, so the plugin adds one item to it rather than a widget.
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, target) => {
+        const folder = this.folderPathForMenuTarget(target);
+        if (folder === null) return;
+        menu.addItem((item) => {
+          item
+            .setTitle("Open in Media Viewer")
+            .setIcon("image")
+            .onClick(async () => {
+              await this.activateView();
+              this.pinFolder(folder);
+            });
+        });
+      })
+    );
+
+    // The last folder is restored, but only once the vault has finished
+    // indexing: scanning before then finds a fraction of the files and the
+    // pane opens looking empty.
+    this.app.workspace.onLayoutReady(() => {
+      if (this.settings.lastFolder !== null) {
+        this.index.setFolder(this.settings.lastFolder, this.settings.recursive);
+      }
+      this.followActiveFile(this.app.workspace.getActiveFile());
+    });
+  }
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+
+  // A file-menu target is a TFile or a TFolder. A media file offers its own
+  // folder, so the item is reachable from a file as well as from the folder
+  // itself; anything else offers nothing.
+  folderPathForMenuTarget(target) {
+    if (target instanceof TFolder) return target.path === "/" ? "" : target.path;
+    if (target instanceof TFile) return folderForActiveFile(target.path);
+    return null;
+  }
+
+  followActiveFile(file) {
+    if (!this.settings.followActiveFile) return;
+    const folder = folderForActiveFile(file && file.path);
+    if (folder === null) return;
+    this.showFolder(folder);
+  }
+
+  // Choosing a folder explicitly pins the pane to it. Without this the next
+  // click in the file explorer would silently undo the choice, which makes the
+  // context-menu item feel broken rather than merely overridden.
+  pinFolder(folder) {
+    if (this.settings.followActiveFile) {
+      this.settings.followActiveFile = false;
+      void this.saveSettings();
+    }
+    this.showFolder(folder);
+  }
+
+  showFolder(folder) {
+    if (this.index.folder === folder) return;
+    this.index.setFolder(folder, this.settings.recursive);
+    this.settings.lastFolder = this.index.folder;
+    void this.saveSettings();
+    this.refreshViews();
+  }
+
+  setRecursive(recursive) {
+    this.settings.recursive = Boolean(recursive);
+    void this.saveSettings();
+    this.index.setRecursive(this.settings.recursive);
+    this.refreshViews();
+  }
+
+  setFilter(filter) {
+    this.settings.filter = filter === "image" || filter === "video" ? filter : "both";
+    void this.saveSettings();
+    this.refreshViews();
+  }
+
+  setFollowActiveFile(follow) {
+    this.settings.followActiveFile = Boolean(follow);
+    void this.saveSettings();
+    if (this.settings.followActiveFile) this.followActiveFile(this.app.workspace.getActiveFile());
+    this.refreshViews();
+  }
+
+  // The filter is a view concern, not an index one: switching between images
+  // and videos should not cost a rescan of the folder.
+  visiblePaths() {
+    const filter = this.settings.filter;
+    if (filter === "both") return this.index.paths;
+    return this.index.paths.filter((path) => matchesFilter(path, filter));
+  }
+
+  refreshViews() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
+      const view = leaf.view;
+      if (view instanceof MediaViewerView) view.render();
+    }
   }
 
   // Reuse an existing pane rather than stacking duplicates; a second ribbon

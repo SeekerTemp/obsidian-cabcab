@@ -10,6 +10,81 @@
   padding: 0;
 }
 
+.media-viewer .mv-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
+}
+
+.media-viewer .mv-folder {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+  /* The folder name is the one thing that can be arbitrarily long, so it is
+     the one thing allowed to shrink. */
+  flex: 1 1 6em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-viewer .mv-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  flex: 0 0 auto;
+}
+
+.media-viewer .mv-filter {
+  font-size: var(--font-ui-smaller);
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+}
+
+.media-viewer .mv-toggle {
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  box-shadow: none;
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.media-viewer .mv-toggle:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.media-viewer .mv-toggle.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.media-viewer .mv-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--size-4-1) 0;
+}
+
+.media-viewer .mv-row {
+  padding: var(--size-2-2) var(--size-4-3);
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-viewer .mv-row:hover {
+  background-color: var(--background-modifier-hover);
+}
+
 .media-viewer .mv-empty {
   display: flex;
   align-items: center;
