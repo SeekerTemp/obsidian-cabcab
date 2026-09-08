@@ -2,7 +2,17 @@
    Sizes come from Obsidian's own variables wherever one exists, so the pane
    follows the active theme instead of pinning its own palette. */
 
+/* The pane is the container every size question is asked against.
+   `inline-size` rather than `size`, because the pane's height comes from its
+   own content in some layouts and querying that would be circular.
+
+   A media query would be wrong here: it reads the window, and this pane can be
+   a narrow right sidebar in a maximised window or a wide split in a small one.
+   Those two want opposite layouts and the window cannot tell them apart. */
 .media-viewer {
+  container-type: inline-size;
+  container-name: media-viewer;
+
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -290,4 +300,93 @@
   font-size: var(--font-ui-small);
   text-align: center;
   padding: var(--size-4-4);
+}
+
+/* ------------------------------------------------------------------------ *
+ * Reflow, on the pane's own width.
+ *
+ * Three sizes, and the breakpoints are where the layout actually breaks rather
+ * than at round numbers:
+ *
+ *   below 260px  the header cannot hold its controls on one line
+ *   260 - 559px  stacked: viewer above grid, which is the sidebar case
+ *   560px and up side by side, because at that width a stacked viewer is a
+ *                letterbox and the grid below it is two rows tall
+ *
+ * Everything here is a container query, so a docked sidebar and a wide split
+ * lay out differently in the same window — which is the whole point, and what
+ * a media query could not do.
+ * ------------------------------------------------------------------------ */
+
+/* Narrow: a right sidebar at its default width. The controls wrap under the
+   folder name rather than squeezing it to nothing. */
+@container media-viewer (max-width: 259px) {
+  .media-viewer .mv-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--size-2-2);
+  }
+
+  .media-viewer .mv-controls {
+    justify-content: space-between;
+  }
+
+  /* Tiles get smaller before the grid drops to one column: two small
+     thumbnails say more about a folder than one large one. */
+  .media-viewer .mv-grid {
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: var(--size-4-1);
+    padding: var(--size-4-1);
+  }
+
+  /* The file name in the viewer bar is the first thing to go: the same name is
+     already under the selected tile. */
+  .media-viewer .mv-viewer-name {
+    display: none;
+  }
+}
+
+/* Wide: side by side. The viewer takes the larger share because it is the
+   thing being looked at; the grid is how you get to it. */
+@container media-viewer (min-width: 560px) {
+  .media-viewer .mv-body {
+    flex-direction: row;
+  }
+
+  .media-viewer .mv-viewer {
+    flex: 1 1 62%;
+    min-width: 0;
+    border-bottom: none;
+    border-right: 1px solid var(--background-modifier-border);
+  }
+
+  .media-viewer .mv-grid,
+  .media-viewer .mv-empty.is-shown {
+    flex: 1 1 38%;
+    min-width: 0;
+  }
+}
+
+/* Very wide — a media pane taking most of a large window. The grid stops
+   growing with the pane, because a thumbnail column half the screen across is
+   not a better index than a narrow one; the extra width goes to the image. */
+@container media-viewer (min-width: 1100px) {
+  .media-viewer .mv-viewer {
+    flex: 1 1 auto;
+  }
+
+  .media-viewer .mv-grid,
+  .media-viewer .mv-empty.is-shown {
+    flex: 0 0 360px;
+  }
+}
+
+/* Container queries are widely supported, but a theme or an old Obsidian build
+   could still leave the pane with no container to query. Without a fallback the
+   pane would simply stay stacked, which is the safe half of the choice — this
+   makes that explicit rather than accidental. */
+@supports not (container-type: inline-size) {
+  .media-viewer .mv-body {
+    flex-direction: column;
+  }
 }

@@ -398,6 +398,41 @@ group("clicking a tile selects it", () => {
   });
 });
 
+group("the structure the layout rules stand on", () => {
+  // The container queries in styles.css reflow .mv-body between column and
+  // row. That only works while the viewer and the grid are siblings inside it,
+  // so the shape is asserted here rather than left to be discovered by a
+  // refactor that quietly flattens it.
+  test("the pane is header then body", async () => {
+    const { view } = await paneOver(FILES);
+    deepEqual(
+      view.contentEl.children.map((child) => child.className),
+      ["mv-header", "mv-body"]
+    );
+  });
+
+  test("the body holds the viewer, the grid and the empty message as siblings", async () => {
+    const { view } = await paneOver(FILES);
+    deepEqual(
+      view.bodyEl.children.map((child) => child.className.split(" ")[0]),
+      ["mv-viewer", "mv-grid", "mv-empty"]
+    );
+  });
+
+  test("the container itself is the pane, which is what makes the queries pane-relative", async () => {
+    const { view } = await paneOver(FILES);
+    ok(view.contentEl.hasClass("media-viewer"), "the queried container class is on contentEl");
+  });
+
+  test("the viewer is a stage above its bar", async () => {
+    const { view } = await paneOver(FILES);
+    deepEqual(
+      view.viewerEl.children.map((child) => child.className),
+      ["mv-stage", "mv-viewer-bar"]
+    );
+  });
+});
+
 group("header", () => {
   test("names the folder and holds the full path in the tooltip", async () => {
     const { view } = await paneOver(FILES);

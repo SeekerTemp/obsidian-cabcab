@@ -103,7 +103,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 4 `MV-FOLDER`
 - [x] 5 `MV-GRID`
 - [x] 6 `MV-IMAGE`
-- [ ] 7 `MV-LAYOUT`
+- [x] 7 `MV-LAYOUT`
 - [ ] 8 `MV-VIDEO`
 - [ ] 9 `MV-SPEED`
 - [ ] 10 `MV-VTHUMB`
