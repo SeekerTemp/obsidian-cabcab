@@ -196,13 +196,14 @@ group("persistence", () => {
     plugin.setFilter("video");
     plugin.setRecursive(true);
     await new Promise((resolve) => setImmediate(resolve));
-    deepEqual(plugin.saved, {
-      lastFolder: "data/assets",
-      recursive: true,
-      filter: "video",
-      followActiveFile: false,
-      debugLogging: false,
-    });
+    /* Field by field rather than object to object: what this test is about is
+       that each choice reached disk, and a whole-object comparison would fail
+       every time an unrelated setting is added — which makes it a test of the
+       settings list rather than of persistence. */
+    equal(plugin.saved.lastFolder, "data/assets");
+    equal(plugin.saved.recursive, true);
+    equal(plugin.saved.filter, "video");
+    equal(plugin.saved.followActiveFile, false);
   });
 
   test("a restart restores the last folder and its settings", async () => {

@@ -358,6 +358,18 @@
   padding: var(--size-2-1) var(--size-4-1);
 }
 
+/* The one control in the bar that writes a file, so it is the one that does not
+   look like the rest of them. */
+.media-viewer .mv-viewer-button.mv-save {
+  margin-left: auto;
+  color: var(--text-accent);
+  font-weight: var(--font-medium);
+}
+
+.media-viewer .mv-viewer-button.mv-save:not(:disabled) {
+  background-color: var(--background-modifier-hover);
+}
+
 .media-viewer .mv-viewer-button.is-active {
   background-color: var(--background-modifier-hover);
   color: var(--text-accent);

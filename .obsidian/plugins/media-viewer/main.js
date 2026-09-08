@@ -2,6 +2,10 @@ const { Plugin, ItemView, Notice, TFile, TFolder } = require("obsidian");
 
 const VIEW_TYPE_MEDIA_VIEWER = "media-viewer-pane";
 
+// Hoisted above the settings because the settings default to it. See the
+// encoding block in core for why a lossy default exists at all.
+const DEFAULT_ENCODE_QUALITY = 0.92;
+
 // Deliberately small. Anything the user can see in the pane header lives here
 // so the pane comes back the way they left it, and nothing else does.
 const DEFAULT_SETTINGS = {
@@ -17,6 +21,10 @@ const DEFAULT_SETTINGS = {
   // else. There is no log file: Electron's console already filters, persists
   // and survives the failure, which is what the old app's crash log was for.
   debugLogging: false,
+  // What a JPEG or WebP output is encoded at. PNG ignores it: passing a
+  // quality for a lossless format is a number that looks meaningful and is
+  // not.
+  encodeQuality: DEFAULT_ENCODE_QUALITY,
 };
 
 /* ------------------------------------------------------------------------ *
@@ -1175,6 +1183,35 @@ const CROP_ASPECTS = [
    size does not. */
 const RESIZE_SCALES = [0.25, 0.5, 0.75, 1, 1.5, 2];
 
+/* Encoding — MV-SAVE.
+ *
+ * The output format follows the source. The old app encoded everything to PNG,
+ * which turns a 2 MB JPEG crop into a 15 MB file: lossless is the right default
+ * for a format that was lossless and the wrong one for a format that was not,
+ * because re-encoding a photograph as PNG preserves the compression artefacts
+ * at eight times the size.
+ *
+ * Rotation, flipping and cropping never introduce transparency, so a JPEG
+ * source stays safely a JPEG — which is the fact that makes following the
+ * source safe rather than merely cheaper.
+ */
+
+// Undefined for PNG, and deliberately so: canvas.toBlob takes quality as an
+// optional argument, and passing one for a lossless format is a value that
+// looks meaningful and is not.
+function encodeQualityFor(mime, quality) {
+  if (mime !== "image/jpeg" && mime !== "image/webp") return undefined;
+  const value = Number(quality);
+  if (!Number.isFinite(value)) return DEFAULT_ENCODE_QUALITY;
+  return Math.min(1, Math.max(0.1, value));
+}
+
+function clampQuality(quality) {
+  const value = Number(quality);
+  if (!Number.isFinite(value)) return DEFAULT_ENCODE_QUALITY;
+  return Math.min(1, Math.max(0.1, value));
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1380,6 +1417,9 @@ const core = {
   isNegligibleSelection,
   cropWithinCrop,
   RESIZE_SCALES,
+  DEFAULT_ENCODE_QUALITY,
+  encodeQualityFor,
+  clampQuality,
   scaleRect,
   MAX_DECODE_MEGAPIXELS,
   MAX_DISPLAY_EDGE,
@@ -1780,6 +1820,59 @@ async function loadEditSource(url, options) {
   };
 }
 
+/* A canvas as bytes.
+ *
+ * toBlob is callback-shaped and hands back null rather than throwing when the
+ * browser cannot encode — a WebP request on a build without the encoder, say —
+ * so both of those become a rejected promise here, and every caller gets one
+ * failure shape to handle.
+ *
+ * The toDataURL fallback exists for builds without toBlob. It is a base64
+ * string, so it costs a third more memory and a parse; that is a fine price
+ * for a fallback and a bad one for the normal path.
+ */
+function canvasToBlob(canvas, mime, quality) {
+  return new Promise((resolve, reject) => {
+    if (typeof canvas.toBlob === "function") {
+      try {
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error("the browser could not encode " + mime));
+          },
+          mime,
+          quality
+        );
+        return;
+      } catch (error) {
+        reject(error);
+        return;
+      }
+    }
+    if (typeof canvas.toDataURL !== "function") {
+      reject(new Error("this canvas cannot be encoded"));
+      return;
+    }
+    try {
+      resolve(dataUrlToBlob(canvas.toDataURL(mime, quality)));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function dataUrlToBlob(url) {
+  const comma = String(url).indexOf(",");
+  if (comma === -1) throw new Error("not a data URL");
+  const head = String(url).slice(0, comma);
+  const body = String(url).slice(comma + 1);
+  const mime = (head.match(/^data:([^;,]+)/) || [])[1] || "application/octet-stream";
+  const binary = head.includes(";base64") ? atob(body) : decodeURIComponent(body);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
 class EditSession {
   /* `source` is { path, image, width, height }: the decoded bitmap and the
      dimensions to trust. The dimensions are taken rather than read off the
@@ -2034,6 +2127,23 @@ class EditSession {
     return canvas;
   }
 
+
+  /* Encode the edit to bytes, in the source's own format.
+   *
+   * toBlob rather than toDataURL: a data URL is base64, so it is a third
+   * larger and has to be parsed back out of a string, and for a large image
+   * that string is the largest single allocation in the operation. The
+   * toDataURL path is kept only for the case where toBlob is missing.
+   */
+  async encode(options) {
+    const settings = options || {};
+    const mime = settings.mime || mimeForExtension(extensionOf(this.path || ""));
+    const quality = encodeQualityFor(mime, settings.quality);
+    const canvas = this.render();
+    const blob = await canvasToBlob(canvas, mime, quality);
+    if (!blob) throw new Error("the canvas produced no image data");
+    return { bytes: await blob.arrayBuffer(), mime, quality, blob };
+  }
   /* What the lineage note records. Oriented-source pixels for the crop, the
      three transform flags, and the output dimensions — enough to reproduce the
      derivation rather than merely describe it. */
@@ -2340,6 +2450,9 @@ class MediaViewerView extends ItemView {
     // start a second one and so a decode that finishes after the user has
     // moved on can tell that it has.
     this.editLoading = null;
+    // Set while an encode and write are in flight, so a second Save does not
+    // produce a second file from the same click.
+    this.saving = null;
   }
 
   getViewType() {
@@ -3896,6 +4009,10 @@ class MediaViewerView extends ItemView {
     this.undoEl.title = "Undo (Ctrl+Z)";
     this.redoEl = this.barButton(bar, "Redo", () => this.redoEdit());
     this.redoEl.title = "Redo (Ctrl+Shift+Z)";
+    this.saveEl = this.barButton(bar, "Save", () => this.saveEdit());
+    this.saveEl.addClass("mv-save");
+    this.saveEl.title = "Write the edit to a new file beside the source (Ctrl+S)";
+
     this.resetEl = this.barButton(bar, "Reset", () => this.resetEdit());
     this.resetEl.title = "Undo every change in this session, in one undoable step";
 
@@ -4086,12 +4203,84 @@ class MediaViewerView extends ItemView {
     return this.sizeLinked;
   }
 
+  /* Save the edit as a new file beside the source.
+   *
+   * The source is never written to, which is what makes every edit in this
+   * plugin non-destructive in the only sense that matters: the file you
+   * started from is still there afterwards.
+   *
+   * Nothing here rescans. The index inserts by path and the selection is a
+   * path, so the grid keeps its scroll position and the new file simply
+   * appears in it — which is the whole reason selection was never an index.
+   *
+   * Both failure paths leave the session open. A crop that took a minute to
+   * place and cannot be written is not work to throw away because the disk was
+   * full.
+   */
+  async saveEdit() {
+    const session = this.session;
+    if (!session) return null;
+    if (this.saving) return this.saving;
+    this.saving = this.writeEdit(session).finally(() => {
+      this.saving = null;
+      this.updateViewerBar();
+    });
+    this.updateViewerBar();
+    return this.saving;
+  }
+
+  async writeEdit(session) {
+    const started = Date.now();
+    let encoded;
+    try {
+      encoded = await session.encode({ quality: this.settings.encodeQuality });
+    } catch (error) {
+      console.error("Media Viewer: encoding " + session.path + " failed", error);
+      new Notice("Media Viewer: this edit could not be encoded — the session is still open");
+      return null;
+    }
+    this.plugin.logTiming("encode", session.path, started, "bytes=" + encoded.bytes.byteLength);
+
+    const written = Date.now();
+    const path = clonePathFor(session.path, (candidate) => this.plugin.pathExists(candidate));
+    let created;
+    try {
+      created = await this.plugin.app.vault.createBinary(path, encoded.bytes);
+    } catch (error) {
+      console.error("Media Viewer: could not write " + path, error);
+      new Notice("Media Viewer: could not write " + baseNameOf(path) + " — the session is still open");
+      return null;
+    }
+    this.plugin.logTiming("save", path, written);
+
+    /* Inserted here rather than left to the vault's create event, because the
+       order of that event against createBinary's promise is not something to
+       depend on — and selecting a path the index has not heard of does
+       nothing. Insertion is idempotent by path, which is what makes doing it
+       in both places safe. */
+    if (created) this.index.handleCreate(created);
+    await this.plugin.afterEditSaved(session, path, created);
+
+    new Notice("Saved " + baseNameOf(path));
+    /* Selection follows to the new file, and a fresh session opens on it. The
+       previous history is discarded deliberately: undo applies to unsaved
+       state, and an undo that could step back past a file already written
+       would be an undo that has to decide whether to delete it. */
+    this.plugin.select(path);
+    await this.startEdit();
+    return path;
+  }
+
   updateEditBar() {
     const session = this.session;
     if (this.cropEl) this.cropEl.disabled = !session || !this.selectionCrop();
     if (this.undoEl) this.undoEl.disabled = !session || !session.canUndo;
     if (this.redoEl) this.redoEl.disabled = !session || !session.canRedo;
     if (this.resetEl) this.resetEl.disabled = !session || !session.dirty;
+    // Offered only for an edit that would change something: saving an
+    // untouched image is a copy, which is a thing to ask for rather than a
+    // thing to do by pressing the obvious button.
+    if (this.saveEl) this.saveEl.disabled = !session || !session.dirty || Boolean(this.saving);
     for (const button of [this.rotateLeftEl, this.rotateRightEl, this.flipHEl, this.flipVEl]) {
       if (button) button.disabled = !session;
     }
@@ -4131,6 +4320,12 @@ class MediaViewerView extends ItemView {
     if (event.ctrlKey || event.metaKey) {
       if (key === "z") return event.shiftKey ? this.redoEdit() : this.undoEdit();
       if (key === "y") return this.redoEdit();
+      // Claimed only in edit mode, where the pane has focus and there is
+      // something unsaved in it. Everywhere else Ctrl+S is Obsidian's.
+      if (key === "s") {
+        void this.saveEdit();
+        return true;
+      }
       return false;
     }
     if (event.altKey) return false;
@@ -4429,6 +4624,14 @@ let created = null;
     // successful.
     this.select(path);
     return path;
+  }
+
+  /* Called after a derived file has been written and inserted, before the
+     selection moves to it. Nothing here yet: MV-TRACK is where a save starts
+     writing lineage notes, and this is the seam it writes into, so that the
+     save path does not have to change shape to grow one. */
+  async afterEditSaved(session, path, file) {
+    return null;
   }
 
   pathExists(path) {

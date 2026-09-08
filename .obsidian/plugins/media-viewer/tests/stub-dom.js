@@ -99,6 +99,30 @@ class StubElement {
     return this.context;
   }
 
+  /* The encode path a save takes. The stub does not compress anything — what
+     the save has to get right is the type it asks for, the quality it passes
+     and the bytes it hands to the vault, and all three are visible from here.
+
+     `failEncode` on the canvas makes toBlob hand back null, which is how a
+     real browser reports a format it has no encoder for. */
+  toBlob(callback, type, quality) {
+    this.encoded = { type, quality };
+    if (this.failEncode) {
+      callback(null);
+      return;
+    }
+    const size = (this.width || 0) * (this.height || 0);
+    callback({
+      type: type || "image/png",
+      size,
+      canvas: this,
+      quality,
+      async arrayBuffer() {
+        return new ArrayBuffer(size);
+      },
+    });
+  }
+
   // Encoded frames are compared by identity in the tests, so the URL carries
   // enough to tell two of them apart.
   toDataURL(type, quality) {
