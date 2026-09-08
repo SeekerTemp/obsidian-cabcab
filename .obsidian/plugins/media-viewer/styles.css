@@ -1,0 +1,22 @@
+/* Media Viewer — pane styling.
+   Sizes come from Obsidian's own variables wherever one exists, so the pane
+   follows the active theme instead of pinning its own palette. */
+
+.media-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.media-viewer .mv-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+  padding: var(--size-4-4);
+}
