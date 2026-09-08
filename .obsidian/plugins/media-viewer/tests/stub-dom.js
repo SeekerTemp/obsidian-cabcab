@@ -71,6 +71,32 @@ class StubElement {
     this.loadCount += 1;
   }
 
+  /* Canvas. Node has no 2D context, so the stub records the call instead of
+     performing it: what the thumbnailer has to get right is the size it draws
+     at and the fact that it draws the seeked element at all, and both of those
+     are visible from here. */
+  getContext(type) {
+    if (type !== "2d") return null;
+    if (!this.context) {
+      const canvas = this;
+      this.context = {
+        canvas,
+        drawn: [],
+        drawImage(source, x, y, width, height) {
+          this.drawn.push({ source, x, y, width, height });
+        },
+      };
+    }
+    return this.context;
+  }
+
+  // Encoded frames are compared by identity in the tests, so the URL carries
+  // enough to tell two of them apart.
+  toDataURL(type, quality) {
+    this.encoded = { type, quality };
+    return "data:" + (type || "image/png") + ";base64,stub-" + this.width + "x" + this.height;
+  }
+
   // Derived from clientWidth/clientHeight, positioned at the origin. Enough
   // for the pan maths, which only ever asks for the centre.
   getBoundingClientRect() {

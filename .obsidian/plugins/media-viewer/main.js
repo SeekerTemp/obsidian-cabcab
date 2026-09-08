@@ -68,6 +68,30 @@ const SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
 const SPEED_MIN = SPEED_STEPS[0];
 const SPEED_MAX = SPEED_STEPS[SPEED_STEPS.length - 1];
 
+// Where a video thumbnail is taken from. One second in, because frame zero of
+// a great many videos is black, a fade, or a slate — the one frame that says
+// least about the file.
+const VIDEO_THUMBNAIL_SECONDS = 1;
+// Long edge of the drawn frame. The grid's tiles top out around 160 CSS pixels,
+// so this covers a 2x display with room to spare and no more: the frames are
+// held as blobs, and full-size ones would be megabytes of memory for pixels
+// nothing can show.
+const VIDEO_THUMBNAIL_MAX_EDGE = 320;
+// How many videos are decoded at once. Seeking is disk-bound and the design's
+// open risks name a folder of videos as a candidate for the old app's
+// thumbnail stalls, so the queue is deliberately narrow: two keeps a drive
+// busy without a folder of 500 trying to open 500 decoders.
+const VIDEO_THUMBNAIL_CONCURRENCY = 2;
+// A video that never reports metadata, or never finishes seeking, would hold a
+// queue slot for the rest of the session. Ten seconds is far longer than a
+// local file needs and short enough that a bad one does not stall the folder.
+const VIDEO_THUMBNAIL_TIMEOUT_MS = 10000;
+// Generated frames held as blob URLs. Smaller than the tile cache because
+// these cost real memory rather than a browser-managed decode, and because a
+// re-seek is the expensive thing being avoided — a frame kept is a disk read
+// not repeated when the user scrolls back.
+const VIDEO_FRAME_CACHE_SIZE = 120;
+
 // Encoding follows the source, because encoding everything to PNG turns a 2 MB
 // JPEG crop into a 15 MB file. Rotation, flipping and cropping never introduce
 // transparency, so a JPEG source stays safely a JPEG.
@@ -341,6 +365,35 @@ function stepSpeed(rate, steps) {
 function formatSpeed(rate) {
   const value = Number(rate);
   return (Number.isFinite(value) && value > 0 ? String(Number(value.toFixed(2))) : "1") + "x";
+}
+
+/* Where in a video its thumbnail comes from. One second in, unless the video
+   is shorter than that — a clip of half a second would otherwise be asked for
+   a frame past its end, which seeks to the end and often yields black. */
+function thumbnailSeekTime(duration, target) {
+  const length = Number(duration);
+  if (!Number.isFinite(length) || length <= 0) return 0;
+  const at = Number(target);
+  const want = Number.isFinite(at) && at >= 0 ? at : VIDEO_THUMBNAIL_SECONDS;
+  // Half way through a short clip, rather than its final frame: the last frame
+  // of a video is as likely to be black as its first.
+  return length <= want ? length / 2 : want;
+}
+
+// The size a frame is drawn at: the source, scaled down to fit the cap, never
+// scaled up. Integers, because a canvas sized 160.5 rounds somewhere out of
+// sight and the drawn frame ends up a pixel short of its own edge.
+function thumbnailCanvasSize(width, height, maxEdge) {
+  const w = Math.floor(Number(width));
+  const h = Math.floor(Number(height));
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  const capValue = Number(maxEdge);
+  const cap = Number.isFinite(capValue) && capValue > 0 ? capValue : VIDEO_THUMBNAIL_MAX_EDGE;
+  const scale = Math.min(1, cap / Math.max(w, h));
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+  };
 }
 
 // A/D step through the list without wrapping. Wrapping from the last file back
@@ -630,6 +683,13 @@ const core = {
   SPEED_STEPS,
   SPEED_MIN,
   SPEED_MAX,
+  VIDEO_THUMBNAIL_SECONDS,
+  VIDEO_THUMBNAIL_MAX_EDGE,
+  VIDEO_THUMBNAIL_CONCURRENCY,
+  VIDEO_THUMBNAIL_TIMEOUT_MS,
+  VIDEO_FRAME_CACHE_SIZE,
+  thumbnailSeekTime,
+  thumbnailCanvasSize,
   clampSpeed,
   nearestSpeed,
   stepSpeed,
@@ -855,6 +915,27 @@ class MediaViewerView extends ItemView {
       this.unloadThumbnail(path, tile)
     );
 
+    /* Video frames, path -> blob URL, capped separately.
+     *
+     * Two caches rather than one because the two costs are nothing alike. An
+     * image thumbnail is a URL the browser decodes and can drop at will; a
+     * video frame is a disk seek, a decode and an encode, and throwing one
+     * away means paying all three again. So the tile cache may strip a video
+     * tile's <img> while the frame it was showing survives here, and scrolling
+     * back is instant rather than another trip to the drive.
+     *
+     * The eviction callback is where every blob URL is revoked, exactly once —
+     * which is the reason the LRU calls it on replace and on clear() as well
+     * as on eviction. */
+    this.frames = new LruCache(VIDEO_FRAME_CACHE_SIZE, (path, url) => this.revokeFrame(path, url));
+    // Paths waiting for a decoder slot, and the jobs holding one. Both keyed
+    // by path, so a tile that scrolls away can withdraw whichever it is in.
+    this.frameQueue = [];
+    this.frameJobs = new Map();
+    // Paths that have already failed. Retrying a file the browser cannot
+    // decode on every scroll past it is a stall with no possible outcome.
+    this.frameFailures = new Set();
+
     // Viewer state. Zoom is a factor, pan is the image centre offset from the
     // stage centre in CSS pixels, and both are meaningless until an image has
     // reported its natural size.
@@ -883,6 +964,10 @@ class MediaViewerView extends ItemView {
     // is not persisted — a speed that survived a restart would be a surprise
     // with no visible cause.
     this.playbackRate = 1;
+    // Set when the pointer paused a video that was playing, and cleared the
+    // moment the user does anything deliberate. It is the difference between
+    // "held for a look" and "stopped here on purpose".
+    this.hoverPaused = false;
   }
 
   getViewType() {
@@ -926,6 +1011,9 @@ class MediaViewerView extends ItemView {
     // clear() runs the eviction callback for every entry, which is how a blob
     // URL gets revoked exactly once. The tiles are about to go anyway; the
     // point is that nothing leaks past them.
+    this.cancelAllFrameJobs();
+    this.frames.clear();
+    this.frameFailures.clear();
     this.thumbnails.clear();
     this.tiles.clear();
     this.visible.clear();
@@ -989,6 +1077,10 @@ class MediaViewerView extends ItemView {
     const stage = viewer.createDiv({ cls: "mv-stage" });
     this.stageEl = stage;
     stage.addEventListener("wheel", (event) => this.handleWheel(event));
+    // Enter and leave rather than over and out: these do not fire again as the
+    // pointer crosses between the stage and the video inside it.
+    stage.addEventListener("pointerenter", () => this.handlePointerEnter());
+    stage.addEventListener("pointerleave", () => this.handlePointerLeave());
     stage.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
     stage.addEventListener("pointermove", (event) => this.handlePointerMove(event));
     stage.addEventListener("pointerup", (event) => this.handlePointerUp(event));
@@ -1127,6 +1219,11 @@ class MediaViewerView extends ItemView {
             this.loadThumbnail(entry.target, path);
           } else {
             this.visible.delete(path);
+            // A frame still queued for a tile that has scrolled away is work
+            // for a screen nobody is looking at. One already decoding is left
+            // to finish: it has paid for its slot, and cancelling mid-seek
+            // wastes what it spent.
+            this.withdrawQueuedFrame(path);
           }
         }
       },
@@ -1226,6 +1323,7 @@ class MediaViewerView extends ItemView {
 
   releaseTile(path, tile) {
     if (this.observer) this.observer.unobserve(tile);
+    this.cancelFrameJob(path);
     this.visible.delete(path);
     this.thumbnails.delete(path);
     this.tiles.delete(path);
@@ -1251,6 +1349,11 @@ class MediaViewerView extends ItemView {
     if (!frame) return;
 
     this.thumbnails.set(path, tile);
+
+    if (classifyPath(path) === "video") {
+      this.loadVideoThumbnail(tile, frame, path, file);
+      return;
+    }
 
     if (classifyPath(path) !== "image") {
       frame.addClass("is-placeholder");
@@ -1302,8 +1405,220 @@ class MediaViewerView extends ItemView {
   reloadThumbnail(path) {
     const tile = this.tiles.get(path);
     if (!tile) return;
+    // The frame was drawn from the old contents, and unlike an <img> it does
+    // not carry an mtime that would make the browser fetch again.
+    this.frames.delete(path);
+    this.frameFailures.delete(path);
+    this.cancelFrameJob(path);
     this.thumbnails.delete(path);
     if (this.visible.has(path)) this.loadThumbnail(tile, path);
+  }
+
+  /* Video thumbnails.
+   *
+   * A frame is produced by loading the file into an offscreen <video>, seeking
+   * a second in and drawing that frame to a canvas — the only way to get a
+   * real frame out of a video in a browser, and expensive enough that
+   * everything around it exists to do it as few times as possible: the frame
+   * cache above, the queue below, and a failure set so an undecodable file is
+   * attempted once rather than on every scroll past it.
+   */
+  loadVideoThumbnail(tile, frame, path, file) {
+    const cached = this.frames.get(path);
+    if (cached) {
+      this.showFrame(tile, frame, path, cached);
+      return;
+    }
+    // The placeholder stands until a frame arrives. is-pending says the
+    // difference between "working on it" and "this is all there is".
+    frame.empty();
+    frame.addClass("is-placeholder");
+    if (this.frameFailures.has(path)) {
+      tile.addClass("is-broken");
+      return;
+    }
+    frame.addClass("is-pending");
+    this.enqueueFrame(path, file);
+  }
+
+  showFrame(tile, frame, path, url) {
+    const img = document.createElement("img");
+    img.className = "mv-thumb";
+    img.decoding = "async";
+    img.alt = "";
+    img.src = url;
+    frame.empty();
+    frame.removeClass("is-placeholder");
+    frame.removeClass("is-pending");
+    tile.removeClass("is-broken");
+    frame.appendChild(img);
+  }
+
+  withdrawQueuedFrame(path) {
+    this.frameQueue = this.frameQueue.filter((entry) => entry.path !== path);
+  }
+
+  enqueueFrame(path, file) {
+    if (this.frameJobs.has(path) || this.frameQueue.some((entry) => entry.path === path)) return;
+    this.frameQueue.push({ path, file });
+    this.pumpFrameQueue();
+  }
+
+  // Newest request first. The queue is worked while the user scrolls, and the
+  // tiles they are looking at now were asked for after the ones they have
+  // already scrolled past — serving those first would fill the screen behind
+  // them.
+  pumpFrameQueue() {
+    while (this.frameJobs.size < VIDEO_THUMBNAIL_CONCURRENCY && this.frameQueue.length) {
+      const next = this.frameQueue.pop();
+      if (!next) return;
+      this.startFrameJob(next.path, next.file);
+    }
+  }
+
+  startFrameJob(path, file) {
+    if (typeof document === "undefined" || !document.createElement) return;
+    const video = document.createElement("video");
+    const job = { path, video, timer: null, done: false };
+    this.frameJobs.set(path, job);
+
+    const finish = (url) => {
+      if (job.done) return;
+      job.done = true;
+      this.endFrameJob(job);
+      if (url) {
+        this.frames.set(path, url);
+        this.applyFrame(path, url);
+      } else {
+        this.failFrame(path);
+      }
+      this.pumpFrameQueue();
+    };
+    job.finish = finish;
+
+    // Muted and inline: a thumbnailer that makes a sound, or that a mobile
+    // build decides to present fullscreen, is not a thumbnailer.
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.addEventListener("loadeddata", () => {
+      // loadeddata rather than loadedmetadata: metadata gives the duration but
+      // not a decoded frame, and seeking before there is one is what produces
+      // a blank canvas on some builds.
+      try {
+        video.currentTime = thumbnailSeekTime(video.duration, VIDEO_THUMBNAIL_SECONDS);
+      } catch (error) {
+        finish(null);
+      }
+    });
+    video.addEventListener("seeked", () => finish(this.drawFrame(video)));
+    video.addEventListener("error", () => finish(null));
+
+    // A file that never fires either event would hold its slot for the rest of
+    // the session, and two such files would stop the queue entirely.
+    if (typeof window !== "undefined" && window.setTimeout) {
+      job.timer = window.setTimeout(() => finish(null), VIDEO_THUMBNAIL_TIMEOUT_MS);
+    }
+
+    try {
+      video.src = this.plugin.app.vault.getResourcePath(file);
+      if (typeof video.load === "function") video.load();
+    } catch (error) {
+      finish(null);
+    }
+  }
+
+  // The draw itself. Returns a URL for the frame, or null for anything that
+  // did not work — a tainted canvas, a zero-sized video, a build without
+  // toDataURL. One video that will not draw must not take down the folder.
+  drawFrame(video) {
+    try {
+      const size = thumbnailCanvasSize(video.videoWidth, video.videoHeight, VIDEO_THUMBNAIL_MAX_EDGE);
+      if (!size) return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const context = typeof canvas.getContext === "function" ? canvas.getContext("2d") : null;
+      if (!context) return null;
+      context.drawImage(video, 0, 0, size.width, size.height);
+      // A data URL rather than a blob: toBlob is asynchronous and would need
+      // the job to stay open across another turn, and at this size — a JPEG
+      // 320px on its long edge — the string is a few tens of kilobytes. It
+      // also needs no revoking, which removes the whole class of leak the
+      // blob version would have to be careful about.
+      return canvas.toDataURL("image/jpeg", 0.8);
+    } catch (error) {
+      console.error("Media Viewer: could not draw a frame for the grid", error);
+      return null;
+    }
+  }
+
+  // Put a finished frame into whatever tile is now showing that path. The tile
+  // may have been recycled or scrolled away since the job started, which is
+  // why nothing here assumes the tile it began with still exists.
+  applyFrame(path, url) {
+    const tile = this.tiles.get(path);
+    if (!tile) return;
+    const frame = tile.querySelector(".mv-tile-frame");
+    if (!frame) return;
+    this.showFrame(tile, frame, path, url);
+  }
+
+  failFrame(path) {
+    this.frameFailures.add(path);
+    const tile = this.tiles.get(path);
+    if (!tile) return;
+    tile.addClass("is-broken");
+    const frame = tile.querySelector(".mv-tile-frame");
+    if (frame) frame.removeClass("is-pending");
+  }
+
+  // Releasing the element is what stops the decode. Without it a cancelled job
+  // carries on reading the file it was asked about and nothing is listening.
+  endFrameJob(job) {
+    this.frameJobs.delete(job.path);
+    if (job.timer !== null && typeof window !== "undefined" && window.clearTimeout) {
+      window.clearTimeout(job.timer);
+      job.timer = null;
+    }
+    const video = job.video;
+    if (!video) return;
+    try {
+      if (typeof video.pause === "function") video.pause();
+      if (typeof video.removeAttribute === "function") video.removeAttribute("src");
+      video.src = "";
+      if (typeof video.load === "function") video.load();
+    } catch (error) {
+      console.error("Media Viewer: releasing a thumbnail decoder failed", error);
+    }
+  }
+
+  // A tile that has gone withdraws its request. On a fast scroll through a
+  // folder of videos most requests never start, which is the point.
+  cancelFrameJob(path) {
+    this.frameQueue = this.frameQueue.filter((entry) => entry.path !== path);
+    const job = this.frameJobs.get(path);
+    if (!job || job.done) return;
+    job.done = true;
+    this.endFrameJob(job);
+    this.pumpFrameQueue();
+  }
+
+  cancelAllFrameJobs() {
+    this.frameQueue = [];
+    for (const job of Array.from(this.frameJobs.values())) {
+      if (job.done) continue;
+      job.done = true;
+      this.endFrameJob(job);
+    }
+  }
+
+  revokeFrame(path, url) {
+    // Data URLs need no revoking; the branch is here so that swapping the
+    // encode back to a blob is a one-line change rather than a leak.
+    if (typeof url === "string" && url.startsWith("blob:") && typeof URL !== "undefined" && URL.revokeObjectURL) {
+      URL.revokeObjectURL(url);
+    }
   }
 
   revealSelection() {
@@ -1497,6 +1812,7 @@ class MediaViewerView extends ItemView {
     this.videoDuration = 0;
     this.scrubbing = false;
     this.pendingSeek = null;
+    this.hoverPaused = false;
     this.setViewerMode("empty");
     if (!video) return;
     try {
@@ -1514,6 +1830,7 @@ class MediaViewerView extends ItemView {
   togglePlayback() {
     const video = this.videoEl;
     if (!video) return false;
+    this.hoverPaused = false;
     if (video.paused) {
       const started = typeof video.play === "function" ? video.play() : null;
       // play() rejects when the browser refuses — a codec it turns out not to
@@ -1535,6 +1852,7 @@ class MediaViewerView extends ItemView {
   seekBy(seconds) {
     const video = this.videoEl;
     if (!video) return false;
+    this.hoverPaused = false;
     video.currentTime = seekTime(video.currentTime, seconds, video.duration);
     this.updateVideoBar();
     return true;
@@ -1570,6 +1888,7 @@ class MediaViewerView extends ItemView {
   seekToScrub(position) {
     const video = this.videoEl;
     if (!video) return false;
+    this.hoverPaused = false;
     const duration = Number(video.duration);
     // Dragging a bar that cannot know where it is would seek to zero on every
     // move; the bar is disabled in that state, and this is the second guard.
@@ -1687,6 +2006,16 @@ class MediaViewerView extends ItemView {
   }
 
   handleWheel(event) {
+    // On a video the wheel is a jog wheel, not a zoom: scrolling down runs
+    // forward through the file, the direction a timeline reads. Stepping is
+    // deliberate, so it ends the peek and the frame stays put when the pointer
+    // leaves.
+    if (this.videoEl) {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      this.hoverPaused = false;
+      this.stepFrame(event.deltaY > 0 ? 1 : -1);
+      return;
+    }
     if (!this.imageEl || !this.naturalWidth) return;
     if (typeof event.preventDefault === "function") event.preventDefault();
     const direction = event.deltaY > 0 ? -1 : 1;
@@ -1703,6 +2032,39 @@ class MediaViewerView extends ItemView {
       x: (event.clientX || 0) - (rect.left + rect.width / 2),
       y: (event.clientY || 0) - (rect.top + rect.height / 2),
     };
+  }
+
+  /* Hover to hold, scroll to step.
+   *
+   * Moving the pointer onto a playing video pauses it, and moving away starts
+   * it again: a peek, not a stop. That reversal is what makes pausing on hover
+   * safe — without it, crossing the pane on the way to something else would
+   * silently halt playback and leave the user to work out why.
+   *
+   * Anything deliberate cancels the peek, so the video stays where it was put:
+   * the wheel, the transport, Space, a seek. The rule is that the pointer may
+   * only undo what the pointer did. */
+  handlePointerEnter() {
+    const video = this.videoEl;
+    if (!video || video.paused) return;
+    if (typeof video.pause === "function") video.pause();
+    this.hoverPaused = true;
+    this.updateVideoBar();
+  }
+
+  handlePointerLeave() {
+    if (!this.hoverPaused) return;
+    this.hoverPaused = false;
+    const video = this.videoEl;
+    if (!video || !video.paused) return;
+    const started = typeof video.play === "function" ? video.play() : null;
+    if (started && typeof started.catch === "function") {
+      started.catch((error) => {
+        console.error("Media Viewer: resuming after a hover failed", error);
+        this.updateVideoBar();
+      });
+    }
+    this.updateVideoBar();
   }
 
   handlePointerDown(event) {

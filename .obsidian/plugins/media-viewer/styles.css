@@ -327,6 +327,25 @@
   background-color: var(--background-modifier-border);
 }
 
+/* A frame is being decoded for this tile. Distinct from a plain placeholder,
+   which means there is nothing more coming — a folder of videos otherwise
+   looks broken for as long as the queue takes to reach the end of it. */
+.media-viewer .mv-tile-frame.is-pending::after {
+  animation: mv-pending 1.4s ease-in-out infinite;
+}
+
+@keyframes mv-pending {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.75; }
+}
+
+/* Motion is decoration here, and the whole of it can go. */
+@media (prefers-reduced-motion: reduce) {
+  .media-viewer .mv-tile-frame.is-pending::after {
+    animation: none;
+  }
+}
+
 .media-viewer .mv-tile-frame[data-kind="video"]::before {
   content: "video";
   position: absolute;

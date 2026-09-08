@@ -608,6 +608,102 @@ group("the speed control", () => {
   });
 });
 
+group("hovering holds the video, scrolling steps it", () => {
+  test("the pointer arriving on a playing video pauses it", async () => {
+    const { view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("pointerenter");
+    equal(view.videoEl.paused, true);
+    ok(view.hoverPaused, "and remembers that the pointer did it");
+  });
+
+  test("and the pointer leaving starts it again — a peek, not a stop", async () => {
+    // Without the resume, crossing the pane on the way to something else would
+    // silently halt playback and leave the user to work out why.
+    const { view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("pointerenter");
+    view.stageEl.fire("pointerleave");
+    equal(view.videoEl.paused, false);
+    equal(view.hoverPaused, false);
+  });
+
+  test("hovering an already-paused video leaves it alone", async () => {
+    const { view } = await playing();
+    view.stageEl.fire("pointerenter");
+    equal(view.hoverPaused, false);
+    view.stageEl.fire("pointerleave");
+    equal(view.videoEl.paused, true, "and leaving does not start it playing");
+  });
+
+  test("the wheel steps a frame forward as it scrolls down", async () => {
+    const { view } = await playing();
+    view.videoEl.currentTime = 10;
+    view.stageEl.fire("wheel", { deltaY: 120 });
+    close(view.videoEl.currentTime, 10 + VIDEO_FRAME_SECONDS, 1e-9);
+    view.stageEl.fire("wheel", { deltaY: -120 });
+    close(view.videoEl.currentTime, 10, 1e-9);
+  });
+
+  test("scrolling a playing video pauses it, which is what stepping means", async () => {
+    const { view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("wheel", { deltaY: 120 });
+    equal(view.videoEl.paused, true);
+  });
+
+  test("a frame stepped to stays put when the pointer leaves", async () => {
+    // The pointer may only undo what the pointer did. Scrolling is deliberate,
+    // so it ends the peek and the frame the user chose survives.
+    const { view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("pointerenter");
+    view.stageEl.fire("wheel", { deltaY: 120 });
+    view.stageEl.fire("pointerleave");
+    equal(view.videoEl.paused, true, "still on the chosen frame");
+    equal(view.hoverPaused, false);
+  });
+
+  test("pressing play during a peek keeps control of the video", async () => {
+    const { view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("pointerenter");
+    view.togglePlayback();
+    equal(view.hoverPaused, false, "the peek is over");
+    view.stageEl.fire("pointerleave");
+    equal(view.videoEl.paused, false, "and leaving does not pause what the user started");
+  });
+
+  test("a seek during a peek does the same", async () => {
+    const { view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("pointerenter");
+    view.handleKey({ key: "w" });
+    view.stageEl.fire("pointerleave");
+    equal(view.videoEl.paused, true, "the seeked-to position is kept");
+  });
+
+  test("the wheel still zooms an image", async () => {
+    const { plugin, view } = await playing();
+    plugin.select("data/assets/a.png");
+    const img = view.imageEl;
+    img.naturalWidth = 800;
+    img.naturalHeight = 600;
+    img.fire("load");
+    const before = view.zoom;
+    view.stageEl.fire("wheel", { deltaY: -120, clientX: 0, clientY: 0 });
+    ok(view.zoom > before, "zoomed in rather than stepping a frame");
+  });
+
+  test("moving to another video ends any peek with it", async () => {
+    const { plugin, view } = await playing();
+    view.togglePlayback();
+    view.stageEl.fire("pointerenter");
+    plugin.select("data/assets/other.webm");
+    equal(view.hoverPaused, false);
+  });
+});
+
 group("the zoom controls in video mode", () => {
   test("the zoom readout is empty and its buttons are disabled", async () => {
     const { view } = await playing();
