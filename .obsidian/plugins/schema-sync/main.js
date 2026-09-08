@@ -175,7 +175,9 @@ function foreignFormulas(fields, schemas) {
     if (!targetFields) continue;
     for (const [targetName, targetDefinition] of Object.entries(targetFields)) {
       if (!isBound(targetDefinition) || targetDefinition.relation?.target) continue;
-      formulas.push(`  ${name}_${targetName}: ${name}.${targetName}`);
+      // asFile() is the only way across a link: Bases resolves a Link to a File
+      // and reads properties from there.
+      formulas.push(`  ${name}_${targetName}: ${name}.asFile().${targetName}`);
     }
   }
   return formulas;
@@ -189,7 +191,9 @@ function renderBaseYaml(schemaName, fields, recordFolder, schemas) {
   // sitting beside it.
   const attachments = bound.filter(([, d]) => d.type === "attachment").map(([name]) => name);
   const foreign = foreignFormulas(fields, schemas);
-  const formulas = [...attachments.map((name) => `  ${name}Image: image(${name}.path)`), ...foreign];
+  // image() takes the link itself and resolves it — there is no `.path` on a
+  // link, which is what made every image column come up empty.
+  const formulas = [...attachments.map((name) => `  ${name}Image: image(${name})`), ...foreign];
   const columns = [
     "file.name",
     ...bound.map(([name]) => attachments.includes(name) ? `formula.${name}Image` : name),
@@ -783,11 +787,14 @@ class MetadataMenuMapping {
 }
 
 class AssetRenamerModal extends Modal {
-  constructor(plugin, noteFile, propertyName = "Cover") {
+  constructor(plugin, noteFile, propertyName) {
     super(plugin.app);
     this.plugin = plugin;
     this.noteFile = noteFile;
-    this.propertyName = propertyName;
+    // A record's own schema decides which property holds media. Defaulting to
+    // "Cover" wrote a second, differently-cased property beside the schema's
+    // `cover`, so the field the base view reads stayed empty.
+    this.propertyName = propertyName || plugin.attachmentFieldFor(noteFile) || "Cover";
     this.selectedImage = this.getPropertyFile();
     this.mediaFiles = plugin.app.vault.getFiles().filter((file) => MEDIA_EXTENSIONS.has(file.extension.toLowerCase()));
     this.sourceValues = new Map();
@@ -2556,6 +2563,15 @@ class SchemaSyncPlugin extends Plugin {
   schemaFieldsFor(noteFile) {
     const name = this.schemaNameFor(noteFile);
     return name ? this.schemas.get(name) : null;
+  }
+
+  // The first bound attachment field the record's schema declares. This is the
+  // property the base view's image column reads, so it is the one the renamer
+  // must write — matching its case exactly.
+  attachmentFieldFor(noteFile) {
+    const fields = this.schemaFieldsFor(noteFile) || {};
+    const found = Object.entries(fields).find(([, definition]) => definition.type === "attachment" && isBound(definition));
+    return found ? found[0] : null;
   }
 
   // README item 10. A record's filename is built from its own schema's value

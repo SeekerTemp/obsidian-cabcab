@@ -235,7 +235,7 @@ const { renderBaseYaml } = generators;
 test("an attachment field is shown through image(), not as a raw path", () => {
   const yaml = renderBaseYaml("LifeForm", { id: { type: "string" }, cover: { type: "attachment" } }, "data/record/lifeforms");
   assert.ok(yaml.includes("formulas:"), yaml);
-  assert.ok(yaml.includes("coverImage: image(cover.path)"), yaml);
+  assert.ok(yaml.includes("coverImage: image(cover)"), yaml);
   assert.ok(yaml.includes("- formula.coverImage"), yaml);
 });
 
@@ -306,8 +306,8 @@ const FK_SCHEMAS = new Map([
 
 test("a bound relation exposes the target's fields as formulas", () => {
   const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
-  assert.ok(yaml.includes("home_Realm: home.Realm"), yaml);
-  assert.ok(yaml.includes("home_size: home.size"), yaml);
+  assert.ok(yaml.includes("home_Realm: home.asFile().Realm"), yaml);
+  assert.ok(yaml.includes("home_size: home.asFile().size"), yaml);
   assert.ok(yaml.includes("- formula.home_Realm"), yaml);
 });
 

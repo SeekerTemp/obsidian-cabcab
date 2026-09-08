@@ -4,46 +4,40 @@
     "type": "split",
     "children": [
       {
-        "id": "f29f5d6df5a52f8d",
-        "type": "split",
+        "id": "697a4c8fd52df0ac",
+        "type": "tabs",
         "children": [
           {
-            "id": "697a4c8fd52df0ac",
-            "type": "tabs",
-            "children": [
-              {
-                "id": "abdeea2d9e5b0144",
-                "type": "leaf",
-                "state": {
-                  "type": "schema-sync-dashboard",
-                  "state": {},
-                  "icon": "workflow",
-                  "title": "Schema Sync"
-                }
-              }
-            ]
-          },
-          {
-            "id": "4196a4fdcbe35114",
-            "type": "tabs",
-            "children": [
-              {
-                "id": "0dcabaccede3b352",
-                "type": "leaf",
-                "state": {
-                  "type": "bases",
-                  "state": {
-                    "file": "data/base/LifeForm.base",
-                    "viewName": "LifeForm"
-                  },
-                  "icon": "lucide-table",
-                  "title": "LifeForm"
-                }
-              }
-            ]
+            "id": "0dcabaccede3b352",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "data/record/lifeforms/_placeholder.LifeForm.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "_placeholder.LifeForm"
+            }
           }
-        ],
-        "direction": "vertical"
+        ]
+      },
+      {
+        "id": "6faaa601951983b9",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "abdeea2d9e5b0144",
+            "type": "leaf",
+            "state": {
+              "type": "schema-sync-dashboard",
+              "state": {},
+              "icon": "workflow",
+              "title": "Schema Sync"
+            }
+          }
+        ]
       }
     ],
     "direction": "vertical"
@@ -212,10 +206,10 @@
   },
   "active": "0dcabaccede3b352",
   "lastOpenFiles": [
+    "data/base/LifeForm.base",
     "data/record/lifeforms/_placeholder.LifeForm.md",
     "README.md",
     "data/config/schema-mappings.md",
-    "data/base/LifeForm.base",
     "data/base/Realm.base",
     "data/base/Verse.base",
     "data/base",
@@ -239,7 +233,7 @@
     "Excel 2026-09-07 17.05.19.univer.md",
     "Pasted image 20260907162153.png",
     "Pasted image 20260907163318.png",
-    "assets/cover.jpg",
+    "assets/generatedpaths_20260908_152040.jpg",
     "Realm.md",
     "data/config/traits.config.md",
     "data/config/Realms.config.md",

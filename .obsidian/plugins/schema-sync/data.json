@@ -4,7 +4,8 @@
   "promptForUndeclaredProperties": true,
   "ignoredProperties": {
     "LifeForm": [
-      "Cultures.config"
+      "Cultures.config",
+      "schema-mappings"
     ]
   },
   "configFolder": "assets/config",
