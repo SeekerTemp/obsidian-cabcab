@@ -157,7 +157,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 27 `MV-ERRORS`
 - [x] 28 `MV-SETTINGS`
 - [x] 29 `MV-PERF` — plugin-side numbers measured and recorded; the manual pass still needs a person
-- [ ] 30 `MV-README`
+- [x] 30 `MV-README`
 - [ ] 31 `MV-OVERVIEW` (deferred)
 
 Retired after M2, and not to be picked up again: `MV-LOG`, which was 25. The

@@ -3,7 +3,7 @@
   "name": "Media Viewer",
   "version": "0.1.0",
   "minAppVersion": "1.7.2",
-  "description": "Browse, view and non-destructively edit vault media, with asset lineage recorded in sidecar notes.",
+  "description": "Browse, view and non-destructively edit vault media, with asset lineage recorded as MediaInstance records.",
   "author": "cabcab",
   "isDesktopOnly": true
 }
