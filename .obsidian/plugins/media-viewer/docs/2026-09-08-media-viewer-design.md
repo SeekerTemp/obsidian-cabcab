@@ -64,6 +64,8 @@ transform: { rotate: 0, flipH: false, flipV: false }
 width: 800
 height: 600
 created: 2026-09-08T11:04:22Z
+status: edited
+labels: []
 ---
 
 <!-- media-viewer:notes -->
@@ -74,21 +76,51 @@ are discovered, so a note whose name has drifted still works. `crop` is stored i
 oriented-source pixels, the same space the crop overlay works in, so the
 derivation is reproducible rather than merely descriptive.
 
+`status:` is one of `edited`, `reviewed` or any value you set by hand, and
+`labels:` is a free list. Neither is used by this plugin's logic — they exist so
+the overview tab can answer "unlabelled" without a later format migration, and
+so Dataview and Bases can query them today. Both are inherited down the chain
+like any other field.
+
 Everything below the notes marker is yours and is never rewritten, following the
 convention Schema Sync already established in this vault.
 
-### When a note is created
+### A note means the file has been dealt with
 
-Not for every media file in the vault — that would bury the file explorer.
+Notes are not created for every media file in the vault. They are created when
+you **act** on a file, never when you merely look at one — so the presence of a
+note is itself the signal that a file has been reviewed, and the absence of one
+marks everything still untouched.
 
 | Trigger | Result |
 | --- | --- |
 | The plugin writes a derived file | Its note is created with full provenance |
-| A file is first used as a crop source | A root note is created for it, with no `source:` |
-| **Track this media** command | A root note is created on demand |
+| A file is used as an edit source | A root note is created for it, with no `source:` |
+| **Mark as reviewed** command | A bare root note is created on demand |
+| Opening, viewing, zooming, playing | **Nothing.** Viewing never writes |
 
-Media with no note is still viewable and editable. It simply has no lineage
-until something gives it one.
+Cropping `cover.png` therefore produces two notes: one for the crop, and a root
+note for `cover.png` itself. You did open that file and act on it, so it has
+been reviewed — and the root note is what gives the crop something to inherit
+from.
+
+**Mark as reviewed** exists because otherwise a file that is already correct
+could never leave the unreviewed list; the list would shrink only by editing
+files that needed no editing.
+
+Untracked media stays fully viewable and editable. It simply carries no lineage
+and no review mark until something gives it one.
+
+### Reviewed, and the cost of that word
+
+"Reviewed" here means *this plugin has written something about the file*. It
+does not distinguish a considered decision from an accidental crop, and it
+cannot: a marker in a file's existence has exactly one bit. The `status:` field
+carries any finer meaning.
+
+The unreviewed set needs no index of its own — it is every media file in the
+vault minus those `LineageStore` knows a note for, which is a set difference
+over data already in memory.
 
 ### Inheritance
 
@@ -108,9 +140,15 @@ pane, not written to disk.
 
 ### Keeping lineage correct across renames
 
-The plugin handles vault `rename` events itself rather than relying on
-Obsidian's "automatically update internal links" setting, which the user may
-have turned off:
+**Only tracked files are touched.** Renaming or moving a media file with no note
+does nothing at all — no scan, no rewrite, no work. The rename listener's first
+act is a map lookup, and for most of the vault that lookup misses and the event
+is dropped. Handling is therefore proportional to what you have actually edited,
+not to vault size.
+
+For tracked files, the plugin handles vault `rename` events itself rather than
+relying on Obsidian's "automatically update internal links" setting, which the
+user may have turned off:
 
 | Event | Response |
 | --- | --- |
@@ -360,12 +398,15 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 | UC-21 | See a file's parent and children, and jump along the chain |
 | UC-22 | See which metadata a file declares and which it inherits, and from where |
 | UC-23 | Rename a parent — through Asset Renamer or anywhere else — and have children stay correct |
-| UC-24 | Start tracking an untracked media file |
+| UC-24 | Mark a file reviewed without editing it |
 | UC-25 | Repair a file whose note is missing or broken |
 | UC-26 | Find lineage breaks across the vault |
 | UC-27 | Keep browsing when a folder contains corrupt or unsupported files |
 | UC-28 | Turn on debug logging, reproduce a fault, and hand over the log |
 | UC-29 | Keep working when files change on disk underneath the pane |
+| UC-30 | See which media in the vault has never been reviewed |
+| UC-31 | See which reviewed media carries no labels |
+| UC-32 | Rename untracked media without the plugin doing any work |
 
 ## Backlog
 
@@ -408,8 +449,9 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 
 - [ ] `LineageStore`: read, write and discover `.instance.md`, with `media:` authoritative
 - [ ] Note written on every derived save, carrying `crop` and `transform`
-- [ ] Root note created when a file first becomes a source
-- [ ] **Track this media** command
+- [ ] Root note created when a file is used as an edit source
+- [ ] **Mark as reviewed** command; viewing never writes a note
+- [ ] `status:` and `labels:` fields, inherited like any other
 - [ ] `MetadataResolver`: chain walk, cycle guard, 32-hop cap, break reporting
 - [ ] Lineage panel: parent, children, and which fields are inherited from where
 - [ ] `rename` handling: sidecar follows its media; `source:` links rewritten; children never renamed
@@ -418,7 +460,17 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 - [ ] Vault-wide lineage break report
 - [ ] Notes marker (`<!-- media-viewer:notes -->`) preserved on every rewrite
 
-### M5 — Diagnostics
+### M5 — Overview tab (deferred)
+
+Scoped here so the note format does not need migrating later; not built in this
+pass. The data it needs already exists.
+
+- [ ] Unreviewed list: all vault media minus those `LineageStore` holds a note for
+- [ ] Unlabelled list: tracked media whose resolved `labels:` is empty
+- [ ] Lineage break list
+- [ ] Filter by `status:` and by folder
+
+### M6 — Diagnostics
 
 - [ ] `DebugLog`: ring buffer, debounced flush, structured lines
 - [ ] `window.onerror` and `unhandledrejection` capture
@@ -427,7 +479,7 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 - [ ] Settings toggle, off by default; **Copy debug log** command
 - [ ] `.gitignore` entry for `debug.log`
 
-### M6 — Resilience and polish
+### M7 — Resilience and polish
 
 - [ ] Guarded failure paths for every row in the error-handling table
 - [ ] Settings: recursive scan, JPEG/WebP quality, sidecar creation, debug logging
@@ -474,11 +526,14 @@ rename sections:
   is scoped, and dropping the feature stays on the table.
 - Video thumbnail generation seeks every video in a folder once. On a slow drive
   this could be the new equivalent of the old app's thumbnail stalls, measured in
-  the same M6 pass.
+  the same M7 pass.
 - Rename handling is the widest-blast-radius operation here, and a partial
   failure leaves lineage half-rewritten. Mitigated by logging every rewrite and
   by **Repair lineage**, but a rename touching many children is not atomic and
   cannot be made so through the vault API.
+- "Reviewed" carries exactly one bit — whether a note exists. An accidental
+  crop marks a file reviewed just as a considered decision does, and nothing
+  distinguishes them. `status:` is where any finer meaning has to live.
 - Live inheritance means a child note read outside this plugin — by Dataview or
   Bases — shows only its own fields. If those queries turn out to matter, the
   answer is a materialise command, deliberately deferred rather than designed in.
