@@ -1168,6 +1168,13 @@ const CROP_ASPECTS = [
   ["9:16", 9 / 16],
 ];
 
+/* The scale factors offered beside the dimension inputs. Both forms exist
+   because both are asked for: "1920 wide" is a dimension and "half" is a
+   factor, and turning one into the other before storing it loses which was
+   meant — a scale still means something after the crop changes, and a typed
+   size does not. */
+const RESIZE_SCALES = [0.25, 0.5, 0.75, 1, 1.5, 2];
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1372,6 +1379,7 @@ const core = {
   resizeSelection,
   isNegligibleSelection,
   cropWithinCrop,
+  RESIZE_SCALES,
   scaleRect,
   MAX_DECODE_MEGAPIXELS,
   MAX_DISPLAY_EDGE,
@@ -3354,6 +3362,9 @@ class MediaViewerView extends ItemView {
       this.editEl.setText(this.session ? "Done" : "Edit");
       this.editEl.toggleClass("is-active", Boolean(this.session));
     }
+    // The two bars describe one state, so they are refreshed together. Every
+    // path that changes what the viewer holds already comes through here.
+    this.updateEditBar();
   }
 
   // Every zoom goes through here, so the clamp and the pan correction are
@@ -3763,7 +3774,6 @@ class MediaViewerView extends ItemView {
     this.editStatusEl = this.stageEl.createDiv({ cls: "mv-edit-status" });
     this.paintEdit();
     this.updateViewerBar();
-    this.updateEditBar();
   }
 
   // Re-draw after a state change. Separate from renderEditSurface so that
@@ -3772,7 +3782,6 @@ class MediaViewerView extends ItemView {
   refreshEdit() {
     this.paintEdit();
     this.updateViewerBar();
-    this.updateEditBar();
   }
 
   paintEdit() {
@@ -3841,6 +3850,45 @@ class MediaViewerView extends ItemView {
     }
     aspect.addEventListener("change", () => this.setAspect(aspect.value));
     this.aspectEl = aspect;
+
+    bar.createDiv({ cls: "mv-edit-sep" });
+
+    this.rotateLeftEl = this.barButton(bar, "⟲", () => this.rotateEdit(-90));
+    this.rotateLeftEl.setAttribute("aria-label", "Rotate anticlockwise");
+    this.rotateLeftEl.title = "Rotate 90° anticlockwise ([)";
+    this.rotateRightEl = this.barButton(bar, "⟳", () => this.rotateEdit(90));
+    this.rotateRightEl.setAttribute("aria-label", "Rotate clockwise");
+    this.rotateRightEl.title = "Rotate 90° clockwise (] or R)";
+    this.flipHEl = this.barButton(bar, "Flip H", () => this.flipEdit("h"));
+    this.flipHEl.title = "Flip horizontally (H)";
+    this.flipVEl = this.barButton(bar, "Flip V", () => this.flipEdit("v"));
+    this.flipVEl.title = "Flip vertically (V)";
+
+    bar.createDiv({ cls: "mv-edit-sep" });
+
+    /* Size. Two linked inputs and a scale, because the two are asked for in
+       different ways: "1920 wide" is a dimension and "half" is a factor, and
+       turning one into the other before it is stored loses which was meant. */
+    this.widthEl = this.sizeInput(bar, "Output width");
+    bar.createDiv({ cls: "mv-edit-times", text: "×" });
+    this.heightEl = this.sizeInput(bar, "Output height");
+    this.widthEl.addEventListener("change", () => this.resizeEdit("width"));
+    this.heightEl.addEventListener("change", () => this.resizeEdit("height"));
+    this.sizeLinked = true;
+    this.linkEl = this.barButton(bar, "🔗", () => this.toggleSizeLink());
+    this.linkEl.setAttribute("aria-label", "Keep the aspect ratio");
+    this.linkEl.title = "Keep the aspect ratio when resizing";
+
+    const scale = bar.createEl("select", {
+      cls: "dropdown mv-scale",
+      attr: { "aria-label": "Resize by scale" },
+    });
+    for (const factor of RESIZE_SCALES) {
+      scale.createEl("option", { value: String(factor), text: Math.round(factor * 100) + "%" });
+    }
+    scale.value = "1";
+    scale.addEventListener("change", () => this.scaleEdit(scale.value));
+    this.scaleEl = scale;
 
     bar.createDiv({ cls: "mv-edit-sep" });
 
@@ -3957,12 +4005,118 @@ class MediaViewerView extends ItemView {
     return true;
   }
 
+  sizeInput(parent, label) {
+    return parent.createEl("input", {
+      cls: "mv-size-input",
+      attr: { type: "number", min: "1", step: "1", "aria-label": label },
+    });
+  }
+
+  /* Rotation and flips.
+   *
+   * Every one of these is one call into the session, because the session is
+   * where the crop gets carried through the change. A button that rotated the
+   * canvas and left the stored rectangle behind is the bug MV-CROPMATH's
+   * conjugation rule exists to prevent, and the way to keep it prevented is to
+   * have exactly one place that knows about it.
+   */
+  rotateEdit(delta) {
+    if (!this.session || !this.session.rotateBy(delta)) return false;
+    // The picture has turned, so a selection drawn on the old orientation now
+    // covers something else. Clearing is the honest answer; carrying it would
+    // mean a second rectangle to keep correct for no gain.
+    if (this.overlay) this.overlay.clear();
+    return true;
+  }
+
+  flipEdit(axis) {
+    if (!this.session || !this.session.toggleFlip(axis)) return false;
+    if (this.overlay) this.overlay.clear();
+    return true;
+  }
+
+  /* Resize by dimensions.
+   *
+   * The two inputs are linked by default, because a resize that quietly
+   * changes the aspect ratio is almost never what was meant — and unlinking is
+   * one click for the times it is. The ratio is the crop's, not the input's,
+   * so it stays stable while the user types.
+   */
+  resizeEdit(axis) {
+    const session = this.session;
+    if (!session) return false;
+    const crop = session.crop;
+    const ratio = crop.h > 0 ? crop.w / crop.h : 1;
+    let width = Math.round(Number(this.widthEl && this.widthEl.value));
+    let height = Math.round(Number(this.heightEl && this.heightEl.value));
+    if (this.sizeLinked) {
+      if (axis === "width") height = Math.max(1, Math.round(width / ratio));
+      else width = Math.max(1, Math.round(height * ratio));
+    }
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+      // Put the numbers back rather than leaving a half-typed value that the
+      // readout disagrees with.
+      this.updateEditBar();
+      return false;
+    }
+    const size = session.outputSize;
+    if (width === size.width && height === size.height) {
+      this.updateEditBar();
+      return false;
+    }
+    session.setResize(width, height);
+    return true;
+  }
+
+  // A scale is relative to the crop, so it keeps meaning something after the
+  // crop changes — which is why it is stored as a factor rather than being
+  // multiplied out into dimensions the moment it is chosen.
+  scaleEdit(value) {
+    const session = this.session;
+    if (!session) return false;
+    const factor = Number(value);
+    if (!Number.isFinite(factor) || factor <= 0) return false;
+    if (factor === 1) return session.clearResize();
+    return session.setScale(factor);
+  }
+
+  toggleSizeLink() {
+    this.sizeLinked = !this.sizeLinked;
+    this.updateEditBar();
+    return this.sizeLinked;
+  }
+
   updateEditBar() {
     const session = this.session;
     if (this.cropEl) this.cropEl.disabled = !session || !this.selectionCrop();
     if (this.undoEl) this.undoEl.disabled = !session || !session.canUndo;
     if (this.redoEl) this.redoEl.disabled = !session || !session.canRedo;
     if (this.resetEl) this.resetEl.disabled = !session || !session.dirty;
+    for (const button of [this.rotateLeftEl, this.rotateRightEl, this.flipHEl, this.flipVEl]) {
+      if (button) button.disabled = !session;
+    }
+    if (this.flipHEl) this.flipHEl.toggleClass("is-active", Boolean(session && session.state.flipH));
+    if (this.flipVEl) this.flipVEl.toggleClass("is-active", Boolean(session && session.state.flipV));
+    if (this.linkEl) {
+      this.linkEl.disabled = !session;
+      this.linkEl.toggleClass("is-active", Boolean(this.sizeLinked));
+    }
+    // The inputs are a readout as much as a control: they show what the file
+    // will measure, which changes with every crop and quarter turn as well as
+    // with typing into them.
+    const size = session ? session.outputSize : { width: "", height: "" };
+    for (const [input, value] of [[this.widthEl, size.width], [this.heightEl, size.height]]) {
+      if (!input) continue;
+      input.disabled = !session;
+      input.value = String(value);
+    }
+    if (this.scaleEl) {
+      this.scaleEl.disabled = !session;
+      const resize = session && session.state.resize;
+      // An absolute resize is not one of the offered factors, so the dropdown
+      // shows 100% rather than pretending the typed size was a percentage.
+      this.scaleEl.value = resize && resize.scale !== undefined ? String(resize.scale) : "1";
+    }
   }
 
   /* Edit-mode keys.
@@ -3985,6 +4139,14 @@ class MediaViewerView extends ItemView {
       return this.endEdit();
     }
     if (key === "enter") return this.applyCrop();
+    /* The transform keys. Brackets turn, because that is where every editor
+       puts rotation; R is the same thing under the finger that is already
+       thinking the word. H and V are claimed only in edit mode, so they mean
+       nothing to the browsing pane. */
+    if (key === "[") return this.rotateEdit(-90);
+    if (key === "]" || key === "r") return this.rotateEdit(90);
+    if (key === "h") return this.flipEdit("h");
+    if (key === "v") return this.flipEdit("v");
     return false;
   }
 
