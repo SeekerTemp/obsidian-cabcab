@@ -59,6 +59,14 @@ const VIDEO_FRAME_SECONDS = 1 / 30;
 // stay pure. A thousand steps is finer than the bar is ever wide in pixels, so
 // no position on it is unreachable by a drag.
 const SCRUB_RESOLUTION = 1000;
+// The speeds worth having, as a ladder rather than a continuous range. A
+// slider from 0.25 to 4 would offer 2.87x, which nobody wants and which makes
+// 1x — the speed every viewing returns to — a thing to hunt for. Uneven at the
+// top because the difference between 3x and 4x matters less than the
+// difference between 1x and 1.25x.
+const SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+const SPEED_MIN = SPEED_STEPS[0];
+const SPEED_MAX = SPEED_STEPS[SPEED_STEPS.length - 1];
 
 // Encoding follows the source, because encoding everything to PNG turns a 2 MB
 // JPEG crop into a 15 MB file. Rotation, flipping and cropping never introduce
@@ -295,6 +303,44 @@ function formatTimecode(seconds) {
   const m = Math.floor(total / 60) % 60;
   const h = Math.floor(total / 3600);
   return h > 0 ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
+}
+
+/* Playback speed. Browsers accept rates outside this range and behave badly
+   there — muted audio, dropped frames, and on some builds a stall that only a
+   reload clears — so the ladder is also the limit. */
+function clampSpeed(rate) {
+  const value = Number(rate);
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return Math.min(Math.max(value, SPEED_MIN), SPEED_MAX);
+}
+
+// The rung nearest a rate. A speed can arrive from a restored value or from an
+// element that rounded it, and the control has to show one of its own options
+// rather than an empty box.
+function nearestSpeed(rate) {
+  const value = clampSpeed(rate);
+  let best = SPEED_STEPS[0];
+  for (const step of SPEED_STEPS) {
+    if (Math.abs(step - value) < Math.abs(best - value)) best = step;
+  }
+  return best;
+}
+
+// Up or down the ladder. Holding at the ends rather than wrapping: 4x wrapping
+// to 0.25x on one extra press is a mistake that takes a moment to understand
+// and several to undo.
+function stepSpeed(rate, steps) {
+  const count = Math.trunc(Number(steps)) || 0;
+  const at = SPEED_STEPS.indexOf(nearestSpeed(rate));
+  const next = Math.min(Math.max(at + count, 0), SPEED_STEPS.length - 1);
+  return SPEED_STEPS[next];
+}
+
+// "1x", "0.25x". Trailing zeros go, because 0.50x reads as a precision the
+// control does not have.
+function formatSpeed(rate) {
+  const value = Number(rate);
+  return (Number.isFinite(value) && value > 0 ? String(Number(value.toFixed(2))) : "1") + "x";
 }
 
 // A/D step through the list without wrapping. Wrapping from the last file back
@@ -581,6 +627,13 @@ const core = {
   VIDEO_SEEK_SECONDS,
   VIDEO_FRAME_SECONDS,
   SCRUB_RESOLUTION,
+  SPEED_STEPS,
+  SPEED_MIN,
+  SPEED_MAX,
+  clampSpeed,
+  nearestSpeed,
+  stepSpeed,
+  formatSpeed,
   clampTime,
   seekTime,
   frameStepTime,
@@ -824,6 +877,12 @@ class MediaViewerView extends ItemView {
     this.videoDuration = 0;
     this.scrubbing = false;
     this.pendingSeek = null;
+    // Speed belongs to the pane rather than to the file: someone reviewing a
+    // folder at 2x wants the next clip at 2x too, and re-choosing it for every
+    // file is the kind of small friction that stops the control being used. It
+    // is not persisted — a speed that survived a restart would be a surprise
+    // with no visible cause.
+    this.playbackRate = 1;
   }
 
   getViewType() {
@@ -1017,6 +1076,18 @@ class MediaViewerView extends ItemView {
     this.scrubEl = scrub;
 
     this.timeEl = bar.createDiv({ cls: "mv-time", text: "--:-- / --:--" });
+
+    const speed = bar.createEl("select", {
+      cls: "dropdown mv-speed",
+      attr: { "aria-label": "Playback speed" },
+    });
+    for (const rate of SPEED_STEPS) {
+      speed.createEl("option", { value: String(rate), text: formatSpeed(rate) });
+    }
+    speed.value = String(this.playbackRate);
+    speed.addEventListener("change", () => this.setPlaybackRate(speed.value));
+    this.speedEl = speed;
+
     this.updateVideoBar();
   }
 
@@ -1358,6 +1429,9 @@ class MediaViewerView extends ItemView {
       if (this.videoEl !== video) return;
       this.videoWidth = video.videoWidth || 0;
       this.videoHeight = video.videoHeight || 0;
+      // Again here: a rate set before the source loaded is reset by some
+      // builds when it does.
+      video.playbackRate = this.playbackRate;
       // A reload after a vault modify wants its position back; a fresh open
       // has nothing pending and starts at zero.
       if (this.pendingSeek !== null) {
@@ -1377,6 +1451,7 @@ class MediaViewerView extends ItemView {
       this.showVideoError(path);
     });
 
+    video.playbackRate = this.playbackRate;
     video.src = this.plugin.app.vault.getResourcePath(file);
     this.stageEl.appendChild(video);
     this.videoEl = video;
@@ -1412,6 +1487,8 @@ class MediaViewerView extends ItemView {
 
   // Detach the stream. Emptying the stage removes the element from the
   // document but leaves it decoding and, with audio, audible.
+  // Note what this does not reset: playbackRate is the pane's, not the
+  // element's, and outlives every video opened in it.
   releaseVideo() {
     const video = this.videoEl;
     this.videoEl = null;
@@ -1475,6 +1552,21 @@ class MediaViewerView extends ItemView {
     return true;
   }
 
+  // Set on the element, not just remembered: the element is what plays, and
+  // the two disagreeing is a speed control that appears to do nothing.
+  setPlaybackRate(rate) {
+    this.playbackRate = nearestSpeed(rate);
+    if (this.videoEl) this.videoEl.playbackRate = this.playbackRate;
+    this.updateVideoBar();
+    return this.playbackRate;
+  }
+
+  stepPlaybackRate(steps) {
+    if (!this.videoEl) return false;
+    this.setPlaybackRate(stepSpeed(this.playbackRate, steps));
+    return true;
+  }
+
   seekToScrub(position) {
     const video = this.videoEl;
     if (!video) return false;
@@ -1513,6 +1605,10 @@ class MediaViewerView extends ItemView {
     if (this.timeEl) {
       const position = video ? formatTimecode(time) : "--:--";
       this.timeEl.setText(position + " / " + formatTimecode(duration > 0 ? duration : NaN));
+    }
+    if (this.speedEl) {
+      this.speedEl.value = String(this.playbackRate);
+      this.speedEl.disabled = !video;
     }
   }
 
@@ -1689,6 +1785,11 @@ class MediaViewerView extends ItemView {
     if (key === "s") return this.seekBy(-VIDEO_SEEK_SECONDS);
     if (key === ",") return this.stepFrame(-1);
     if (key === ".") return this.stepFrame(1);
+    // The same two physical keys with shift, which is where every video site
+    // puts speed — and it reads correctly: a frame is a small step, a speed
+    // change is the large one on the same lever.
+    if (key === "<") return this.stepPlaybackRate(-1);
+    if (key === ">") return this.stepPlaybackRate(1);
     return false;
   }
 

@@ -105,7 +105,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 6 `MV-IMAGE`
 - [x] 7 `MV-LAYOUT`
 - [x] 8 `MV-VIDEO`
-- [ ] 9 `MV-SPEED`
+- [x] 9 `MV-SPEED`
 - [ ] 10 `MV-VTHUMB`
 - [ ] 11 `MV-REVERSE`
 - [ ] 12 `MV-FRAME`

@@ -199,6 +199,20 @@
   white-space: nowrap;
 }
 
+/* Sized like the filter dropdown in the header, because they are the same kind
+   of control and a transport that invented its own would read as a third
+   party's widget sitting in the pane. */
+.media-viewer .mv-speed {
+  font-size: var(--font-ui-smaller);
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+  flex: 0 0 auto;
+}
+
+.media-viewer .mv-speed:disabled {
+  opacity: 0.4;
+}
+
 .media-viewer .mv-viewer-bar {
   display: flex;
   align-items: center;
@@ -418,6 +432,15 @@
 
   .media-viewer .mv-time {
     min-width: 0;
+  }
+
+  /* The readout is what a narrow transport is for; at this width the speed
+     control gives up its own label padding rather than disappearing, since
+     shift-comma and shift-full-stop are a worse thing to be left with than a
+     small dropdown. */
+  .media-viewer .mv-speed {
+    padding-left: 0;
+    padding-right: 0;
   }
 }
 

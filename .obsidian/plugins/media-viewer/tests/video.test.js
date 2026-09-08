@@ -11,7 +11,7 @@ const MediaViewerPlugin = require("./load-plugin.js");
 const { MediaViewerView, core } = require("./load-plugin.js");
 const { group, test, equal, deepEqual, ok, close, report } = require("./harness.js");
 
-const { SCRUB_RESOLUTION, VIDEO_FRAME_SECONDS, VIDEO_SEEK_SECONDS } = core;
+const { SCRUB_RESOLUTION, SPEED_STEPS, VIDEO_FRAME_SECONDS, VIDEO_SEEK_SECONDS } = core;
 
 group("playback position stays inside the media", () => {
   test("a position in range passes through", () => {
@@ -489,6 +489,122 @@ group("the scrub bar", () => {
     view.videoEl.currentTime = 3600;
     view.videoEl.fire("timeupdate");
     equal(view.timeEl.textContent, "1:00:00 / 1:02:05");
+  });
+});
+
+group("the speed ladder", () => {
+  test("clamps to the ends of the range rather than trusting a rate", () => {
+    equal(core.clampSpeed(8), 4);
+    equal(core.clampSpeed(0.1), 0.25);
+    equal(core.clampSpeed(1.5), 1.5);
+  });
+
+  test("a nonsense or stopped rate reads as normal speed", () => {
+    equal(core.clampSpeed(0), 1);
+    equal(core.clampSpeed(-2), 1);
+    equal(core.clampSpeed(NaN), 1);
+    equal(core.clampSpeed(undefined), 1);
+  });
+
+  test("an off-ladder rate lands on the nearest rung, so the control shows one", () => {
+    equal(core.nearestSpeed(1.3), 1.25);
+    equal(core.nearestSpeed(2.6), 3);
+    equal(core.nearestSpeed(0.01), 0.25);
+    equal(core.nearestSpeed("2"), 2);
+  });
+
+  test("stepping moves one rung", () => {
+    equal(core.stepSpeed(1, 1), 1.25);
+    equal(core.stepSpeed(1, -1), 0.75);
+    equal(core.stepSpeed(1, 3), 2);
+  });
+
+  test("and holds at the ends instead of wrapping", () => {
+    equal(core.stepSpeed(4, 1), 4);
+    equal(core.stepSpeed(0.25, -1), 0.25);
+    equal(core.stepSpeed(1, 99), 4);
+  });
+
+  test("a step from between rungs starts at the nearest one", () => {
+    equal(core.stepSpeed(1.3, 1), 1.5);
+  });
+
+  test("the labels drop trailing zeros", () => {
+    deepEqual(SPEED_STEPS.map(core.formatSpeed), [
+      "0.25x",
+      "0.5x",
+      "0.75x",
+      "1x",
+      "1.25x",
+      "1.5x",
+      "2x",
+      "3x",
+      "4x",
+    ]);
+  });
+});
+
+group("the speed control", () => {
+  test("offers the whole ladder and starts at normal speed", async () => {
+    const { view } = await playing();
+    deepEqual(
+      view.speedEl.children.map((option) => option.textContent),
+      ["0.25x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x", "3x", "4x"]
+    );
+    equal(view.speedEl.value, "1");
+    equal(view.videoEl.playbackRate, 1);
+  });
+
+  test("choosing a speed changes the rate on the element that plays", async () => {
+    const { view } = await playing();
+    view.speedEl.value = "2";
+    view.speedEl.fire("change");
+    equal(view.videoEl.playbackRate, 2);
+    equal(view.playbackRate, 2);
+  });
+
+  test("shift-comma and shift-full-stop step it", async () => {
+    const { view } = await playing();
+    equal(view.handleKey({ key: ">" }), true);
+    equal(view.videoEl.playbackRate, 1.25);
+    view.handleKey({ key: "<" });
+    view.handleKey({ key: "<" });
+    equal(view.videoEl.playbackRate, 0.75);
+    equal(view.speedEl.value, "0.75", "and the control follows the keyboard");
+  });
+
+  test("the speed is the pane's, so the next video keeps it", async () => {
+    const { plugin, view } = await playing();
+    view.setPlaybackRate(2);
+    plugin.select("data/assets/other.webm");
+    metadata(view, 30);
+    equal(view.videoEl.playbackRate, 2);
+    equal(view.speedEl.value, "2");
+  });
+
+  test("and it survives an image in between", async () => {
+    const { plugin, view } = await playing();
+    view.setPlaybackRate(0.5);
+    plugin.select("data/assets/a.png");
+    plugin.select("data/assets/clip.mp4");
+    metadata(view, 60);
+    equal(view.videoEl.playbackRate, 0.5);
+  });
+
+  test("a rate the element resets on load is reapplied when metadata arrives", async () => {
+    const { plugin, view } = await playing();
+    view.setPlaybackRate(3);
+    plugin.select("data/assets/other.webm");
+    view.videoEl.playbackRate = 1;
+    metadata(view, 30);
+    equal(view.videoEl.playbackRate, 3);
+  });
+
+  test("with no video open the control is disabled and the keys do nothing", async () => {
+    const { view } = await paneOver(FILES);
+    equal(view.speedEl.disabled, true);
+    equal(view.stepPlaybackRate(1), false);
+    equal(view.playbackRate, 1);
   });
 });
 
