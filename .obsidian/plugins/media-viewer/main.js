@@ -228,6 +228,55 @@ function mediaStemForSidecar(sidecarPath) {
   return name.slice(0, -SIDECAR_SUFFIX.length);
 }
 
+// Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
+// grid reads in the order the file explorer shows. Ties break on the full path,
+// which is only reachable under a recursive scan and keeps the order total —
+// a comparator that ever returns 0 for two distinct entries makes the binary
+// search below ambiguous.
+const PATH_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function compareMediaPaths(a, b) {
+  const byName = PATH_COLLATOR.compare(baseNameOf(a), baseNameOf(b));
+  if (byName !== 0) return byName;
+  const byPath = PATH_COLLATOR.compare(a, b);
+  if (byPath !== 0) return byPath;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+// Non-recursive by default: the folder itself, not its descendants. The root
+// folder is "", which every path is inside.
+function isInFolder(path, folder, recursive) {
+  const parent = folderOf(path);
+  const target = normaliseSeparators(folder).replace(/\/+$/, "");
+  if (parent === target) return true;
+  if (!recursive) return false;
+  if (target === "") return true;
+  return parent.startsWith(target + "/");
+}
+
+// Where `path` belongs in an already-sorted list. Binary search, because
+// insertion happens on every vault `create` event and rebuilding the folder to
+// add one file is what a save should never cost.
+function sortedInsertIndex(paths, path) {
+  let low = 0;
+  let high = paths.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (compareMediaPaths(paths[mid], path) < 0) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+// When the displayed file disappears, selection moves to the entry that took
+// its place — which at the end of the list is the one before it. Returns null
+// only when nothing is left to select.
+function selectionAfterRemoval(paths, removedIndex) {
+  if (!paths.length) return null;
+  const index = removedIndex >= paths.length ? paths.length - 1 : Math.max(0, removedIndex);
+  return paths[index];
+}
+
 const core = {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
@@ -258,13 +307,192 @@ const core = {
   sidecarCandidatesFor,
   sidecarPathFor,
   mediaStemForSidecar,
+  compareMediaPaths,
+  isInFolder,
+  sortedInsertIndex,
+  selectionAfterRemoval,
 };
 
 /* ------------------------------------------------------------------------ *
  * End of core. Everything below touches Obsidian.
  * ------------------------------------------------------------------------ */
 
+/* The ordered media list for one vault folder.
+ *
+ * Held as a Map keyed by path plus a sorted array of those paths, because both
+ * questions get asked constantly: "do I already have this file?" on every vault
+ * event, and "what is at position n?" on every keyboard step.
+ *
+ * Insertion is idempotent by path. `vault.createBinary` fires a `create` event
+ * that this index also listens for, so a save that inserts its own new file
+ * would otherwise add it twice.
+ *
+ * The scan is `vault.getFiles()` filtered by folder and extension — no disk
+ * reads and no worker queue. Sidecar notes are excluded, as is every non-media
+ * file.
+ */
+class MediaIndex {
+  constructor(vault) {
+    this.vault = vault;
+    this.folder = null;
+    this.recursive = false;
+    this.byPath = new Map();
+    this.order = [];
+    // Fired after any change, with a short reason so the view can decide
+    // whether a full re-render is warranted or one tile will do.
+    this.onChange = null;
+  }
+
+  get paths() {
+    return this.order;
+  }
+
+  get size() {
+    return this.order.length;
+  }
+
+  has(path) {
+    return this.byPath.has(path);
+  }
+
+  fileFor(path) {
+    return this.byPath.get(path) || null;
+  }
+
+  indexOf(path) {
+    // Linear rather than a second map: the array is one folder's media, and
+    // keeping a path->index map correct through every splice costs more than
+    // the scan it saves.
+    return this.order.indexOf(path);
+  }
+
+  at(index) {
+    if (index < 0 || index >= this.order.length) return null;
+    return this.order[index];
+  }
+
+  // Whether a vault file belongs in this index at all. Sidecars never appear in
+  // the grid, and neither does anything that is not image or video.
+  accepts(file) {
+    if (!file || typeof file.path !== "string") return false;
+    if (this.folder === null) return false;
+    if (isSidecarPath(file.path)) return false;
+    if (!isMediaPath(file.path)) return false;
+    return isInFolder(file.path, this.folder, this.recursive);
+  }
+
+  setFolder(folder, recursive) {
+    this.folder = folder === null || folder === undefined ? null : normaliseSeparators(folder).replace(/\/+$/, "");
+    if (recursive !== undefined) this.recursive = Boolean(recursive);
+    this.scan();
+  }
+
+  setRecursive(recursive) {
+    const next = Boolean(recursive);
+    if (next === this.recursive) return;
+    this.recursive = next;
+    this.scan();
+  }
+
+  scan() {
+    this.byPath.clear();
+    this.order = [];
+    if (this.folder === null) {
+      this.emit("scan");
+      return this.order;
+    }
+    const files = this.vault && typeof this.vault.getFiles === "function" ? this.vault.getFiles() : [];
+    for (const file of files) {
+      if (!this.accepts(file)) continue;
+      this.byPath.set(file.path, file);
+      this.order.push(file.path);
+    }
+    this.order.sort(compareMediaPaths);
+    this.emit("scan");
+    return this.order;
+  }
+
+  // Idempotent by path: a file already present updates its handle — the vault
+  // hands out a fresh TFile after a rename — and does not enter the order a
+  // second time. Returns true only when the list actually grew.
+  insert(file) {
+    if (!this.accepts(file)) return false;
+    if (this.byPath.has(file.path)) {
+      this.byPath.set(file.path, file);
+      return false;
+    }
+    this.byPath.set(file.path, file);
+    this.order.splice(sortedInsertIndex(this.order, file.path), 0, file.path);
+    return true;
+  }
+
+  remove(path) {
+    if (!this.byPath.has(path)) return -1;
+    this.byPath.delete(path);
+    const index = this.order.indexOf(path);
+    if (index !== -1) this.order.splice(index, 1);
+    return index;
+  }
+
+  // What selection should move to once `path` is gone: the entry that took its
+  // place, or the previous one at the end of the list. Ask before removing.
+  successorFor(path) {
+    const index = this.order.indexOf(path);
+    if (index === -1) return null;
+    const remaining = this.order.slice(0, index).concat(this.order.slice(index + 1));
+    return selectionAfterRemoval(remaining, index);
+  }
+
+  /* Vault events. Each returns whether the index changed, so a caller can skip
+   * a re-render for the overwhelmingly common case of an event about a file in
+   * some other folder. */
+
+  handleCreate(file) {
+    if (!this.insert(file)) return false;
+    this.emit("create", file.path);
+    return true;
+  }
+
+  // `modify` never changes membership — it changes what the file looks like.
+  // The view re-reads its resource path, which carries the mtime, so the URL
+  // changes and the browser cache is bypassed.
+  handleModify(file) {
+    if (!file || !this.byPath.has(file.path)) return false;
+    this.byPath.set(file.path, file);
+    this.emit("modify", file.path);
+    return true;
+  }
+
+  handleDelete(file) {
+    if (!file || !this.byPath.has(file.path)) return false;
+    this.remove(file.path);
+    this.emit("delete", file.path);
+    return true;
+  }
+
+  // A rename can move a file in, out, or within the folder, and Obsidian
+  // reports it as one event carrying the new file and the old path. Treating it
+  // as a remove followed by an insert covers all three without special cases.
+  handleRename(file, oldPath) {
+    const had = this.byPath.has(oldPath);
+    if (had) this.remove(oldPath);
+    const added = this.insert(file);
+    if (!had && !added) return false;
+    this.emit("rename", file && file.path, oldPath);
+    return true;
+  }
+
+  emit(reason, path, oldPath) {
+    if (typeof this.onChange === "function") this.onChange(reason, path, oldPath);
+  }
+}
+
 class MediaViewerView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+  }
+
   getViewType() {
     return VIEW_TYPE_MEDIA_VIEWER;
   }
@@ -291,7 +519,9 @@ class MediaViewerView extends ItemView {
 
 class MediaViewerPlugin extends Plugin {
   async onload() {
-    this.registerView(VIEW_TYPE_MEDIA_VIEWER, (leaf) => new MediaViewerView(leaf));
+    this.index = new MediaIndex(this.app.vault);
+
+    this.registerView(VIEW_TYPE_MEDIA_VIEWER, (leaf) => new MediaViewerView(leaf, this));
 
     this.addRibbonIcon("image", "Open Media Viewer", () => this.activateView());
 
@@ -300,6 +530,16 @@ class MediaViewerPlugin extends Plugin {
       name: "Open Media Viewer",
       callback: () => this.activateView(),
     });
+
+    // Registered on the vault rather than inside the view, so the index stays
+    // correct while the pane is closed and does not need a rescan on reopen.
+    // Each handler is a map lookup that misses for most of the vault.
+    this.registerEvent(this.app.vault.on("create", (file) => this.index.handleCreate(file)));
+    this.registerEvent(this.app.vault.on("modify", (file) => this.index.handleModify(file)));
+    this.registerEvent(this.app.vault.on("delete", (file) => this.index.handleDelete(file)));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => this.index.handleRename(file, oldPath))
+    );
   }
 
   // Reuse an existing pane rather than stacking duplicates; a second ribbon
@@ -322,3 +562,6 @@ module.exports = MediaViewerPlugin;
 
 // Exposed for the out-of-vault test script. Obsidian ignores extra exports.
 module.exports.core = core;
+// MediaIndex is not pure — it holds a vault — but the vault surface it uses is
+// one method, so it is testable against a stub and worth testing.
+module.exports.MediaIndex = MediaIndex;
