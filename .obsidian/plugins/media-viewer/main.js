@@ -38,6 +38,12 @@ const THUMBNAIL_CACHE_SIZE = 240;
 // 500-file folder does not try to load all of it.
 const THUMBNAIL_PRELOAD_MARGIN = "300px 0px";
 
+// The wheel steps finer than the keyboard: a wheel is a continuous gesture the
+// user modulates by how far they spin it, where W and S are discrete presses
+// and want to cover ground.
+const ZOOM_WHEEL_RATIO = 1.12;
+const ZOOM_KEY_RATIO = 1.25;
+
 // Encoding follows the source, because encoding everything to PNG turns a 2 MB
 // JPEG crop into a 15 MB file. Rotation, flipping and cropping never introduce
 // transparency, so a JPEG source stays safely a JPEG.
@@ -165,6 +171,62 @@ function fitZoom(imageWidth, imageHeight, paneWidth, paneHeight) {
   const ph = Number(paneHeight);
   if (!(iw > 0 && ih > 0 && pw > 0 && ph > 0)) return 1;
   return clampZoom(Math.min(pw / iw, ph / ih, 1));
+}
+
+/* Panning.
+ *
+ * The pan offset is the image's centre measured from the viewport's centre, in
+ * CSS pixels. Centre-relative rather than top-left-relative because it makes
+ * the two states that matter symmetrical: an image smaller than the viewport
+ * has a pan limit of zero and so sits centred by construction, and an image
+ * larger than it is free to move exactly as far as its overhang in each
+ * direction.
+ */
+function panLimit(contentSize, viewportSize) {
+  const content = Number(contentSize);
+  const viewport = Number(viewportSize);
+  if (!(content > 0) || !(viewport > 0)) return 0;
+  return Math.max(0, (content - viewport) / 2);
+}
+
+function clampPan(offset, contentSize, viewportSize) {
+  const value = Number(offset);
+  if (!Number.isFinite(value)) return 0;
+  const limit = panLimit(contentSize, viewportSize);
+  // The `|| 0` is not decoration: clamping a negative value against a limit of
+  // zero yields -0, which reaches the CSS as "translate(-0px, ...)".
+  if (value < -limit) return -limit || 0;
+  if (value > limit) return limit;
+  return value || 0;
+}
+
+// Zooming about a point keeps whatever is under the cursor under the cursor.
+// `cursor` is measured from the viewport centre, in the same space as `pan`.
+//
+// The image coordinate under the cursor is (cursor - pan) / oldZoom; holding it
+// fixed at the new zoom gives the pan below. Without this, wheel-zooming into a
+// detail walks it off the screen and the user chases it with the mouse.
+function panAfterZoom(pan, cursor, oldZoom, newZoom) {
+  const from = Number(oldZoom);
+  const to = Number(newZoom);
+  const offset = Number(pan);
+  const at = Number(cursor);
+  if (!(from > 0) || !(to > 0) || !Number.isFinite(offset) || !Number.isFinite(at)) return offset || 0;
+  return at - (at - offset) * (to / from);
+}
+
+// A/D step through the list without wrapping. Wrapping from the last file back
+// to the first reads as a jump to somewhere else rather than as a step, and
+// there is no way to tell the two apart from the keyboard.
+function siblingPath(paths, current, delta) {
+  if (!Array.isArray(paths) || !paths.length) return null;
+  const step = Number(delta) || 0;
+  const at = paths.indexOf(current);
+  // Nothing selected yet: a step in either direction starts at the near end.
+  if (at === -1) return step < 0 ? paths[paths.length - 1] : paths[0];
+  const next = at + step;
+  if (next < 0 || next >= paths.length) return null;
+  return paths[next];
 }
 
 // yymmddHHMMSS in local time — the convention the desktop app used, and the
@@ -428,6 +490,12 @@ const core = {
   clampZoom,
   stepZoom,
   fitZoom,
+  panLimit,
+  clampPan,
+  panAfterZoom,
+  siblingPath,
+  ZOOM_WHEEL_RATIO,
+  ZOOM_KEY_RATIO,
   timestampFor,
   uniquePath,
   clonePathFor,
@@ -642,6 +710,18 @@ class MediaViewerView extends ItemView {
     this.thumbnails = new LruCache(THUMBNAIL_CACHE_SIZE, (path, tile) =>
       this.unloadThumbnail(path, tile)
     );
+
+    // Viewer state. Zoom is a factor, pan is the image centre offset from the
+    // stage centre in CSS pixels, and both are meaningless until an image has
+    // reported its natural size.
+    this.viewerPath = null;
+    this.zoom = 1;
+    this.panX = 0;
+    this.panY = 0;
+    this.naturalWidth = 0;
+    this.naturalHeight = 0;
+    this.imageEl = null;
+    this.dragging = null;
   }
 
   getViewType() {
@@ -714,8 +794,15 @@ class MediaViewerView extends ItemView {
       this.plugin.setFollowActiveFile(!this.settings.followActiveFile);
     });
 
-    this.gridEl = root.createDiv({ cls: "mv-grid" });
-    this.emptyEl = root.createDiv({ cls: "mv-empty" });
+    // The body holds the viewer and the grid side by side or stacked; which of
+    // those it is depends on the pane's own width, and MV-LAYOUT decides it.
+    const body = root.createDiv({ cls: "mv-body" });
+    this.bodyEl = body;
+
+    this.buildViewer(body);
+
+    this.gridEl = body.createDiv({ cls: "mv-grid" });
+    this.emptyEl = body.createDiv({ cls: "mv-empty" });
 
     // Delegated, so a folder of 500 files installs one listener rather than
     // 500 — and so tiles can be added and removed without touching listeners.
@@ -723,6 +810,55 @@ class MediaViewerView extends ItemView {
       const tile = event.target.closest(".mv-tile");
       if (tile && tile.dataset.path) this.plugin.select(tile.dataset.path);
     });
+
+    // Keyboard handling is bound to the pane, not the document: W, A, S and D
+    // are ordinary letters everywhere else in Obsidian, and a plugin that
+    // swallowed them globally would break typing.
+    root.setAttribute("tabindex", "0");
+    root.addEventListener("keydown", (event) => this.handleKey(event));
+  }
+
+  buildViewer(parent) {
+    const viewer = parent.createDiv({ cls: "mv-viewer" });
+    this.viewerEl = viewer;
+
+    const stage = viewer.createDiv({ cls: "mv-stage" });
+    this.stageEl = stage;
+    stage.addEventListener("wheel", (event) => this.handleWheel(event));
+    stage.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
+    stage.addEventListener("pointermove", (event) => this.handlePointerMove(event));
+    stage.addEventListener("pointerup", (event) => this.handlePointerUp(event));
+    stage.addEventListener("pointercancel", (event) => this.handlePointerUp(event));
+    // A double-click toggles between fitting the pane and full size, which is
+    // the gesture every image viewer has and the fastest way back from a deep
+    // zoom.
+    stage.addEventListener("dblclick", () => this.toggleFit());
+
+    const bar = viewer.createDiv({ cls: "mv-viewer-bar" });
+    this.viewerBarEl = bar;
+
+    this.prevEl = this.barButton(bar, "Previous", () => this.plugin.selectSibling(-1));
+    this.nextEl = this.barButton(bar, "Next", () => this.plugin.selectSibling(1));
+    this.zoomEl = bar.createDiv({ cls: "mv-zoom" });
+    this.fitEl = this.barButton(bar, "Fit", () => this.fitToPane());
+    this.fullEl = this.barButton(bar, "100%", () => this.zoomToActualSize());
+
+    this.viewerNameEl = bar.createDiv({ cls: "mv-viewer-name" });
+
+    // showInViewer short-circuits when the path has not changed, and it starts
+    // as null — so the empty stage has to be drawn once here rather than
+    // waiting for a selection that may never come.
+    this.renderViewer();
+  }
+
+  barButton(parent, label, onClick) {
+    const button = parent.createEl("button", {
+      cls: "mv-viewer-button",
+      text: label,
+      attr: { type: "button" },
+    });
+    button.addEventListener("click", onClick);
+    return button;
   }
 
   toggleButton(parent, label, onClick) {
@@ -778,6 +914,8 @@ class MediaViewerView extends ItemView {
 
     const paths = folder === null ? [] : this.plugin.visiblePaths();
     this.syncTiles(paths);
+    this.showInViewer(this.plugin.selectedPath);
+    this.updateViewerBar();
 
     const message =
       folder === null
@@ -934,6 +1072,268 @@ class MediaViewerView extends ItemView {
       tile.scrollIntoView({ block: "nearest" });
     }
   }
+
+  /* ---------------------------------------------------------------------- *
+   * The viewer surface.
+   *
+   * Zoom and pan live here rather than in `core` because they are state, but
+   * every decision they make is a core function — which is what keeps the
+   * geometry testable while the DOM stays thin.
+   * ---------------------------------------------------------------------- */
+
+  get stageSize() {
+    const stage = this.stageEl;
+    if (!stage) return { width: 0, height: 0 };
+    return { width: stage.clientWidth || 0, height: stage.clientHeight || 0 };
+  }
+
+  // The displayed size of the image at the current zoom. Zero until something
+  // has loaded, which every caller has to tolerate anyway — the pane can be
+  // resized before the first decode finishes.
+  get contentSize() {
+    return {
+      width: this.naturalWidth * this.zoom,
+      height: this.naturalHeight * this.zoom,
+    };
+  }
+
+  // Called whenever selection changes. Reloading the same path would throw
+  // away the zoom and pan the user just set, so it is checked for.
+  showInViewer(path) {
+    if (path === this.viewerPath) return;
+    this.viewerPath = path;
+    this.zoom = 1;
+    this.panX = 0;
+    this.panY = 0;
+    this.naturalWidth = 0;
+    this.naturalHeight = 0;
+    this.dragging = null;
+    this.renderViewer();
+  }
+
+  renderViewer() {
+    if (!this.stageEl) return;
+    const path = this.viewerPath;
+
+    this.stageEl.empty();
+    this.stageEl.removeClass("is-broken");
+    this.imageEl = null;
+
+    if (this.viewerNameEl) this.viewerNameEl.setText(path ? baseNameOf(path) : "");
+
+    if (!path) {
+      this.stageEl.createDiv({ cls: "mv-stage-message", text: "Select a file to view it." });
+      this.updateViewerBar();
+      return;
+    }
+
+    const file = this.index.fileFor(path);
+    if (!file) {
+      this.stageEl.createDiv({ cls: "mv-stage-message", text: "This file is no longer in the folder." });
+      this.updateViewerBar();
+      return;
+    }
+
+    if (classifyPath(path) !== "image") {
+      // MV-VIDEO replaces this. Saying so is better than a blank stage that
+      // looks like a failure.
+      this.stageEl.createDiv({
+        cls: "mv-stage-message",
+        text: "Video playback arrives with the video viewer.",
+      });
+      this.updateViewerBar();
+      return;
+    }
+
+    const img = document.createElement("img");
+    img.className = "mv-image";
+    img.alt = "";
+    img.draggable = false;
+    img.addEventListener("load", () => {
+      this.naturalWidth = img.naturalWidth || 0;
+      this.naturalHeight = img.naturalHeight || 0;
+      // Open at fit, which for anything smaller than the pane is 100% —
+      // fitZoom never magnifies.
+      this.fitToPane();
+    });
+    img.addEventListener("error", () => {
+      this.stageEl.empty();
+      this.stageEl.addClass("is-broken");
+      this.stageEl.createDiv({ cls: "mv-stage-message", text: "This image could not be decoded." });
+      this.imageEl = null;
+      this.updateViewerBar();
+    });
+    img.src = this.plugin.app.vault.getResourcePath(file);
+    this.stageEl.appendChild(img);
+    this.imageEl = img;
+    this.applyTransform();
+  }
+
+  applyTransform() {
+    if (this.imageEl && this.imageEl.style) {
+      this.imageEl.style.width = this.naturalWidth ? this.naturalWidth * this.zoom + "px" : "";
+      this.imageEl.style.height = this.naturalHeight ? this.naturalHeight * this.zoom + "px" : "";
+      this.imageEl.style.transform = "translate(" + this.panX + "px, " + this.panY + "px)";
+    }
+    this.updateViewerBar();
+  }
+
+  updateViewerBar() {
+    if (this.zoomEl) {
+      this.zoomEl.setText(this.naturalWidth ? Math.round(this.zoom * 100) + "%" : "");
+    }
+    if (this.prevEl) this.prevEl.disabled = !this.plugin.siblingOf(-1);
+    if (this.nextEl) this.nextEl.disabled = !this.plugin.siblingOf(1);
+  }
+
+  // Every zoom goes through here, so the clamp and the pan correction are
+  // applied in exactly one place. `cursor` is measured from the stage centre;
+  // omitting it zooms about the centre, which is what the keyboard wants.
+  setZoom(nextZoom, cursor) {
+    const previous = this.zoom;
+    const zoom = clampZoom(nextZoom);
+    if (zoom === previous) return false;
+    const at = cursor || { x: 0, y: 0 };
+    this.zoom = zoom;
+    this.panX = panAfterZoom(this.panX, at.x, previous, zoom);
+    this.panY = panAfterZoom(this.panY, at.y, previous, zoom);
+    this.clampPanToBounds();
+    this.applyTransform();
+    return true;
+  }
+
+  clampPanToBounds() {
+    const stage = this.stageSize;
+    const content = this.contentSize;
+    this.panX = clampPan(this.panX, content.width, stage.width);
+    this.panY = clampPan(this.panY, content.height, stage.height);
+  }
+
+  fitToPane() {
+    const stage = this.stageSize;
+    this.zoom = fitZoom(this.naturalWidth, this.naturalHeight, stage.width, stage.height);
+    this.panX = 0;
+    this.panY = 0;
+    this.applyTransform();
+  }
+
+  zoomToActualSize() {
+    this.zoom = 1;
+    this.panX = 0;
+    this.panY = 0;
+    this.applyTransform();
+  }
+
+  // Fit and 100% are the same thing for an image that already fits, so the
+  // toggle would do nothing; going to 200% instead keeps the gesture useful.
+  toggleFit() {
+    if (!this.naturalWidth) return;
+    const stage = this.stageSize;
+    const fit = fitZoom(this.naturalWidth, this.naturalHeight, stage.width, stage.height);
+    if (Math.abs(this.zoom - fit) < 1e-6) {
+      this.setZoom(fit < 1 ? 1 : 2);
+      return;
+    }
+    this.fitToPane();
+  }
+
+  handleWheel(event) {
+    if (!this.imageEl || !this.naturalWidth) return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    this.setZoom(stepZoom(this.zoom, direction, ZOOM_WHEEL_RATIO), this.cursorFrom(event));
+  }
+
+  // Pointer coordinates arrive relative to the viewport; the pan maths works
+  // from the stage centre, so this is where the two meet.
+  cursorFrom(event) {
+    const stage = this.stageEl;
+    if (!stage || typeof stage.getBoundingClientRect !== "function") return { x: 0, y: 0 };
+    const rect = stage.getBoundingClientRect();
+    return {
+      x: (event.clientX || 0) - (rect.left + rect.width / 2),
+      y: (event.clientY || 0) - (rect.top + rect.height / 2),
+    };
+  }
+
+  handlePointerDown(event) {
+    if (!this.imageEl || !this.naturalWidth) return;
+    const stage = this.stageSize;
+    const content = this.contentSize;
+    // Nothing to pan when the whole image already fits: starting a drag that
+    // cannot move anything just puts the cursor in the wrong shape.
+    if (panLimit(content.width, stage.width) === 0 && panLimit(content.height, stage.height) === 0) {
+      return;
+    }
+    this.dragging = {
+      pointerId: event.pointerId,
+      startX: event.clientX || 0,
+      startY: event.clientY || 0,
+      panX: this.panX,
+      panY: this.panY,
+    };
+    this.stageEl.addClass("is-panning");
+    if (typeof this.stageEl.setPointerCapture === "function" && event.pointerId !== undefined) {
+      // Capture, so a drag that leaves the pane still ends on this element
+      // rather than sticking in the panning state.
+      this.stageEl.setPointerCapture(event.pointerId);
+    }
+  }
+
+  handlePointerMove(event) {
+    const drag = this.dragging;
+    if (!drag || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
+    this.panX = drag.panX + ((event.clientX || 0) - drag.startX);
+    this.panY = drag.panY + ((event.clientY || 0) - drag.startY);
+    this.clampPanToBounds();
+    this.applyTransform();
+  }
+
+  handlePointerUp(event) {
+    const drag = this.dragging;
+    if (!drag) return;
+    if (event && event.pointerId !== undefined && event.pointerId !== drag.pointerId) return;
+    this.dragging = null;
+    this.stageEl.removeClass("is-panning");
+    if (this.stageEl && typeof this.stageEl.releasePointerCapture === "function" && drag.pointerId !== undefined) {
+      this.stageEl.releasePointerCapture(drag.pointerId);
+    }
+  }
+
+  // W/S zoom, A/D step siblings. Modified presses are left alone so the pane
+  // does not eat Ctrl+S or a Cmd+A the user meant for something else.
+  handleKey(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey) return false;
+    const key = String(event.key || "").toLowerCase();
+    let handled = true;
+    if (key === "w") this.setZoom(stepZoom(this.zoom, 1, ZOOM_KEY_RATIO));
+    else if (key === "s") this.setZoom(stepZoom(this.zoom, -1, ZOOM_KEY_RATIO));
+    else if (key === "a") this.plugin.selectSibling(-1);
+    else if (key === "d") this.plugin.selectSibling(1);
+    else if (key === "0") this.zoomToActualSize();
+    else if (key === "f") this.fitToPane();
+    else handled = false;
+    if (handled && typeof event.preventDefault === "function") event.preventDefault();
+    return handled;
+  }
+
+  // The displayed file was written to underneath the viewer. Re-read it, but
+  // keep the zoom and pan: the user is looking at a particular part of a
+  // particular image, and an edit saved elsewhere should not move their view.
+  reloadViewer(path) {
+    if (!path || path !== this.viewerPath || !this.imageEl) return;
+    const file = this.index.fileFor(path);
+    if (!file) return;
+    this.imageEl.src = this.plugin.app.vault.getResourcePath(file);
+  }
+
+  // The pane can be resized while an image is open, which changes what "fit"
+  // means and can leave the pan outside its new bounds.
+  handleResize() {
+    if (!this.naturalWidth) return;
+    this.clampPanToBounds();
+    this.applyTransform();
+  }
 }
 
 class MediaViewerPlugin extends Plugin {
@@ -1053,6 +1453,25 @@ class MediaViewerPlugin extends Plugin {
     return true;
   }
 
+  // What A and D would land on, without moving. The viewer bar uses it to
+  // disable its buttons at the ends of the list.
+  siblingOf(delta) {
+    return siblingPath(this.visiblePaths(), this.selectedPath, delta);
+  }
+
+  // Stepping walks the filtered list, not the whole index: with the grid
+  // showing images only, D should reach the next image rather than stopping
+  // on a video the user cannot see.
+  selectSibling(delta) {
+    const next = this.siblingOf(delta);
+    if (next === null) return false;
+    if (!this.select(next)) return false;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
+      if (leaf.view instanceof MediaViewerView) leaf.view.revealSelection();
+    }
+    return true;
+  }
+
   /* Index changes reach selection here rather than in the view, so the answer
    * is the same however many panes are open. */
   handleIndexChange(reason, path, detail) {
@@ -1105,8 +1524,12 @@ class MediaViewerPlugin extends Plugin {
       if (!(view instanceof MediaViewerView)) continue;
       // A modify changes no membership, only pixels, so the grid is left alone
       // and one thumbnail is re-read.
-      if (reason === "modify") view.reloadThumbnail(path);
-      else view.render();
+      if (reason === "modify") {
+        view.reloadThumbnail(path);
+        view.reloadViewer(path);
+      } else {
+        view.render();
+      }
     }
   }
 

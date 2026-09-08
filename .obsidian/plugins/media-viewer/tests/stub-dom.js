@@ -26,6 +26,37 @@ class StubElement {
     this.title = "";
     // Set by the grid on <img>; the stub records it rather than fetching it.
     this.src = "";
+    this.style = {};
+    this.disabled = false;
+    // Layout the stub cannot compute. Tests set these to say how big the pane
+    // is; zero stands in for "not laid out yet", which the real pane also goes
+    // through before its first frame.
+    this.clientWidth = 0;
+    this.clientHeight = 0;
+    // What an <img> reports once decoded. A test sets them, then fires "load".
+    this.naturalWidth = 0;
+    this.naturalHeight = 0;
+  }
+
+  // Derived from clientWidth/clientHeight, positioned at the origin. Enough
+  // for the pan maths, which only ever asks for the centre.
+  getBoundingClientRect() {
+    return {
+      left: this.rectLeft || 0,
+      top: this.rectTop || 0,
+      width: this.clientWidth,
+      height: this.clientHeight,
+      right: (this.rectLeft || 0) + this.clientWidth,
+      bottom: (this.rectTop || 0) + this.clientHeight,
+    };
+  }
+
+  setPointerCapture(pointerId) {
+    this.capturedPointer = pointerId;
+  }
+
+  releasePointerCapture(pointerId) {
+    if (this.capturedPointer === pointerId) this.capturedPointer = null;
   }
 
   /* Tree */

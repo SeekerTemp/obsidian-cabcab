@@ -65,6 +65,113 @@
   color: var(--text-on-accent);
 }
 
+/* The body stacks the viewer above the grid. MV-LAYOUT makes this reflow on
+   the pane's own width rather than the window's. */
+.media-viewer .mv-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.media-viewer .mv-viewer {
+  display: flex;
+  flex-direction: column;
+  /* Half the pane, but never so little that the image is a stripe. The grid
+     takes what is left. */
+  flex: 1 1 50%;
+  min-height: 160px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.media-viewer .mv-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--background-secondary);
+  /* The image is positioned by transform, so the stage must not scroll — the
+     pan is the scroll. */
+  touch-action: none;
+  cursor: default;
+}
+
+.media-viewer .mv-stage.is-panning {
+  cursor: grabbing;
+}
+
+.media-viewer .mv-image {
+  display: block;
+  max-width: none;
+  max-height: none;
+  /* Width and height are set in script from the natural size times the zoom,
+     so the browser scales once rather than fitting and then transforming. */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.media-viewer .mv-stage-message {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+  padding: var(--size-4-4);
+}
+
+.media-viewer .mv-stage.is-broken .mv-stage-message {
+  color: var(--text-error);
+}
+
+.media-viewer .mv-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-2-2) var(--size-4-2);
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.media-viewer .mv-viewer-button {
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  box-shadow: none;
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.media-viewer .mv-viewer-button:hover:not(:disabled) {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.media-viewer .mv-viewer-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.media-viewer .mv-zoom {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  /* Fixed, so the buttons beside it do not shuffle as the number changes. */
+  min-width: 3.5em;
+  text-align: center;
+}
+
+.media-viewer .mv-viewer-name {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .media-viewer .mv-grid {
   flex: 1 1 auto;
   overflow-y: auto;
