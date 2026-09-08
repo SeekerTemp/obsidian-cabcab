@@ -6,5 +6,10 @@
     "LifeForm": [
       "Cultures.config"
     ]
-  }
+  },
+  "configFolder": "assets/config",
+  "configBasePath": "assets/config/config.base",
+  "categoryLinkPrefix": "",
+  "metadataMenuMappingEnabled": false,
+  "metadataMenuMappingPrompted": true
 }

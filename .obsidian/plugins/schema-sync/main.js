@@ -300,10 +300,13 @@ function parseFieldReferenceRows(raw) {
   for (const line of section[1].split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) continue;
-    // The Field cell is a wikilink now, and an aliased one carries a "|" of its
-    // own, so it arrives split across two cells. Rejoin before reading columns.
-    const cells = trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
-    if (cells[0].startsWith("[[") && !cells[0].endsWith("]]")) cells.splice(0, 2, `${cells[0]}|${cells[1]}`);
+    // Escaped alias pipes stay inside their cell. A row written before that fix,
+    // or repaired by hand, still arrives split across two cells — rejoin it so
+    // the columns line up instead of shifting right.
+    const cells = trimmed.slice(1, -1).split(CELL_SPLIT).map((cell) => cell.trim());
+    if (cells[0].startsWith("[[") && !cells[0].endsWith("]]") && cells.length > 1) {
+      cells.splice(0, 2, `${cells[0]}|${cells[1]}`);
+    }
     const [rawName, type, defaultCell, required, bound, relation] = cells;
     const name = normalizeFieldName(rawName);
     if (!name || /^:?-{2,}:?$/.test(name) || name.toLowerCase() === "field") continue;
@@ -385,10 +388,14 @@ function normalizeFieldName(raw) {
   let text = String(raw ?? "").trim();
   const link = text.match(/^\[\[([^\]]+)\]\]$/);
   if (link) {
-    text = link[1].split("|")[0].split("#")[0];
+    // The alias, when there is one, is the field name; the target is a path.
+    const [target, alias] = link[1].split(/\\?\|/);
+    text = (alias ?? target).split("#")[0];
     text = text.slice(text.lastIndexOf("/") + 1);
   }
-  return text.trim().replace(/\.config$/i, "").trim();
+  // `.schema` is the suffix of the fallback link a relation renders to, and
+  // `.config` the residue of Asset Renamer naming properties after files.
+  return text.trim().replace(/\.(config|schema)$/i, "").trim();
 }
 
 // A field name is a file name now, so it has to survive being one.
@@ -422,6 +429,15 @@ function orphanedConfigs(notes, schemas) {
   });
 }
 
+// An unescaped "|" is a column separator, even inside [[a|b]]. Writing one makes
+// the row a cell wider than the header, Obsidian's table editor reformats the
+// header to match, and every column shifts right — which is how a field ended up
+// carrying `relation: yes`, the Bound cell landing in the Relation slot.
+const ALIAS = "\\|";
+// Splits a table row on real separators only, leaving an escaped alias pipe
+// inside its cell.
+const CELL_SPLIT = /(?<!\\)\|/;
+
 // What the Field column points at. A link means "this field has somewhere to
 // go"; plain text means it has not. Path-qualified because Obsidian resolves a
 // wikilink by basename alone, and two schemas may both declare `trait`. Aliased
@@ -433,12 +449,12 @@ function fieldReferenceLink(schemaName, fieldName, definition, schemas) {
     // target entity already owns, so values cannot drift between the two.
     const targetFields = schemas?.get?.(target);
     const ownField = targetFields && Object.prototype.hasOwnProperty.call(targetFields, target) ? targetFields[target] : null;
-    if (ownField && configPathFor(target, target, ownField)) return `[[${target}/${target}|${fieldName}]]`;
+    if (ownField && configPathFor(target, target, ownField)) return `[[${target}/${target}${ALIAS}${fieldName}]]`;
     // Nothing to point at — an entity keyed by `id` has no list, because
     // identity fields are excluded — so fall back to its definition.
-    return `[[${target}.schema|${fieldName}]]`;
+    return `[[${target}.schema${ALIAS}${fieldName}]]`;
   }
-  return configPathFor(schemaName, fieldName, definition) ? `[[${schemaName}/${fieldName}|${fieldName}]]` : fieldName;
+  return configPathFor(schemaName, fieldName, definition) ? `[[${schemaName}/${fieldName}${ALIAS}${fieldName}]]` : fieldName;
 }
 
 // Carries every property a field has, Relation included, so the table is a

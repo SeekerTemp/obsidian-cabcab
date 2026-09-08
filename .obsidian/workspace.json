@@ -8,21 +8,7 @@
         "type": "tabs",
         "children": [
           {
-            "id": "a66ad9d4c2770353",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "doc/config_environment.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "config_environment"
-            }
-          },
-          {
-            "id": "5a2f58e04e5e88bc",
+            "id": "d1b380e6b91f6da5",
             "type": "leaf",
             "state": {
               "type": "schema-sync-dashboard",
@@ -31,8 +17,7 @@
               "title": "Schema Sync"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       },
       {
         "id": "9b3393de288c7dca",
@@ -43,35 +28,20 @@
             "type": "tabs",
             "children": [
               {
-                "id": "1a1ebca57607444a",
+                "id": "90f85143477f6b94",
                 "type": "leaf",
                 "state": {
                   "type": "markdown",
                   "state": {
-                    "file": "data/record/verses/_placeholder.Verse.md",
+                    "file": "data/schema/Realm.schema.md",
                     "mode": "source",
                     "source": false
                   },
                   "icon": "lucide-file",
-                  "title": "_placeholder.Verse"
-                }
-              },
-              {
-                "id": "12131d0824575331",
-                "type": "leaf",
-                "state": {
-                  "type": "markdown",
-                  "state": {
-                    "file": "data/schema/Verse.schema.md",
-                    "mode": "source",
-                    "source": false
-                  },
-                  "icon": "lucide-file",
-                  "title": "Verse.schema"
+                  "title": "Realm.schema"
                 }
               }
-            ],
-            "currentTab": 1
+            ]
           },
           {
             "id": "a44e70b21faff580",
@@ -249,6 +219,7 @@
   },
   "left-ribbon": {
     "hiddenItems": {
+      "schema-sync:Open asset renamer for active note": false,
       "switcher:Open quick switcher": false,
       "graph:Open graph view": false,
       "canvas:Create new canvas": false,
@@ -256,12 +227,14 @@
       "templates:Insert template": false,
       "command-palette:Open command palette": false,
       "bases:Create new base": false,
-      "asset-renamer:Open asset renamer for active note": false,
       "schema-sync:Open schema dashboard": false
     }
   },
-  "active": "0ec45bc60f9e82c5",
+  "active": "90f85143477f6b94",
   "lastOpenFiles": [
+    "data/schema/Verse.schema.md",
+    "data/schema/Realm.schema.md",
+    "doc/config_environment.md",
     "README.md.tmp.25628.2c3bab2e2686",
     "sedk1uwkH",
     "README.md.tmp.25628.b7216ec7dd8d",
@@ -273,7 +246,6 @@
     "README.md.tmp.25628.4328f8dea3ac",
     "README.md.tmp.25628.022ea48f1120",
     "data/config/schema-mappings.md",
-    "data/base/LifeForm.base",
     "data/config/LifeForm/trait.md",
     "data/config/Realm/Realm.md",
     "data/record/lifeforms/_placeholder.LifeForm.md",
@@ -282,10 +254,8 @@
     "doc/MAP.md",
     "README.md",
     "MyVault/schemas/CharacterSchema.md",
-    "doc/config_environment.md",
     "Excel 2026-09-07 17.05.19.univer.md",
     "Pasted image 20260907162153.png",
-    "data/schema/Verse.schema.md",
     "Pasted image 20260907163318.png",
     "assets/cover.jpg",
     "Realm.md",

@@ -128,17 +128,17 @@ const SCHEMAS = new Map([
 ]);
 
 test("a field with a config links to it, path-qualified and aliased", () => {
-  assert.strictEqual(fieldReferenceLink("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS), "[[LifeForm/trait|trait]]");
+  assert.strictEqual(fieldReferenceLink("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS), "[[LifeForm/trait\\|trait]]");
 });
 
 test("a relation links to the target schema's own-name config", () => {
   const field = { type: "string", bind: false, relation: { target: "Realm" } };
-  assert.strictEqual(fieldReferenceLink("Verse", "Realm", field, SCHEMAS), "[[Realm/Realm|Realm]]");
+  assert.strictEqual(fieldReferenceLink("Verse", "Realm", field, SCHEMAS), "[[Realm/Realm\\|Realm]]");
 });
 
 test("a relation whose target has no own-name field links to the schema note", () => {
   const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
-  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm.schema|owner]]");
+  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm.schema\\|owner]]");
 });
 
 test("a field with no config is plain text", () => {
@@ -154,7 +154,7 @@ test("the rendered table round trips back to plain field names", () => {
 
 test("a linked row round trips without keeping the brackets", () => {
   const table = renderFieldReference("Verse", { Realm: { type: "string", bind: false, relation: { target: "Realm" } } }, SCHEMAS);
-  assert.ok(table.includes("[[Realm/Realm|Realm]]"), table);
+  assert.ok(table.includes("[[Realm/Realm\\|Realm]]"), table);
   assert.deepStrictEqual(Object.keys(parseFieldReference(table)), ["Realm"]);
 });
 
@@ -331,6 +331,45 @@ test("foreign fields do not become schema fields", () => {
   const fields = { home: { type: "string", relation: { target: "Realm" } } };
   renderBaseYaml("Verse", fields, "data/record/verses", FK_SCHEMAS);
   assert.deepStrictEqual(Object.keys(fields), ["home"]);
+});
+
+// --- The pipe inside a wikilink is a column separator -----------------------
+//
+// [[LifeForm/trait|trait]] makes its row 7 cells wide, not 6. Obsidian's table
+// editor then reformats the header to match and every column shifts right,
+// which is how a field ended up with `relation: yes` — the Bound cell landing
+// in the Relation slot. In a table the alias pipe has to be escaped.
+
+test("the alias pipe is escaped inside a table cell", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS), "[[LifeForm/trait\\|trait]]");
+});
+
+test("a rendered row is exactly six cells wide", () => {
+  const table = renderFieldReference("LifeForm", SCHEMAS.get("LifeForm"), SCHEMAS);
+  for (const line of table.split("\n").filter((row) => row.startsWith("|"))) {
+    const cells = line.trim().slice(1, -1).split(/(?<!\\)\|/);
+    assert.strictEqual(cells.length, 6, `${cells.length} cells in: ${line}`);
+  }
+});
+
+test("an escaped row round trips", () => {
+  const table = renderFieldReference("Verse", { Realm: { type: "string", bind: false, relation: { target: "Realm" } } }, SCHEMAS);
+  const parsed = parseFieldReference(table);
+  assert.deepStrictEqual(Object.keys(parsed), ["Realm"]);
+  assert.strictEqual(parsed.Realm.relation.target, "Realm");
+});
+
+test("a legacy unescaped row is still recovered, not shifted", () => {
+  const raw = "## Field Reference\n\n| Field | Type | Default | Required | Bound | Relation |\n| --- | --- | --- | --- | --- | --- |\n| [[Realm.schema|LifeForm]] | string | - | no | yes | LifeForm |\n";
+  const parsed = parseFieldReference(raw);
+  assert.deepStrictEqual(Object.keys(parsed), ["LifeForm"]);
+  assert.strictEqual(parsed.LifeForm.relation.target, "LifeForm");
+  assert.strictEqual(parsed.LifeForm.bind, true);
+});
+
+test("a .schema suffix is not left in a field name", () => {
+  assert.strictEqual(normalizeFieldName("[[Realm.schema\\|owner]]"), "owner");
+  assert.strictEqual(normalizeFieldName("[[Realm.schema]]"), "Realm");
 });
 
 let failed = 0;
