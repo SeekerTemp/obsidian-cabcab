@@ -1,42 +1,147 @@
 # Media Viewer — design
 
-A vault media browser, viewer and non-destructive editor, ported from the PyQt5
-"Local Asset Renamer" desktop app. The renaming half of that app does not come
-across: Asset Renamer already owns renaming in this vault.
+A vault media browser, viewer and non-destructive editor with **asset lineage**,
+ported from the PyQt5 "Local Asset Renamer" desktop app.
+
+The renaming half of that app does not come across — Asset Renamer already owns
+renaming in this vault. What comes across instead is a claim the old app could
+never make: because every edit happens inside a vault, a derived file can carry a
+note recording where it came from, and that record can be kept correct when files
+move.
 
 ## Scope
 
-**In.** Browsing vault media in a dockable pane, image viewing with zoom, video
+**In.** Media browsing in a dockable pane, image viewing with zoom, video
 playback with speed and reverse, crop, rotate, flip, resize, video frame
-capture, and a runtime debug log.
+capture, `.instance.md` lineage notes with inherited metadata, and a runtime
+debug log.
 
 **Out.** Renaming, category dropdowns, the JSON preset editor, the old app's
-Page 2 entirely, folders outside the vault, clipboard paste, annotation, and
-video trimming. Nothing here reads or writes a Schema Sync schema — this plugin
-is standalone.
+Page 2 entirely, its `FolderBrowserWidget` folder tree, folders outside the
+vault, clipboard paste, annotation, and video trimming. Nothing here reads or
+writes a Schema Sync schema.
 
 ## Plugin shape
 
 `.obsidian/plugins/media-viewer/`, plain JavaScript, no build step, matching
 Schema Sync and every other plugin in this vault. `main.js` opens with a block
-of **pure functions** — geometry, path building, transform maths — exported as
-`module.exports.core` so they run under plain node with a stubbed
-`require("obsidian")`, the same way Schema Sync verifies its generators.
+of **pure functions** — geometry, path building, transform maths, lineage
+resolution — exported as `module.exports.core` so they run under plain node with
+a stubbed `require("obsidian")`, the same way Schema Sync verifies its
+generators.
 
 One large file is a deliberate trade: no npm, no build before reload, uniform
 with its neighbours. The cost is a file that will not fit in one screen, and the
 mitigation is that `core` holds everything worth testing.
 
 `isDesktopOnly: true`. Touch drag-cropping is poor, large decodes exhaust mobile
-memory, and iOS restricts video-to-canvas capture. Claiming mobile support would
-be a claim we cannot keep.
+memory, and iOS restricts video-to-canvas capture.
+
+## Lineage
+
+The centrepiece. Every managed media file is paired with a sidecar note:
+
+```
+data/assets/cover.png
+data/assets/cover.instance.md
+data/assets/cover+clone+260908110422.png
+data/assets/cover+clone+260908110422.instance.md
+```
+
+One note type, not two. A root asset's note simply declares no `source:`, so
+lineage is a chain of the same thing rather than two formats meeting in the
+middle — and a root that later turns out to have a parent needs no migration.
+
+### Note format
+
+```yaml
+---
+media:  "[[cover+clone+260908110422.png]]"
+source: "[[cover.png]]"
+op: crop
+crop:   { x: 120, y: 40, w: 800, h: 600 }
+transform: { rotate: 0, flipH: false, flipV: false }
+width: 800
+height: 600
+created: 2026-09-08T11:04:22Z
+---
+
+<!-- media-viewer:notes -->
+```
+
+`media:` is the **authoritative** pairing — the filename match is only how notes
+are discovered, so a note whose name has drifted still works. `crop` is stored in
+oriented-source pixels, the same space the crop overlay works in, so the
+derivation is reproducible rather than merely descriptive.
+
+Everything below the notes marker is yours and is never rewritten, following the
+convention Schema Sync already established in this vault.
+
+### When a note is created
+
+Not for every media file in the vault — that would bury the file explorer.
+
+| Trigger | Result |
+| --- | --- |
+| The plugin writes a derived file | Its note is created with full provenance |
+| A file is first used as a crop source | A root note is created for it, with no `source:` |
+| **Track this media** command | A root note is created on demand |
+
+Media with no note is still viewable and editable. It simply has no lineage
+until something gives it one.
+
+### Inheritance
+
+A child declares only its own fields. Any other field is resolved by **walking
+up the `source:` chain at read time** — so correcting a value on the parent
+corrects it for every descendant, which is the entire reason for tracking
+lineage in the first place.
+
+Resolution stops at the first ancestor declaring the field. Cycles are broken by
+a visited set and the walk is capped at 32 hops; both conditions are logged and
+surfaced rather than silently swallowed. A `source:` pointing at a file that no
+longer exists ends the walk and is reported in the pane.
+
+The cost, accepted deliberately: a child note read on its own — by Dataview, by
+Bases, by a human — is not self-describing. Resolved values are shown in the
+pane, not written to disk.
+
+### Keeping lineage correct across renames
+
+The plugin handles vault `rename` events itself rather than relying on
+Obsidian's "automatically update internal links" setting, which the user may
+have turned off:
+
+| Event | Response |
+| --- | --- |
+| A media file is renamed or moved | Its own sidecar note is renamed and moved alongside it, and its `media:` link is rewritten |
+| A media file is renamed or moved | Every `source:` link pointing at it is rewritten, wherever those children live |
+| A media file is deleted | Children keep their `source:`, which now dangles and is reported in the pane |
+| A sidecar note is renamed by hand | Nothing breaks — `media:` is authoritative |
+
+**Children are never renamed.** Rename `cover.png` to `hero.png` and
+`cover+clone+260908110422.png` keeps its name; only the links change. Cascading
+the rename would turn one operation into many that can each fail partway, and
+would break every inbound link to a child.
+
+A sidecar is renamed with its own media file because that pairing is what makes
+notes discoverable — but nothing depends on it, since `media:` is authoritative.
+
+### Why this reaches Asset Renamer
+
+Asset Renamer renames media through Obsidian's own rename path, which fires the
+same `rename` event this plugin listens for. So renaming a cover through Asset
+Renamer repairs the lineage of every crop taken from it, with no integration
+between the two plugins and no code shared. The vault is the interface.
 
 ## Components
 
 | Unit | Responsibility | Depends on |
 | --- | --- | --- |
-| `core` | Crop mapping, clone paths, transform maths, zoom clamping, extension classification | nothing |
+| `core` | Crop mapping, clone paths, transform maths, zoom clamping, extension classification, chain resolution | nothing |
 | `MediaIndex` | Ordered media list for one vault folder, from `vault.getFiles()` | vault |
+| `LineageStore` | Reads and writes `.instance.md`, maps media to note and parent to children | vault, metadata cache |
+| `MetadataResolver` | Walks the `source:` chain to resolve an inherited field | core, LineageStore |
 | `ThumbnailCache` | Lazy thumbnails driven by `IntersectionObserver`, LRU-capped | MediaIndex |
 | `ViewerSurface` | Image mode (zoom, pan) and video mode (scrub, speed, reverse, frame-step) | MediaIndex |
 | `EditSession` | Non-destructive transform state, undo/redo, canvas render, encode | core |
@@ -49,14 +154,33 @@ Cropping happens **on the viewer in place**, not in a modal. The old
 zoom controls — roughly 260 lines of duplication — and its selection could not
 be adjusted once drawn, only redrawn.
 
+## Choosing a folder
+
+The old app's `FolderBrowserWidget` — a hand-built folder tree with back
+navigation — is deleted outright. Obsidian's file explorer already is that
+widget, and better.
+
+The plugin still scans, because a grid and prev/next navigation need a list:
+
+- The pane follows the **active file**, and scans that file's folder.
+- **Open in Media Viewer** on a folder's context menu sets the folder directly.
+- The last folder is remembered across restarts.
+- Scanning is non-recursive by default, with a recursive toggle.
+
+The scan itself is `vault.getFiles()` filtered by folder and extension — no disk
+reads, no worker queue, none of the old app's thumbnail machinery.
+
 ## Data flow
 
 ```
 folder → MediaIndex → thumbnail grid + ViewerSurface
                             ↓ select
+              LineageStore → MetadataResolver → lineage panel
+                            ↓ edit
                       EditSession   (rotate → flip → crop → resize)
                             ↓ Save
         encode → vault.createBinary(<stem>+clone+<ts>.<ext>)
+               → LineageStore.write(<stem>+clone+<ts>.instance.md)
                             ↓
         index inserts by path, selection follows to the new file
 ```
@@ -85,6 +209,8 @@ is bypassed. `delete` and `rename` update the map; if the affected file was
 selected, selection moves to the following entry, or the previous one at the end
 of the list.
 
+`.instance.md` files never appear in the grid.
+
 ### Transform pipeline
 
 Fixed order, always:
@@ -94,10 +220,12 @@ decode → rotate (0/90/180/270) → flipH → flipV → crop → resize → enc
 ```
 
 The crop rectangle is stored in the coordinate space of the **oriented** image —
-after rotation and flips — because that is the space the user drew it in.
-Changing rotation with a crop already set rotates the stored rectangle by the
-delta, so the same region stays selected. Without a fixed order, crop-then-rotate
-and rotate-then-crop silently disagree and undo becomes undefined.
+after rotation and flips — because that is the space the user drew it in, and it
+is the space written into the `.instance.md` note. Changing rotation with a crop
+already set rotates the stored rectangle by the delta, so the same region stays
+selected. Without a fixed order, crop-then-rotate and rotate-then-crop silently
+disagree, undo becomes undefined, and the recorded provenance stops describing
+what actually happened.
 
 ### Crop mapping
 
@@ -142,12 +270,22 @@ Beside the source, collision-safe, carrying the old app's convention:
 
 - Edits: `<stem>+clone+<yymmddHHMMSS>.<ext>`, then `.1`, `.2` … on collision.
 - Frame captures: `<stem>+frame+<ms>ms+<yymmddHHMMSS>.png`.
+- Sidecars: the media file's stem plus `.instance.md` —
+  `cover+clone+260908110422.png` pairs with
+  `cover+clone+260908110422.instance.md`. Where a stem is already taken, because
+  `cover.png` and `cover.mp4` sit in one folder, the extension is folded in:
+  `cover.mp4.instance.md`. Discovery tries both forms, and `media:` settles any
+  remaining doubt.
+
+The name records that a file is derived; the note records what it was derived
+from. The name is a convenience, the note is the truth.
 
 ### Undo
 
 Undo and redo apply to the **unsaved** transform state only. Saving writes a new
-file, moves selection to it, and opens a fresh session on that file; the previous
-session's history is discarded. Undo never deletes a file that has been written.
+file and its note, moves selection to the new file, and opens a fresh session on
+it; the previous session's history is discarded. Undo never deletes a file that
+has been written.
 
 ### Reverse playback
 
@@ -171,7 +309,10 @@ is not a thing to leave running.
 - `window.onerror` and `unhandledrejection` are captured, so a failure mid-drag
   reaches the file instead of only the devtools console.
 - Timed operations are the ones that historically hurt: folder scan, first
-  visible thumbnails, decode, encode, save, and reverse-playback frame rate.
+  visible thumbnails, decode, encode, save, lineage resolution, and
+  reverse-playback frame rate.
+- Rename cascades log every link they rewrite, since that is the operation with
+  the widest blast radius and the least visible failure mode.
 - A **Copy debug log** command puts the buffer on the clipboard.
 
 `debug.log` is git-ignored.
@@ -187,6 +328,9 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 | Unsupported video codec | Message naming the codec |
 | Source over the decode budget | Refused with its dimensions; nothing is loaded |
 | Encode or save failure | `Notice`, and **the edit session stays open** so the work is not lost |
+| Binary saved but note write failed | The file survives, the pane flags it as untracked, and **Repair lineage** rewrites the note |
+| `source:` points at a missing file | Chain resolution stops there; the pane shows the break |
+| Lineage cycle, or a chain over 32 hops | Walk aborts, both logged and shown |
 | File deleted underneath the viewer | Selection moves to a neighbour |
 
 ## Use cases
@@ -194,27 +338,34 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 | # | Use case |
 | --- | --- |
 | UC-01 | Open the media pane from the ribbon, docked or in a split |
-| UC-02 | Choose a vault folder to browse; remember the last one |
-| UC-03 | Browse thumbnails that load only as they scroll into view |
-| UC-04 | Filter the grid to images, videos, or both |
-| UC-05 | Select an item and view it full size |
-| UC-06 | Zoom, pan, fit-to-pane and reset to 100% |
-| UC-07 | Move through the folder from the keyboard without touching the grid |
-| UC-08 | Play a video and scrub it |
-| UC-09 | Change playback speed between 0.25x and 4x |
-| UC-10 | Play a video backwards |
-| UC-11 | Step one frame forward or back |
-| UC-12 | Capture the current video frame as a PNG in the vault |
-| UC-13 | Drag a crop selection over an image |
-| UC-14 | Adjust that selection by its handles, optionally with a locked aspect ratio |
-| UC-15 | Rotate in 90° steps, flip horizontally or vertically |
-| UC-16 | Resize to explicit dimensions or by scale factor |
-| UC-17 | Undo and redo edits before saving |
-| UC-18 | Save the result as a new file beside the source |
-| UC-19 | Crop a captured video frame before saving it |
-| UC-20 | Keep browsing when a folder contains corrupt or unsupported files |
-| UC-21 | Turn on debug logging, reproduce a fault, and hand over the log |
-| UC-22 | Keep working when files change on disk underneath the pane |
+| UC-02 | Have the pane follow the media file selected in the file explorer |
+| UC-03 | Open a folder in the pane from its context menu; last folder is remembered |
+| UC-04 | Browse thumbnails that load only as they scroll into view |
+| UC-05 | Filter the grid to images, videos, or both |
+| UC-06 | Select an item and view it full size |
+| UC-07 | Zoom, pan, fit-to-pane and reset to 100% |
+| UC-08 | Step through sibling media from the keyboard |
+| UC-09 | Play a video and scrub it |
+| UC-10 | Change playback speed between 0.25x and 4x |
+| UC-11 | Play a video backwards |
+| UC-12 | Step one frame forward or back |
+| UC-13 | Capture the current video frame as a PNG, tracked as a child of the video |
+| UC-14 | Drag a crop selection over an image |
+| UC-15 | Adjust that selection by its handles, optionally with a locked aspect ratio |
+| UC-16 | Rotate in 90° steps, flip horizontally or vertically |
+| UC-17 | Resize to explicit dimensions or by scale factor |
+| UC-18 | Undo and redo edits before saving |
+| UC-19 | Save the result as a new file beside the source, with its lineage note |
+| UC-20 | Crop a captured video frame before saving it |
+| UC-21 | See a file's parent and children, and jump along the chain |
+| UC-22 | See which metadata a file declares and which it inherits, and from where |
+| UC-23 | Rename a parent — through Asset Renamer or anywhere else — and have children stay correct |
+| UC-24 | Start tracking an untracked media file |
+| UC-25 | Repair a file whose note is missing or broken |
+| UC-26 | Find lineage breaks across the vault |
+| UC-27 | Keep browsing when a folder contains corrupt or unsupported files |
+| UC-28 | Turn on debug logging, reproduce a fault, and hand over the log |
+| UC-29 | Keep working when files change on disk underneath the pane |
 
 ## Backlog
 
@@ -222,11 +373,12 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 
 - [ ] Plugin scaffold: `manifest.json`, `main.js`, `styles.css`, ribbon icon, `ItemView`
 - [ ] `core`: extension classification, zoom clamping, clone-path builder
-- [ ] `MediaIndex` over a chosen vault folder, non-recursive, with a recursive toggle
-- [ ] Folder picker with last-folder persistence
+- [ ] `MediaIndex` over a vault folder, non-recursive, with a recursive toggle
+- [ ] Pane follows the active file; **Open in Media Viewer** on a folder's context menu
+- [ ] Last-folder persistence
 - [ ] Thumbnail grid, `IntersectionObserver`-driven, LRU-capped
 - [ ] Image viewer: zoom by wheel and `W`/`S`, pan, fit, reset
-- [ ] Keyboard navigation: `A`/`D` and arrow keys, selection keyed by path
+- [ ] Keyboard navigation through siblings, selection keyed by path
 - [ ] Image/video/both filter
 - [ ] Container-query layout so the pane reflows when docked in a split
 - [ ] Vault `create`/`modify`/`delete`/`rename` handling, idempotent by path
@@ -251,20 +403,34 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 - [ ] Resize by dimensions or scale
 - [ ] Format-following encode with a quality setting
 - [ ] Save via `vault.createBinary`, selection follows to the new file
-- [ ] Crop a captured video frame before saving
 
-### M4 — Diagnostics
+### M4 — Lineage
+
+- [ ] `LineageStore`: read, write and discover `.instance.md`, with `media:` authoritative
+- [ ] Note written on every derived save, carrying `crop` and `transform`
+- [ ] Root note created when a file first becomes a source
+- [ ] **Track this media** command
+- [ ] `MetadataResolver`: chain walk, cycle guard, 32-hop cap, break reporting
+- [ ] Lineage panel: parent, children, and which fields are inherited from where
+- [ ] `rename` handling: sidecar follows its media; `source:` links rewritten; children never renamed
+- [ ] `delete` handling: dangling `source:` reported, never silently repaired
+- [ ] **Repair lineage** for a file whose note is missing or broken
+- [ ] Vault-wide lineage break report
+- [ ] Notes marker (`<!-- media-viewer:notes -->`) preserved on every rewrite
+
+### M5 — Diagnostics
 
 - [ ] `DebugLog`: ring buffer, debounced flush, structured lines
 - [ ] `window.onerror` and `unhandledrejection` capture
-- [ ] Timings for scan, first-visible-thumbs, decode, encode, save
+- [ ] Timings for scan, first-visible-thumbs, decode, encode, save, resolution
+- [ ] Rename cascades log every rewritten link
 - [ ] Settings toggle, off by default; **Copy debug log** command
 - [ ] `.gitignore` entry for `debug.log`
 
-### M5 — Resilience and polish
+### M6 — Resilience and polish
 
 - [ ] Guarded failure paths for every row in the error-handling table
-- [ ] Settings: default folder, recursive scan, JPEG/WebP quality, debug logging
+- [ ] Settings: recursive scan, JPEG/WebP quality, sidecar creation, debug logging
 - [ ] Node tests over `core` with a stubbed `require("obsidian")`
 - [ ] Manual performance pass at 20 / 100 / 500+ files
 - [ ] `README.md` for the plugin
@@ -277,10 +443,13 @@ generators do. Covered there:
 - Crop mapping at many zoom levels, in every rotation and flip combination,
   including selections that overhang the image edge.
 - Crop-rectangle carry-over when rotation changes after a crop is set.
-- Clone-path and frame-capture-path collision sequences.
+- Clone-path, frame-capture-path and sidecar-path collision sequences.
 - Transform dimension maths, including 90° rotation of non-square images.
 - Zoom clamping at both limits.
 - Extension classification, including unknown and uppercase extensions.
+- Chain resolution: first-declaring ancestor wins, cycles abort, the hop cap
+  holds, and a missing ancestor reports rather than throws.
+- Note round-tripping, including preservation of content below the notes marker.
 
 The rest is manual, replacing `PERFORMANCE_CHECKLIST.md` minus its category and
 rename sections:
@@ -294,11 +463,22 @@ rename sections:
 - [ ] Media on a slow external drive, reached through a vault symlink
 - [ ] Reverse playback frame rate on a long clip and on a short one
 - [ ] Crop output opened and checked pixel-exact against the selection
+- [ ] Rename a parent through Asset Renamer; every child resolves afterwards
+- [ ] Move a parent to another folder; same check
+- [ ] Rename a parent with Obsidian's link-updating setting **off**; same check
+- [ ] Three-deep chain: crop of a crop of a capture, then rename the root
 
 ## Open risks
 
 - Reverse playback may not be usable on long files. Measured in M2; the fallback
   is scoped, and dropping the feature stays on the table.
 - Video thumbnail generation seeks every video in a folder once. On a slow drive
-  this could be the new equivalent of the old app's thumbnail stalls, and it is
-  measured in the same M5 pass.
+  this could be the new equivalent of the old app's thumbnail stalls, measured in
+  the same M6 pass.
+- Rename handling is the widest-blast-radius operation here, and a partial
+  failure leaves lineage half-rewritten. Mitigated by logging every rewrite and
+  by **Repair lineage**, but a rename touching many children is not atomic and
+  cannot be made so through the vault API.
+- Live inheritance means a child note read outside this plugin — by Dataview or
+  Bases — shows only its own fields. If those queries turn out to matter, the
+  answer is a materialise command, deliberately deferred rather than designed in.
