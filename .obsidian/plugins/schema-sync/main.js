@@ -112,6 +112,26 @@ function recordValuesFor(schemaName, fields) {
   return values;
 }
 
+// A config row is a value someone already decided is real, so it can stand up as
+// a record. The field it came from takes the value, and so does the schema's
+// identity field — the record is named after it, so `id` saying anything else
+// would be a second name for the same thing.
+function recordFromConfigValue(schemaName, fields, fieldName, value) {
+  const values = recordValuesFor(schemaName, fields);
+  values[fieldName] = value;
+  for (const [name, definition] of Object.entries(fields)) {
+    if (isBound(definition) && IDENTITY_FIELDS.has(name.toLowerCase())) values[name] = value;
+  }
+  return values;
+}
+
+// A value carries [[brackets]] in the config table and has to survive being a
+// file name. Anything that would not is refused rather than mangled.
+function recordFileNameFor(value) {
+  const name = String(value ?? "").trim().replace(/^\[\[|\]\]$/g, "").trim();
+  return name && !ILLEGAL_FIELD_NAME.test(name) ? `${name}.md` : null;
+}
+
 function renderRecordFrontmatter(schemaName, fields) {
   return frontmatterText(recordValuesFor(schemaName, fields));
 }
@@ -664,7 +684,7 @@ class SchemaSyncView extends ItemView {
         }
         const editorPanel = this.contentEl.querySelector(".schema-sync-grid > section:nth-child(2)");
         if (editorPanel) {
-          editorPanel.innerHTML = `<small class="schema-sync-label">02 / Definition</small><h2>Edit ${schemaName || "schema"}</h2><p class="schema-sync-editor-help">${this.plugin.settings.requireEditUnlock ? "Click ✎ to edit a row." : "Edit any row directly — changes save as you make them."} Enter commits, Escape reverts. Drag ⠿ to reorder. <b>Default</b> is the value a new record starts this field at — leave it blank for an empty value. <b>Bind</b> off keeps a field documented here but out of records, config lists, base views and the ERD.</p><div class="schema-sync-field-editor${this.plugin.settings.requireEditUnlock ? "" : " is-live"}"><div class="schema-sync-field-row schema-sync-field-head"><span></span><span>Field</span><span>Type</span><span title="Value a new record starts this field at">Default</span><span title="Points this field at another schema, drawn as a relation in the ERD">Relation</span><span title="Written to records, config lists, base views and the ERD">Bind</span><span title="Reports an issue when missing or blank in a record">Req</span><span title="Open this field's value list">☰</span><span class="schema-sync-edit-col"></span><span></span></div>${Object.entries(fields).map(([name, definition]) => `<div class="schema-sync-field-row" data-schema-row="${name}"><span class="schema-sync-drag" draggable="true" title="Drag to reorder">⠿</span><input data-field-name value="${name}" aria-label="Field name" /><select data-field-type aria-label="Field type">${FIELD_TYPES.map((type) => `<option value="${type}" ${definition.type === type ? "selected" : ""}>${type}</option>`).join("")}</select><input data-field-default value="${this.plugin.editorValue(definition.hasDefault ? definition.defaultValue : "")}" placeholder="default" aria-label="Default value" /><select data-field-relation aria-label="Foreign key target"><option value="">no foreign key</option>${schemas.map(([target]) => `<option value="${target}" ${definition.relation?.target === target ? "selected" : ""}>→ ${target}</option>`).join("")}</select><input data-field-bind type="checkbox" ${definition.bind === false ? "" : "checked"} aria-label="Bound" title="Bound: written to records, config lists, base views and the ERD. Unbound: documented here only." /><input data-field-required type="checkbox" ${definition.required ? "checked" : ""} aria-label="Required" title="Reports an issue when this field is missing or blank in a record" /><button data-open-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Open ${configPathFor(schemaName, name, definition)}` : `${name} has no value list`}">☰</button><button data-delete-field="${name}" class="${definition.bind === false ? "schema-sync-row-delete" : ""}" title="${definition.bind === false ? `Remove ${name} from the schema` : `Unbind ${name} — stops writing it anywhere, keeps existing values`}">×</button></div>`).join("") || "<p class=\"schema-sync-empty\">No fields defined.</p>"}</div>`;
+          editorPanel.innerHTML = `<small class="schema-sync-label">02 / Definition</small><h2>Edit ${schemaName || "schema"}</h2><p class="schema-sync-editor-help">${this.plugin.settings.requireEditUnlock ? "Click ✎ to edit a row." : "Edit any row directly — changes save as you make them."} Enter commits, Escape reverts. Drag ⠿ to reorder. <b>Default</b> is the value a new record starts this field at — leave it blank for an empty value. <b>Bind</b> off keeps a field documented here but out of records, config lists, base views and the ERD.</p><div class="schema-sync-field-editor${this.plugin.settings.requireEditUnlock ? "" : " is-live"}"><div class="schema-sync-field-row schema-sync-field-head"><span></span><span>Field</span><span>Type</span><span title="Value a new record starts this field at">Default</span><span title="Points this field at another schema, drawn as a relation in the ERD">Relation</span><span title="Written to records, config lists, base views and the ERD">Bind</span><span title="Reports an issue when missing or blank in a record">Req</span><span title="Open this field's value list">☰</span><span title="Create one record per row of this field's value list">⤓</span><span class="schema-sync-edit-col"></span><span></span></div>${Object.entries(fields).map(([name, definition]) => `<div class="schema-sync-field-row" data-schema-row="${name}"><span class="schema-sync-drag" draggable="true" title="Drag to reorder">⠿</span><input data-field-name value="${name}" aria-label="Field name" /><select data-field-type aria-label="Field type">${FIELD_TYPES.map((type) => `<option value="${type}" ${definition.type === type ? "selected" : ""}>${type}</option>`).join("")}</select><input data-field-default value="${this.plugin.editorValue(definition.hasDefault ? definition.defaultValue : "")}" placeholder="default" aria-label="Default value" /><select data-field-relation aria-label="Foreign key target"><option value="">no foreign key</option>${schemas.map(([target]) => `<option value="${target}" ${definition.relation?.target === target ? "selected" : ""}>→ ${target}</option>`).join("")}</select><input data-field-bind type="checkbox" ${definition.bind === false ? "" : "checked"} aria-label="Bound" title="Bound: written to records, config lists, base views and the ERD. Unbound: documented here only." /><input data-field-required type="checkbox" ${definition.required ? "checked" : ""} aria-label="Required" title="Reports an issue when this field is missing or blank in a record" /><button data-open-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Open ${configPathFor(schemaName, name, definition)}` : `${name} has no value list`}">☰</button><button data-implement-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Create one ${schemaName} record per row of ${configPathFor(schemaName, name, definition)}, named after the value` : `${name} has no value list to implement`}">⤓</button><button data-delete-field="${name}" class="${definition.bind === false ? "schema-sync-row-delete" : ""}" title="${definition.bind === false ? `Remove ${name} from the schema` : `Unbind ${name} — stops writing it anywhere, keeps existing values`}">×</button></div>`).join("") || "<p class=\"schema-sync-empty\">No fields defined.</p>"}</div>`;
           const definitionHeader = document.createElement("div");
           definitionHeader.className = "schema-sync-definition-header";
           const definitionTitle = editorPanel.querySelector("h2");
@@ -722,6 +742,7 @@ class SchemaSyncView extends ItemView {
           });
           editorPanel.querySelectorAll("[data-delete-field]").forEach((button) => button.addEventListener("click", () => void this.plugin.deleteSchemaField(schemaName, button.dataset.deleteField)));
           editorPanel.querySelectorAll("[data-open-config]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.openFieldConfig(schemaName, button.dataset.openConfig); }));
+          editorPanel.querySelectorAll("[data-implement-config]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.implementConfigValues(schemaName, button.dataset.implementConfig); }));
           editorPanel.querySelectorAll("[data-edit-field]").forEach((button) => button.addEventListener("click", () => {
             const row = button.closest("[data-schema-row]");
             // Guard against a second click stacking another set of key handlers
@@ -1987,6 +2008,52 @@ class SchemaSyncPlugin extends Plugin {
     await this.app.workspace.getLeaf(true).openFile(file);
   }
 
+  // Turns a field's value list into records, one per row, named after the value.
+  // Existing notes are never touched — a value that already has a record is
+  // skipped, so this is safe to press twice.
+  async implementConfigValues(schemaName, fieldName) {
+    const fields = this.schemas.get(schemaName);
+    const definition = fields?.[fieldName];
+    const path = definition && configPathFor(schemaName, fieldName, definition);
+    if (!path) return new Notice(`"${fieldName}" has no value list to implement.`);
+    const configFile = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    if (!(configFile instanceof TFile)) return new Notice(`${path} has not been generated yet. Run Sync schema system first.`);
+
+    const values = parseConfigValues(await this.app.vault.read(configFile));
+    if (values.length === 0) return new Notice(`${path} has no rows yet.`);
+    const folder = await this.folderForSchema(schemaName);
+    const planned = [];
+    const unusable = [];
+    for (const value of values) {
+      const fileName = recordFileNameFor(value);
+      if (!fileName) { unusable.push(value); continue; }
+      const recordPath = normalizePath(`${folder}/${fileName}`);
+      if (this.app.vault.getAbstractFileByPath(recordPath)) continue;
+      planned.push({ recordPath, value });
+    }
+    if (planned.length === 0) {
+      return new Notice(unusable.length ? `Every usable row already has a record. ${unusable.length} row(s) cannot be file names.` : "Every row already has a record.");
+    }
+
+    const answer = await new Promise((resolve) => new ConfirmDeleteModal(
+      this.app,
+      `Create ${planned.length} ${schemaName} record(s)?`,
+      `One note per row of ${path}, written to ${folder} and named after the value. ${values.length - planned.length - unusable.length} row(s) already have a record and are left alone.${unusable.length ? ` ${unusable.length} row(s) cannot be a file name and are skipped.` : ""}`,
+      `Create ${planned.length} record(s)`,
+      resolve,
+    ).open());
+    if (!answer.confirmed) return;
+
+    for (const { recordPath, value } of planned) {
+      await this.ensureFolder(folder);
+      const frontmatter = recordFromConfigValue(schemaName, fields, fieldName, value);
+      await this.app.vault.create(recordPath, `---\n${frontmatterText(frontmatter)}\n---\n\n# ${value}\n\n${NOTES_MARKER}\n\n`);
+      await this.trackRecord(recordPath, schemaName);
+    }
+    this.refreshDashboards();
+    new Notice(`Created ${planned.length} ${schemaName} record(s) in ${folder}.`);
+  }
+
   // The only path that removes a config note. syncConfigLists deliberately never
   // registers them as generated, so cleanupGeneratedPaths cannot reach them and
   // an orphan otherwise survives forever.
@@ -2485,6 +2552,8 @@ module.exports.generators = {
   yamlValue,
   frontmatterText,
   recordValuesFor,
+  recordFromConfigValue,
+  recordFileNameFor,
   renderRecordFrontmatter,
   renderBaseYaml,
   parseConfigValues,

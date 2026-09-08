@@ -255,6 +255,48 @@ test("an unbound attachment is left out entirely", () => {
   assert.ok(!yaml.includes("cover"), yaml);
 });
 
+// --- README item 8: config rows become records ------------------------------
+
+const { recordFromConfigValue, recordFileNameFor } = generators;
+
+test("a config row becomes a record carrying that value", () => {
+  const fields = { Realm: { type: "string", required: true } };
+  assert.deepStrictEqual(recordFromConfigValue("Realm", fields, "Realm", "Aetheria"), {
+    implements: "Realm",
+    Realm: "Aetheria",
+  });
+});
+
+test("the schema's identity field takes the item name too", () => {
+  const fields = { id: { type: "string", required: true }, trait: { type: "string" } };
+  const record = recordFromConfigValue("LifeForm", fields, "trait", "bold");
+  assert.strictEqual(record.id, "bold");
+  assert.strictEqual(record.trait, "bold");
+});
+
+test("unbound fields stay out of the new record", () => {
+  const fields = { Realm: { type: "string" }, note: { type: "string", bind: false } };
+  assert.ok(!("note" in recordFromConfigValue("Realm", fields, "Realm", "Umbra")));
+});
+
+test("other bound fields start empty", () => {
+  const fields = { Realm: { type: "string" }, size: { type: "number" } };
+  assert.strictEqual(recordFromConfigValue("Realm", fields, "Realm", "Umbra").size, 0);
+});
+
+test("a value becomes a file name, brackets stripped", () => {
+  assert.strictEqual(recordFileNameFor("Aetheria"), "Aetheria.md");
+  assert.strictEqual(recordFileNameFor("[[Umbra]]"), "Umbra.md");
+  assert.strictEqual(recordFileNameFor("  Spaced  "), "Spaced.md");
+});
+
+test("a value that cannot be a file name is refused", () => {
+  assert.strictEqual(recordFileNameFor("a/b"), null);
+  assert.strictEqual(recordFileNameFor("a:b"), null);
+  assert.strictEqual(recordFileNameFor(""), null);
+  assert.strictEqual(recordFileNameFor("   "), null);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
