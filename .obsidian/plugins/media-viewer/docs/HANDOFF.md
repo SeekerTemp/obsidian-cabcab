@@ -20,6 +20,18 @@ Rules that hold for every task:
 - A task is done when its **Verify** line actually passes, not when the code
   looks right.
 
+**What is still missing for the point of the plugin, noted after M4.** The
+plugin exists to capture frames from a walkthrough video and label them as
+evidence an AI can read back — see the design doc's opening note. The lineage
+layer that needs is built; the capture and the labelling are not, and the
+schema is missing the three fields that make a captured frame evidence rather
+than a picture:
+
+> 19a `MV-EVIDENCE` → 12 `MV-FRAME` → 21a `MV-LABEL`
+
+Nothing is reordered — 13 to 27 are done. These are tasks that were never
+written down, because the goal behind them was not written down until now.
+
 **Revised after M2.** Four mechanisms ported from the desktop app were retired
 once it was clear each solved a problem Obsidian does not have: sidecar notes
 found by filename, provenance encoded into filenames, a private log file, and a
@@ -53,7 +65,7 @@ with the retirement.
 | 9 | `MV-SPEED` | Playback speed 0.25x–4x | `main.js` | 8 | Speed control changes playback rate |
 | 10 | `MV-VTHUMB` | Video thumbnails: seek to 1s, draw once to canvas, cache as blob URL | `main.js` | 8 | Videos show real frames in the grid |
 | 11 | `MV-REVERSE` | Reverse playback by stepping `currentTime` under `requestAnimationFrame`; **measure achieved frame rate**; reduced-resolution scrub fallback | `main.js` | 9 | Reverse plays; the measured rate reaches the console. If unusable on real files, say so — dropping this is allowed |
-| 12 | `MV-FRAME` | Frame capture to `<stem>+frame+<ts>.png`, its source position recorded in the note rather than in the name | `main.js` | 10 | Captured PNG matches the displayed frame |
+| 12 | `MV-FRAME` | Frame capture to `<stem>+frame+<ts>.png`, writing a note that records `sourceTime` — the position is in the record, never in the name. **The blocking task for the point of the plugin** | `main.js` | 10, 21, 19a | The captured PNG matches the displayed frame, and its note names the video and the second it came from |
 
 ## M3 — Edit
 
@@ -71,8 +83,10 @@ with the retirement.
 | # | Keyword | Goal | Touches | Needs | Verify |
 | --- | --- | --- | --- | --- | --- |
 | 19 | `MV-SCHEMA` | `data/schema/MediaInstance.schema.md` in this vault's schema style: `media`, `source`, `op`, `crop`, `transform`, `width`, `height`, `created`, `status`, `labels` | `data/schema/` | 18 | Schema Sync accepts it and the base view lists it |
+| 19a | `MV-EVIDENCE` | Add `sourceTime`, `useCase` and `shows` to `MediaInstance` and to what `LineageStore` round-trips. Without `sourceTime` a captured frame cannot say which second it came from, and the filename no longer carries it either | `data/schema/`, `main.js` | 19, 20 | A note round-trips all three, and a Base groups captures by `useCase` |
 | 20 | `MV-STORE` | `LineageStore`: read and write `MediaInstance` records; **discovery through `metadataCache`, never through filenames**; media→note and media→children maps kept current from `metadataCache.on("changed")`; notes marker preserved on every rewrite | `main.js`, `tests/core.test.js` | 19 | A note round-trips with text below the marker intact, and is still found after being moved and renamed by hand |
 | 21 | `MV-TRACK` | Note written on every derived save (with `crop`, `transform`, `status`, `labels`), **plus a root note for the source**. Viewing writes nothing. **Mark as reviewed** command | `main.js` | 20 | One crop produces two notes. Opening a file produces none |
+| 21a | `MV-LABEL` | Label a tracked file from the pane: `useCase`, `shows` and free `labels`, written to its note and shown beside the viewer. The half of "capture evidence" that capturing does not do | `main.js`, `styles.css` | 21, 19a | Label a captured frame, reload, and a Base lists it under its use case |
 | 22 | `MV-RESOLVE` | `MetadataResolver`: walk the `source:` chain, first declaring ancestor wins, cycle guard, 32-hop cap, missing-ancestor reporting | `main.js`, `tests/core.test.js` | 21 | Editing a parent field changes what a grandchild resolves |
 | 23 | `MV-PANEL` | Lineage panel: parent, children, and which fields are inherited from where | `main.js`, `styles.css` | 22 | The chain is visible and navigable |
 | 24 | `MV-RENAME` | `rename` handling: **short-circuit on untracked files**; links rewritten **only when Obsidian's own link updating is off**, since otherwise the platform has already done it; children never renamed | `main.js` | 23 | Rename a parent via Asset Renamer with link-updating off, then again with it on — children resolve either way, and the second case writes nothing |
@@ -123,7 +137,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 10 `MV-VTHUMB`
 - [x] 7a `MV-PASTE` — added after M2, out of sequence because it needed nothing from M3
 - [ ] 11 `MV-REVERSE`
-- [ ] 12 `MV-FRAME`
+- [ ] 12 `MV-FRAME` — blocks the plugin's purpose
 - [x] 13 `MV-CROPMATH`
 - [x] 14 `MV-SESSION`
 - [x] 15 `MV-BUDGET`
@@ -131,8 +145,10 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 17 `MV-TRANSFORM`
 - [x] 18 `MV-SAVE`
 - [x] 19 `MV-SCHEMA`
+- [ ] 19a `MV-EVIDENCE`
 - [x] 20 `MV-STORE`
 - [x] 21 `MV-TRACK`
+- [ ] 21a `MV-LABEL`
 - [x] 22 `MV-RESOLVE`
 - [x] 23 `MV-PANEL`
 - [x] 24 `MV-RENAME`
