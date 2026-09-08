@@ -224,7 +224,12 @@ function parseFieldReferenceRows(raw) {
   for (const line of section[1].split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) continue;
-    const [name, type, defaultCell, required, bound, relation] = trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
+    // The Field cell is a wikilink now, and an aliased one carries a "|" of its
+    // own, so it arrives split across two cells. Rejoin before reading columns.
+    const cells = trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
+    if (cells[0].startsWith("[[") && !cells[0].endsWith("]]")) cells.splice(0, 2, `${cells[0]}|${cells[1]}`);
+    const [rawName, type, defaultCell, required, bound, relation] = cells;
+    const name = normalizeFieldName(rawName);
     if (!name || /^:?-{2,}:?$/.test(name) || name.toLowerCase() === "field") continue;
     const definition = {
       // Every blank cell resolves to the quiet option: string, no default,
@@ -317,12 +322,31 @@ function fieldNameError(name) {
   return null;
 }
 
+// What the Field column points at. A link means "this field has somewhere to
+// go"; plain text means it has not. Path-qualified because Obsidian resolves a
+// wikilink by basename alone, and two schemas may both declare `trait`. Aliased
+// so the cell still reads as the bare field name.
+function fieldReferenceLink(schemaName, fieldName, definition, schemas) {
+  const target = definition?.relation?.target;
+  if (target) {
+    // A foreign key never gets a list of its own: it points at the one list the
+    // target entity already owns, so values cannot drift between the two.
+    const targetFields = schemas?.get?.(target);
+    const ownField = targetFields && Object.prototype.hasOwnProperty.call(targetFields, target) ? targetFields[target] : null;
+    if (ownField && configPathFor(target, target, ownField)) return `[[${target}/${target}|${fieldName}]]`;
+    // Nothing to point at — an entity keyed by `id` has no list, because
+    // identity fields are excluded — so fall back to its definition.
+    return `[[${target}.schema|${fieldName}]]`;
+  }
+  return configPathFor(schemaName, fieldName, definition) ? `[[${schemaName}/${fieldName}|${fieldName}]]` : fieldName;
+}
+
 // Carries every property a field has, Relation included, so the table is a
 // lossless representation of `fields:` and a bottom-to-top pull cannot drop
 // anything it is unable to express.
-function renderFieldReference(fields) {
+function renderFieldReference(schemaName, fields, schemas) {
   const rows = Object.entries(fields).map(([name, field]) =>
-    `| ${name} | ${field.type} | ${field.hasDefault ? yamlValue(field.defaultValue) : "-"} | ${field.required ? "yes" : "no"} | ${isBound(field) ? "yes" : "no"} | ${field.relation?.target || "-"} |`);
+    `| ${fieldReferenceLink(schemaName, name, field, schemas)} | ${field.type} | ${field.hasDefault ? yamlValue(field.defaultValue) : "-"} | ${field.required ? "yes" : "no"} | ${isBound(field) ? "yes" : "no"} | ${field.relation?.target || "-"} |`);
   return `## Field Reference\n\n| Field | Type | Default | Required | Bound | Relation |\n| --- | --- | --- | --- | --- | --- |\n${rows.join("\n")}\n`;
 }
 
@@ -356,7 +380,7 @@ function schemaBodyOf(raw) {
     .trim();
 }
 
-function renderSchemaNote(name, fields, sourcePath, body, existingRaw) {
+function renderSchemaNote(name, fields, sourcePath, body, existingRaw, schemas) {
   const frontmatter = ["---", `schema: ${name}`];
   if (sourcePath) frontmatter.push(`schemaSource: ${sourcePath}`);
   frontmatter.push("fields:");
@@ -364,7 +388,7 @@ function renderSchemaNote(name, fields, sourcePath, body, existingRaw) {
   if (fieldBlock) frontmatter.push(fieldBlock);
   frontmatter.push("---");
   const prose = (body && body.trim()) || defaultSchemaBody(name, sourcePath);
-  const head = `${frontmatter.join("\n")}\n\n# ${name} Schema\n\n${prose}\n\n${renderFieldReference(fields)}`;
+  const head = `${frontmatter.join("\n")}\n\n# ${name} Schema\n\n${prose}\n\n${renderFieldReference(name, fields, schemas)}`;
   return withUserNotes(head, existingRaw);
 }
 
@@ -1067,7 +1091,7 @@ class SchemaSyncPlugin extends Plugin {
     }
 
     for (const entry of plan) {
-      await this.app.vault.modify(entry.file, renderSchemaNote(entry.schemaName, entry.fields, this.app.metadataCache.getFileCache(entry.file)?.frontmatter?.schemaSource, schemaBodyOf(await this.app.vault.read(entry.file)), await this.app.vault.read(entry.file)));
+      await this.app.vault.modify(entry.file, renderSchemaNote(entry.schemaName, entry.fields, this.app.metadataCache.getFileCache(entry.file)?.frontmatter?.schemaSource, schemaBodyOf(await this.app.vault.read(entry.file)), await this.app.vault.read(entry.file), this.schemas));
       this.schemas.set(entry.schemaName, entry.fields);
     }
     this.pendingSchemaEdits.clear();
@@ -1185,7 +1209,7 @@ class SchemaSyncPlugin extends Plugin {
       assetCount: { type: "number", required: false, hasDefault: true, defaultValue: 0 },
     };
     await Promise.all([SCHEMA_FOLDER, CONFIG_FOLDER, ASSET_FOLDER, BASE_VIEW_FOLDER, DATA_FOLDER].map((folder) => this.ensureFolder(folder)));
-    await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${name}.schema.md`), renderSchemaNote(name, schemaFields, `${CONFIG_FOLDER}/${name}.config.md`));
+    await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${name}.schema.md`), renderSchemaNote(name, schemaFields, `${CONFIG_FOLDER}/${name}/name.md`, undefined, undefined, this.schemas));
     await this.app.vault.create(normalizePath(`${CONFIG_FOLDER}/${name}.config.md`), `# ${name} Config\n\n| name | description | assetCount |\n| --- | --- | --- |\n`);
     await this.app.vault.create(normalizePath(`${DATA_FOLDER}/${name}Instance.md`), `---\nimplements: ${name}\nname: Sample ${name}\ndescription: "Sample record"\nassetCount: 0\n---\n\n# Sample ${name}\n`);
     await this.createSampleAsset(name);
@@ -1247,7 +1271,7 @@ class SchemaSyncPlugin extends Plugin {
     if (!file) return null;
     const raw = await this.app.vault.read(file);
     const sourcePath = sourceOverride !== undefined ? sourceOverride : this.schemaSource(schemaName);
-    await this.app.vault.modify(file, renderSchemaNote(schemaName, fields, sourcePath, schemaBodyOf(raw), raw));
+    await this.app.vault.modify(file, renderSchemaNote(schemaName, fields, sourcePath, schemaBodyOf(raw), raw, this.schemas));
     return file;
   }
 
@@ -1304,7 +1328,7 @@ class SchemaSyncPlugin extends Plugin {
     if (existing) await this.writeSchemaFile(schemaName, fields, file.path);
     else {
       await this.ensureFolder(SCHEMA_FOLDER);
-      await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${this.pascalCase(schemaName)}.schema.md`), renderSchemaNote(schemaName, fields, file.path));
+      await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${this.pascalCase(schemaName)}.schema.md`), renderSchemaNote(schemaName, fields, file.path, undefined, undefined, this.schemas));
     }
     const mappings = { ...this.currentMappings(), [schemaName]: { target: file.path, fields: Object.fromEntries(Object.keys(fields).map((name) => [name, name])) } };
     await this.saveMappings(mappings);
@@ -1524,7 +1548,7 @@ class SchemaSyncPlugin extends Plugin {
     const path = normalizePath(`${SCHEMA_FOLDER}/${schemaName}.schema.md`);
     if (this.app.vault.getAbstractFileByPath(path)) return new Notice(`Schema file already exists: ${path}`);
     try {
-      await this.app.vault.create(path, renderSchemaNote(schemaName, fields));
+      await this.app.vault.create(path, renderSchemaNote(schemaName, fields, undefined, undefined, undefined, this.schemas));
       await this.loadSchemas();
       this.selectedSchema = schemaName;
       this.refreshDashboards();
@@ -2135,7 +2159,7 @@ class SchemaSyncPlugin extends Plugin {
       // A note whose declared name disagrees with its filename has prose about
       // the wrong entity, so it is reset rather than carried over.
       const body = frontmatter?.schema === schemaName ? schemaBodyOf(raw) : undefined;
-      const next = renderSchemaNote(schemaName, fields, frontmatter?.schemaSource, body, raw);
+      const next = renderSchemaNote(schemaName, fields, frontmatter?.schemaSource, body, raw, this.schemas);
       if (next !== raw) await this.app.vault.modify(file, next);
     }
   }
@@ -2292,6 +2316,7 @@ module.exports.generators = {
   extractUserNotes,
   NOTES_MARKER,
   renderConfigNote,
+  fieldReferenceLink,
   renderFieldReference,
   parseFieldReference,
   handAddedFields,

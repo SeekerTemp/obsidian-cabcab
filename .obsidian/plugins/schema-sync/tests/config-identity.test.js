@@ -113,6 +113,60 @@ test("pluralize is gone", () => {
   assert.strictEqual(generators.pluralize, undefined);
 });
 
+// --- Task 3: Field Reference links -----------------------------------------
+
+const { fieldReferenceLink, renderFieldReference, parseFieldReference } = generators;
+
+const SCHEMAS = new Map([
+  ["Realm", { Realm: { type: "string", bind: true, required: true } }],
+  ["LifeForm", {
+    id: { type: "string", bind: true, required: true },
+    cover: { type: "attachment", bind: true },
+    trait: { type: "string", bind: true },
+    attachment: { type: "string", bind: false },
+  }],
+]);
+
+test("a field with a config links to it, path-qualified and aliased", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS), "[[LifeForm/trait|trait]]");
+});
+
+test("a relation links to the target schema's own-name config", () => {
+  const field = { type: "string", bind: false, relation: { target: "Realm" } };
+  assert.strictEqual(fieldReferenceLink("Verse", "Realm", field, SCHEMAS), "[[Realm/Realm|Realm]]");
+});
+
+test("a relation whose target has no own-name field links to the schema note", () => {
+  const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
+  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm.schema|owner]]");
+});
+
+test("a field with no config is plain text", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "id", SCHEMAS.get("LifeForm").id, SCHEMAS), "id");
+  assert.strictEqual(fieldReferenceLink("LifeForm", "attachment", SCHEMAS.get("LifeForm").attachment, SCHEMAS), "attachment");
+});
+
+test("the rendered table round trips back to plain field names", () => {
+  const table = renderFieldReference("LifeForm", SCHEMAS.get("LifeForm"), SCHEMAS);
+  const parsed = parseFieldReference(table);
+  assert.deepStrictEqual(Object.keys(parsed), ["id", "cover", "trait", "attachment"]);
+});
+
+test("a linked row round trips without keeping the brackets", () => {
+  const table = renderFieldReference("Verse", { Realm: { type: "string", bind: false, relation: { target: "Realm" } } }, SCHEMAS);
+  assert.ok(table.includes("[[Realm/Realm|Realm]]"), table);
+  assert.deepStrictEqual(Object.keys(parseFieldReference(table)), ["Realm"]);
+});
+
+test("a linked row keeps its other columns intact", () => {
+  const table = renderFieldReference("LifeForm", SCHEMAS.get("LifeForm"), SCHEMAS);
+  const parsed = parseFieldReference(table);
+  assert.strictEqual(parsed.trait.type, "string");
+  assert.strictEqual(parsed.trait.bind, true);
+  assert.strictEqual(parsed.id.required, true);
+  assert.strictEqual(parsed.attachment.bind, false);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }
