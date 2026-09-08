@@ -12,6 +12,11 @@ const DEFAULT_SETTINGS = {
   // it starts on. Choosing a folder from its context menu pins the pane, which
   // is the only way an explicit choice can survive the next click.
   followActiveFile: true,
+  // Off by default. What it turns on is `ms=` lines on the console for the
+  // operations that historically hurt — MV-TIMING says which — and nothing
+  // else. There is no log file: Electron's console already filters, persists
+  // and survives the failure, which is what the old app's crash log was for.
+  debugLogging: false,
 };
 
 /* ------------------------------------------------------------------------ *
@@ -571,6 +576,23 @@ function clampRect(rect, width, height) {
 
 // Only the four quarter turns exist. Anything else is a caller bug rather than
 // a value to round toward, so it becomes 0 and the image is left alone.
+/* A rectangle in a space that has been scaled by `factor`.
+ *
+ * Expanded outward on the way, by the same floor/ceil rule the crop mapping
+ * uses: a crop drawn at full size and shown on a half-size proxy must not come
+ * back a pixel short of what it covers.
+ */
+function scaleRect(rect, factor) {
+  const value = Number(factor);
+  const scale = Number.isFinite(value) && value > 0 ? value : 1;
+  const box = normaliseRect(rect);
+  const left = Math.floor(box.x * scale);
+  const top = Math.floor(box.y * scale);
+  const right = Math.ceil((box.x + box.w) * scale);
+  const bottom = Math.ceil((box.y + box.h) * scale);
+  return { x: left, y: top, w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
+}
+
 function normaliseRotation(degrees) {
   const value = Number(degrees);
   if (!Number.isFinite(value)) return 0;
@@ -878,6 +900,90 @@ function isIdentityEdit(state, sourceWidth, sourceHeight) {
   return crop.x === 0 && crop.y === 0 && crop.w === size.width && crop.h === size.height;
 }
 
+/* ------------------------------------------------------------------------ *
+ * The decode budget — MV-BUDGET.
+ *
+ * Two limits, doing two different jobs.
+ *
+ * The ceiling is a refusal. A 12000 x 9000 PNG is 108 megapixels, which is
+ * 432 MB of RGBA before anything is done to it and enough to take the pane
+ * down with it. The old app carried MAX_IMAGE_DIMENSION and MAX_DECODE_SIZE_MB
+ * for the same reason. Refusing is not a failure mode to hide: the message
+ * names the dimensions, because "too big" without a number is something the
+ * user cannot act on.
+ *
+ * The proxy is a display decision, and only a display decision. Above the edge
+ * limit the pane shows a downscaled copy, while every measurement the edit
+ * makes stays in full oriented-source coordinates — so a crop drawn on the
+ * proxy is still cut at full resolution. Confusing those two is how an editor
+ * quietly starts saving the preview.
+ * ------------------------------------------------------------------------ */
+
+const MAX_DECODE_MEGAPIXELS = 40;
+const MAX_DISPLAY_EDGE = 4096;
+
+function megapixelsOf(width, height) {
+  const w = Math.max(0, Number(width) || 0);
+  const h = Math.max(0, Number(height) || 0);
+  return (w * h) / 1e6;
+}
+
+function exceedsDecodeBudget(width, height, limit) {
+  const cap = Number(limit);
+  const ceiling = Number.isFinite(cap) && cap > 0 ? cap : MAX_DECODE_MEGAPIXELS;
+  return megapixelsOf(width, height) > ceiling;
+}
+
+// Names the dimensions and the budget, in that order, because the first thing
+// the user wants to know is what they just opened.
+function decodeBudgetMessage(width, height, limit) {
+  const cap = Number(limit);
+  const ceiling = Number.isFinite(cap) && cap > 0 ? cap : MAX_DECODE_MEGAPIXELS;
+  const w = Math.max(0, Math.round(Number(width) || 0));
+  const h = Math.max(0, Math.round(Number(height) || 0));
+  const mp = megapixelsOf(w, h);
+  return (
+    w + " x " + h + " is " + (Math.round(mp * 10) / 10) + " MP, over the " + ceiling + " MP decode budget"
+  );
+}
+
+// 1 means "show the file itself". Never above 1: a small image is not made
+// bigger to fill a limit it was never near.
+function proxyScaleFor(width, height, maxEdge) {
+  const w = Math.max(0, Number(width) || 0);
+  const h = Math.max(0, Number(height) || 0);
+  const cap = Number(maxEdge);
+  const edge = Number.isFinite(cap) && cap > 0 ? cap : MAX_DISPLAY_EDGE;
+  const longest = Math.max(w, h);
+  if (longest <= edge) return 1;
+  return edge / longest;
+}
+
+function proxySize(width, height, maxEdge) {
+  const scale = proxyScaleFor(width, height, maxEdge);
+  if (scale === 1) return { width: Math.round(Number(width) || 0), height: Math.round(Number(height) || 0), scale };
+  return {
+    width: Math.max(1, Math.round((Number(width) || 0) * scale)),
+    height: Math.max(1, Math.round((Number(height) || 0) * scale)),
+    scale,
+  };
+}
+
+/* How many CSS pixels one oriented-source pixel occupies on screen.
+ *
+ * Measured from what is actually laid out rather than accumulated from the
+ * zoom and the proxy factor separately, because those two multiply and a
+ * missed factor of 0.34 in a crop is not something a user can see until they
+ * open the output. The rendered width is a number the browser already knows;
+ * asking it is both simpler and harder to get wrong.
+ */
+function displayScaleFor(renderedWidth, orientedWidth) {
+  const rendered = Number(renderedWidth);
+  const oriented = Number(orientedWidth);
+  if (!Number.isFinite(rendered) || !Number.isFinite(oriented) || oriented <= 0 || rendered <= 0) return 1;
+  return rendered / oriented;
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1072,6 +1178,15 @@ const core = {
   cropAfterRotation,
   cropAfterFlip,
   sourceRectFor,
+  scaleRect,
+  MAX_DECODE_MEGAPIXELS,
+  MAX_DISPLAY_EDGE,
+  megapixelsOf,
+  exceedsDecodeBudget,
+  decodeBudgetMessage,
+  proxyScaleFor,
+  proxySize,
+  displayScaleFor,
   emptyEditState,
   normaliseEditState,
   normaliseResize,
@@ -1377,6 +1492,92 @@ class MediaIndex {
  * full resolution.
  * ------------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------------ *
+ * Getting a source into an edit session — MV-BUDGET.
+ *
+ * The <img> the viewer shows is the browser's business: it decodes lazily,
+ * drops what it likes and never hands the pixels over. An edit needs the
+ * pixels, which means a decode this plugin owns and therefore a size this
+ * plugin has to have an opinion about.
+ * ------------------------------------------------------------------------ */
+
+/* A refusal, not a failure. Given a name so the caller can tell "this file is
+   too large" from "this file is broken" without matching on a message. */
+class DecodeBudgetError extends Error {
+  constructor(width, height, limit) {
+    super(decodeBudgetMessage(width, height, limit));
+    this.name = "DecodeBudgetError";
+    this.width = width;
+    this.height = height;
+  }
+}
+
+function decodeImageElement(url) {
+  return new Promise((resolve, reject) => {
+    if (typeof document === "undefined" || !document.createElement) {
+      reject(new Error("no document to decode into"));
+      return;
+    }
+    const image = document.createElement("img");
+    image.addEventListener("load", () => resolve(image));
+    image.addEventListener("error", () => reject(new Error("the image could not be decoded")));
+    image.src = url;
+  });
+}
+
+/* The downscaled display copy, or the image itself when it is small enough.
+ *
+ * Returned in the same shape either way — { image, width, height, scale } —
+ * so that nothing downstream has to ask whether a proxy happened. `scale` is
+ * how the preview relates to the source, and it is the only number that ever
+ * needs to know.
+ *
+ * A canvas that will not give up a context is not worth failing over: the
+ * fallback is the full-size image, which is slower to display and correct.
+ */
+function buildDisplayProxy(image, width, height, maxEdge) {
+  const size = proxySize(width, height, maxEdge);
+  if (size.scale === 1 || typeof document === "undefined") {
+    return { image, width, height, scale: 1 };
+  }
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext("2d");
+    if (!context) return { image, width, height, scale: 1 };
+    if ("imageSmoothingEnabled" in context) {
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+    }
+    context.drawImage(image, 0, 0, size.width, size.height);
+    return { image: canvas, width: size.width, height: size.height, scale: size.scale };
+  } catch (error) {
+    console.error("Media Viewer: building a display proxy failed", error);
+    return { image, width, height, scale: 1 };
+  }
+}
+
+async function loadEditSource(url, options) {
+  const settings = options || {};
+  const image = await decodeImageElement(url);
+  const width = Math.floor(Number(image.naturalWidth) || 0);
+  const height = Math.floor(Number(image.naturalHeight) || 0);
+  // A decode that "succeeded" with no dimensions is an SVG with no intrinsic
+  // size, or a file the browser gave up on quietly. Either way there is
+  // nothing to measure a crop against.
+  if (width < 1 || height < 1) throw new Error("the image reported no dimensions");
+  if (exceedsDecodeBudget(width, height, settings.maxMegapixels)) {
+    throw new DecodeBudgetError(width, height, settings.maxMegapixels);
+  }
+  return {
+    image,
+    width,
+    height,
+    preview: buildDisplayProxy(image, width, height, settings.maxEdge),
+  };
+}
+
 class EditSession {
   /* `source` is { path, image, width, height }: the decoded bitmap and the
      dimensions to trust. The dimensions are taken rather than read off the
@@ -1388,6 +1589,11 @@ class EditSession {
     this.image = shape.image || null;
     this.sourceWidth = Math.max(0, Math.floor(Number(shape.width) || 0));
     this.sourceHeight = Math.max(0, Math.floor(Number(shape.height) || 0));
+    /* The display copy, when the source is too large to put on screen whole.
+       Same shape whether or not a downscale happened, so nothing downstream
+       has to ask — and never used for anything but the preview, which is the
+       distinction MV-BUDGET exists to keep. */
+    this.preview = shape.preview || { image: this.image, width: this.sourceWidth, height: this.sourceHeight, scale: 1 };
     this.state = emptyEditState();
     this.past = [];
     this.future = [];
@@ -1576,6 +1782,56 @@ class EditSession {
     return this.renderTo(document.createElement("canvas"));
   }
 
+  /* What the pane shows while the edit is being made.
+   *
+   * Drawn from the proxy when there is one, and capped again on the way out,
+   * because a 3:1 crop of a 4096px proxy is still wider than any pane. The
+   * resize is deliberately dropped: it changes the output's pixel count and
+   * nothing the eye can check on screen, so it belongs in the readout rather
+   * than in the preview, where honouring it would only cost a resample.
+   *
+   * The crop is scaled outward — floor the top-left, ceil the bottom-right,
+   * the same rule as everywhere else — so the preview never shows less than
+   * the crop will cut.
+   */
+  previewPlan(maxEdge) {
+    const source = this.preview;
+    const factor = this.sourceWidth > 0 ? source.width / this.sourceWidth : 1;
+    const state = {
+      rotate: this.state.rotate,
+      flipH: this.state.flipH,
+      flipV: this.state.flipV,
+      crop: this.state.crop ? scaleRect(this.state.crop, factor) : null,
+      resize: null,
+    };
+    const plan = renderPlan(state, source.width, source.height);
+    const cap = Number(maxEdge);
+    const limit = Number.isFinite(cap) && cap > 0 ? cap : MAX_DISPLAY_EDGE;
+    const longest = Math.max(plan.width, plan.height);
+    if (longest <= limit) return plan;
+    state.resize = { scale: limit / longest };
+    return renderPlan(state, source.width, source.height);
+  }
+
+  renderPreviewTo(canvas, maxEdge) {
+    if (!canvas) throw new Error("EditSession.renderPreviewTo needs a canvas");
+    const source = this.preview;
+    if (!source.image) throw new Error("EditSession has no decoded source to draw");
+    const plan = this.previewPlan(maxEdge);
+    canvas.width = plan.width;
+    canvas.height = plan.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("EditSession could not get a 2D context");
+    if ("imageSmoothingEnabled" in context) {
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+    }
+    context.setTransform(plan.matrix[0], plan.matrix[1], plan.matrix[2], plan.matrix[3], plan.matrix[4], plan.matrix[5]);
+    context.drawImage(source.image, 0, 0, source.width, source.height);
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    return canvas;
+  }
+
   /* What the lineage note records. Oriented-source pixels for the crop, the
      three transform flags, and the output dimensions — enough to reproduce the
      derivation rather than merely describe it. */
@@ -1666,6 +1922,19 @@ class MediaViewerView extends ItemView {
     // moment the user does anything deliberate. It is the difference between
     // "held for a look" and "stopped here on purpose".
     this.hoverPaused = false;
+
+    /* Edit state. Null until the user asks for it, because a session owns a
+       full-resolution decode of the file and opening one for every image
+       browsed past would be the decode budget spent on looking. Cleared
+       whenever selection moves: an edit belongs to the file it was started
+       on. */
+    this.session = null;
+    this.editCanvasEl = null;
+    this.editStatusEl = null;
+    // Set while a decode is in flight, so a second click on Edit does not
+    // start a second one and so a decode that finishes after the user has
+    // moved on can tell that it has.
+    this.editLoading = null;
   }
 
   getViewType() {
@@ -1806,6 +2075,12 @@ class MediaViewerView extends ItemView {
     this.fitEl.addClass("mv-zoom-control");
     this.fullEl = this.barButton(bar, "100%", () => this.zoomToActualSize());
     this.fullEl.addClass("mv-zoom-control");
+
+    // One button, two states. Editing is a mode the pane is in rather than a
+    // window it opens — the old app's crop dialog was a second copy of the
+    // viewer, and this is the whole point of not having one.
+    this.editEl = this.barButton(bar, "Edit", () => this.toggleEdit());
+    this.editEl.addClass("mv-edit-toggle");
 
     this.viewerNameEl = bar.createDiv({ cls: "mv-viewer-name" });
 
@@ -2360,6 +2635,10 @@ class MediaViewerView extends ItemView {
   // away the zoom and pan the user just set, so it is checked for.
   showInViewer(path) {
     if (path === this.viewerPath) return;
+    // An unsaved edit belongs to the file it was started on. Selection moving
+    // ends it — the alternative is a session quietly pointing at pixels that
+    // are no longer on screen.
+    this.discardSession();
     this.viewerPath = path;
     this.zoom = 1;
     this.panX = 0;
@@ -2380,6 +2659,8 @@ class MediaViewerView extends ItemView {
     this.stageEl.empty();
     this.stageEl.removeClass("is-broken");
     this.imageEl = null;
+    this.editCanvasEl = null;
+    this.editStatusEl = null;
 
     if (this.viewerNameEl) this.viewerNameEl.setText(path ? baseNameOf(path) : "");
 
@@ -2398,6 +2679,13 @@ class MediaViewerView extends ItemView {
 
     if (classifyPath(path) === "video") {
       this.renderVideo(path, file);
+      return;
+    }
+
+    // An open session replaces the <img> with what the edit currently looks
+    // like. Same stage, same pane, no second viewer.
+    if (this.session && this.session.path === path) {
+      this.renderEditSurface();
       return;
     }
 
@@ -2502,6 +2790,7 @@ class MediaViewerView extends ItemView {
   setViewerMode(mode) {
     if (!this.viewerEl) return;
     this.viewerEl.toggleClass("is-video", mode === "video");
+    this.viewerEl.toggleClass("is-editing", mode === "edit");
   }
 
   // Detach the stream. Emptying the stage removes the element from the
@@ -2652,10 +2941,16 @@ class MediaViewerView extends ItemView {
     // Hidden by the stylesheet in video mode, and disabled as well: a control
     // still reachable by Tab that silently does nothing is worse than one that
     // says it cannot.
-    if (this.fitEl) this.fitEl.disabled = video;
-    if (this.fullEl) this.fullEl.disabled = video;
+    if (this.fitEl) this.fitEl.disabled = video || Boolean(this.session);
+    if (this.fullEl) this.fullEl.disabled = video || Boolean(this.session);
     if (this.prevEl) this.prevEl.disabled = !this.plugin.siblingOf(-1);
     if (this.nextEl) this.nextEl.disabled = !this.plugin.siblingOf(1);
+    if (this.editEl) {
+      const editable = !video && Boolean(this.viewerPath) && classifyPath(this.viewerPath) === "image";
+      this.editEl.disabled = !editable || Boolean(this.editLoading);
+      this.editEl.setText(this.session ? "Done" : "Edit");
+      this.editEl.toggleClass("is-active", Boolean(this.session));
+    }
   }
 
   // Every zoom goes through here, so the clamp and the pan correction are
@@ -2929,6 +3224,172 @@ class MediaViewerView extends ItemView {
     this.imageEl.src = this.plugin.app.vault.getResourcePath(file);
   }
 
+  /* ---------------------------------------------------------------------- *
+   * Edit mode.
+   *
+   * Cropping happens on the viewer in place. The old app opened a
+   * CropImageDialog — a second copy of the viewer with its own scroll area and
+   * its own zoom controls, about 260 lines of duplication, whose selection
+   * could not be adjusted once drawn. What replaces it is a mode this pane is
+   * in: the same stage, showing a canvas instead of an <img>.
+   * ---------------------------------------------------------------------- */
+
+  toggleEdit() {
+    if (this.session) {
+      this.endEdit();
+      return Promise.resolve(false);
+    }
+    return this.startEdit();
+  }
+
+  /* Open a session on the displayed image.
+   *
+   * This is where the decode budget is spent and, for a large enough file,
+   * refused. Refusing names the dimensions: "too big" with no number is
+   * something the user cannot act on, and freezing the pane instead is what
+   * the budget exists to prevent.
+   */
+  async startEdit() {
+    const path = this.viewerPath;
+    if (!path || classifyPath(path) !== "image") return false;
+    if (this.session) return true;
+    // A second click while the first decode is in flight joins it rather than
+    // starting another. Two full-resolution decodes of the same file is
+    // exactly the shape of stall this task is about.
+    if (this.editLoading) return this.editLoading;
+    const file = this.index.fileFor(path);
+    if (!file) return false;
+
+    this.editLoading = this.openSession(path, file).finally(() => {
+      this.editLoading = null;
+      // The bar was drawn while the decode was in flight, which is what
+      // disabled the button. A refusal has to give it back, or one oversized
+      // file leaves Edit dead for the rest of the session.
+      this.updateViewerBar();
+    });
+    this.updateViewerBar();
+    return this.editLoading;
+  }
+
+  async openSession(path, file) {
+    const started = Date.now();
+    let source;
+    try {
+      source = await loadEditSource(this.plugin.app.vault.getResourcePath(file), {
+        maxMegapixels: MAX_DECODE_MEGAPIXELS,
+        maxEdge: MAX_DISPLAY_EDGE,
+      });
+    } catch (error) {
+      if (error && error.name === "DecodeBudgetError") {
+        new Notice("Media Viewer: " + baseNameOf(path) + " is " + error.message.replace(/^\d+ x \d+ is /, ""));
+        console.warn("Media Viewer: refused to decode " + path + " — " + error.message);
+      } else {
+        console.error("Media Viewer: could not decode " + path + " for editing", error);
+        new Notice("Media Viewer: " + baseNameOf(path) + " could not be decoded for editing");
+      }
+      this.updateViewerBar();
+      return false;
+    }
+    // The user can step to another file while a large decode is running. The
+    // pixels are still correct, but they are no longer the pixels on screen.
+    if (this.viewerPath !== path) return false;
+
+    this.session = new EditSession({
+      path,
+      image: source.image,
+      width: source.width,
+      height: source.height,
+      preview: source.preview,
+    });
+    this.session.onChange = () => this.refreshEdit();
+    this.plugin.logTiming("decode", path, started);
+    this.renderViewer();
+    return true;
+  }
+
+  endEdit() {
+    if (!this.session) return false;
+    this.discardSession();
+    this.renderViewer();
+    return true;
+  }
+
+  // Drops the session without redrawing, for the callers that are about to
+  // redraw anyway. Held apart so that "forget the edit" and "show something
+  // else" stay two decisions rather than one tangled one.
+  discardSession() {
+    if (!this.session) return false;
+    this.session.onChange = null;
+    this.session = null;
+    this.editCanvasEl = null;
+    this.editStatusEl = null;
+    return true;
+  }
+
+  renderEditSurface() {
+    const session = this.session;
+    if (!session || !this.stageEl) return;
+    this.setViewerMode("edit");
+    const canvas = document.createElement("canvas");
+    canvas.className = "mv-edit-canvas";
+    this.stageEl.appendChild(canvas);
+    this.editCanvasEl = canvas;
+    this.editStatusEl = this.stageEl.createDiv({ cls: "mv-edit-status" });
+    this.paintEdit();
+    this.updateViewerBar();
+  }
+
+  // Re-draw after a state change. Separate from renderEditSurface so that
+  // undo, a rotation or a new crop costs one repaint rather than a rebuilt
+  // stage — and so the overlay MV-OVERLAY hangs off the canvas survives.
+  refreshEdit() {
+    this.paintEdit();
+    this.updateViewerBar();
+  }
+
+  paintEdit() {
+    const session = this.session;
+    if (!session || !this.editCanvasEl) return;
+    try {
+      session.renderPreviewTo(this.editCanvasEl, MAX_DISPLAY_EDGE);
+    } catch (error) {
+      console.error("Media Viewer: drawing the edit preview failed", error);
+      return;
+    }
+    if (this.editStatusEl) this.editStatusEl.setText(this.editSummary());
+  }
+
+  // What the edit currently amounts to, in one line: the output dimensions,
+  // and the transform if there is one. The dimensions are the number a crop is
+  // actually judged by.
+  editSummary() {
+    const session = this.session;
+    if (!session) return "";
+    const size = session.outputSize;
+    const parts = [size.width + " x " + size.height];
+    if (session.state.rotate) parts.push(session.state.rotate + "°");
+    if (session.state.flipH) parts.push("flip H");
+    if (session.state.flipV) parts.push("flip V");
+    if (session.preview.scale !== 1) {
+      parts.push("preview at " + Math.round(session.preview.scale * 100) + "%");
+    }
+    return parts.join(" · ");
+  }
+
+  // CSS pixels per oriented-source pixel, measured off what was actually laid
+  // out. The zoom and the proxy factor multiply, and a missed factor in a crop
+  // is invisible until the output is opened.
+  get editDisplayScale() {
+    const session = this.session;
+    const canvas = this.editCanvasEl;
+    if (!session || !canvas) return 1;
+    const crop = session.crop;
+    const rendered = canvas.clientWidth || 0;
+    // The canvas holds the crop, not the whole oriented image, so the scale is
+    // measured against what it is actually showing.
+    return displayScaleFor(rendered, crop.w);
+  }
+
   // The pane can be resized while an image is open, which changes what "fit"
   // means and can leave the pan outside its new bounds.
   handleResize() {
@@ -3011,6 +3472,29 @@ class MediaViewerPlugin extends Plugin {
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  /* Timings, behind the debug setting — MV-TIMING.
+   *
+   * Called with the millisecond the operation started, because the alternative
+   * — a start/stop pair — is two calls that can get separated by an early
+   * return and then report a number that is not a duration at all.
+   *
+   * Guarded by the setting rather than by a level, so that reverse playback
+   * logging every animation frame costs one boolean read when it is off.
+   */
+  logTiming(operation, subject, startedAt, extra) {
+    if (!this.settings || !this.settings.debugLogging) return false;
+    const elapsed = Math.round(Date.now() - Number(startedAt));
+    const tail = extra ? " " + extra : "";
+    console.log("Media Viewer: " + operation + " ms=" + elapsed + " " + (subject || "") + tail);
+    return true;
+  }
+
+  debug(message) {
+    if (!this.settings || !this.settings.debugLogging) return false;
+    console.log("Media Viewer: " + message);
+    return true;
   }
 
   async saveSettings() {
@@ -3266,5 +3750,7 @@ module.exports.MediaIndex = MediaIndex;
 // Exported so the grid's DOM logic — tile reconciliation, lazy loading and
 // thumbnail eviction — can be driven against a stub document.
 module.exports.EditSession = EditSession;
+module.exports.loadEditSource = loadEditSource;
+module.exports.DecodeBudgetError = DecodeBudgetError;
 module.exports.MediaViewerView = MediaViewerView;
 module.exports.VIEW_TYPE_MEDIA_VIEWER = VIEW_TYPE_MEDIA_VIEWER;

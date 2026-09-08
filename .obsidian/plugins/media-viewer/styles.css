@@ -135,6 +135,51 @@
   outline: none;
 }
 
+/* Edit mode.
+
+   The canvas is fitted by the browser, not by the zoom maths: it already holds
+   exactly the region being edited, so there is nothing outside it to pan to,
+   and the crop's own maths measures the laid-out width rather than tracking a
+   zoom factor of its own. That measurement is what keeps a crop drawn on a
+   downscaled proxy cutting full-resolution pixels. */
+.media-viewer .mv-edit-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  /* Chequerboard, so transparency in a PNG reads as transparency rather than
+     as the pane's own background. */
+  background-color: var(--background-primary);
+  background-image: linear-gradient(45deg, var(--background-modifier-border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--background-modifier-border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--background-modifier-border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--background-modifier-border) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Over the stage rather than in the bar: it is a readout of the thing being
+   looked at, and the bar is already the busiest row in the pane. */
+.media-viewer .mv-edit-status {
+  position: absolute;
+  left: var(--size-4-2);
+  bottom: var(--size-4-2);
+  padding: var(--size-2-1) var(--size-4-1);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary-alt);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+.media-viewer .mv-viewer-button.is-active {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
 .media-viewer .mv-stage-message {
   color: var(--text-muted);
   font-size: var(--font-ui-small);

@@ -21,11 +21,16 @@ class ItemView {
     this.leaf = leaf;
   }
 }
+/* Every Notice is recorded, because what the user is told when something goes
+   wrong is behaviour worth asserting rather than a side effect to ignore. A
+   test that cares clears the list first. */
 class Notice {
   constructor(message) {
     this.message = message;
+    Notice.messages.push(String(message));
   }
 }
+Notice.messages = [];
 class TFile {}
 class TFolder {}
 class PluginSettingTab {}

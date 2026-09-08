@@ -201,6 +201,7 @@ group("persistence", () => {
       recursive: true,
       filter: "video",
       followActiveFile: false,
+      debugLogging: false,
     });
   });
 
