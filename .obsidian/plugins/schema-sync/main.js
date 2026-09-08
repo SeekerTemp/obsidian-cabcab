@@ -1745,6 +1745,26 @@ class SchemaSyncPlugin extends Plugin {
     if (changed) await this.writeMappingsFile(schemaMappings, records, generatedPaths);
   }
 
+  // Renaming a schema note takes its whole folder of value lists with it, so the
+  // configFor back-links stay true and nothing is left looking orphaned.
+  async moveSchemaConfigFolder(oldPath, newPath) {
+    if (!this.isSchemaPath(oldPath) || !this.isSchemaPath(newPath)) return;
+    const schemaOf = (path) => path.split("/").pop().replace(/\.schema\.md$/i, "");
+    const oldSchema = schemaOf(oldPath);
+    const newSchema = schemaOf(newPath);
+    if (oldSchema === newSchema) return;
+    const folder = this.app.vault.getAbstractFileByPath(`${CONFIG_FOLDER}/${oldSchema}`);
+    if (!folder || this.app.vault.getAbstractFileByPath(`${CONFIG_FOLDER}/${newSchema}`)) return;
+    await this.app.fileManager.renameFile(folder, normalizePath(`${CONFIG_FOLDER}/${newSchema}`));
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (file.parent?.path !== `${CONFIG_FOLDER}/${newSchema}`) continue;
+      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+        frontmatter.configFor = [`${newSchema}.${file.basename}`];
+      });
+    }
+    new Notice(`Moved ${oldSchema}'s value lists to ${CONFIG_FOLDER}/${newSchema}.`);
+  }
+
   async handleTrackedRename(oldPath, newPath) {
     await this.updateTrackedPath(oldPath, newPath);
     const sourceSchemas = this.app.vault.getMarkdownFiles().filter((file) => {
@@ -1756,6 +1776,7 @@ class SchemaSyncPlugin extends Plugin {
         frontmatter.schemaSource = newPath;
       });
     }
+    await this.moveSchemaConfigFolder(oldPath, newPath);
     this.refreshDashboards();
     const movedConfig = newPath.startsWith(`${CONFIG_FOLDER}/`) || newPath.startsWith(`${ASSET_CONFIG_FOLDER}/`);
     if (movedConfig) {
