@@ -156,7 +156,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 26 `MV-TIMING`
 - [x] 27 `MV-ERRORS`
 - [x] 28 `MV-SETTINGS`
-- [ ] 29 `MV-PERF`
+- [x] 29 `MV-PERF` — plugin-side numbers measured and recorded; the manual pass still needs a person
 - [ ] 30 `MV-README`
 - [ ] 31 `MV-OVERVIEW` (deferred)
 
@@ -166,10 +166,56 @@ task still names the same one.
 
 ## Performance numbers
 
-Filled in by `MV-PERF`.
+Two halves, and only one of them is done.
 
-| Files | Scan ms | First visible thumbs ms | Notes |
-| --- | --- | --- | --- |
-| 20 | | | |
-| 100 | | | |
-| 500+ | | | |
+### Plugin-side timings — measured
+
+`node tests/bench.js`, run against the stub document. Milliseconds, averaged
+over repeats, node v24 on the development machine.
+
+| Files | Scan | First render | Idle render | Insert one | First 24 thumbs | Lineage build | Resolve 10-deep |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20 | 0.2 | 0.1 | 0.03 | 0.15 | 0.2 | 0.06 | 0.01 |
+| 100 | 0.25 | 0.24 | 0.08 | 0.25 | 0.2 | 0.14 | 0.01 |
+| 500 | 0.9 | 1.5 | 0.16 | 0.65 | 0.22 | 0.45 | 0.01 |
+| 2000 | 4.9 | 3.7 | 2.9 | 2.6 | 0.25 | 1.5 | 0.01 |
+
+What the columns are:
+
+- **Scan** — one folder's `children` filtered and sorted. Linear, as it should
+  be: 500 files cost roughly five times 100.
+- **First render** — every tile built and inserted, cold.
+- **Idle render** — the same list reconciled again. It touches nothing, and the
+  cost is the walk itself.
+- **Insert one** — a create and a delete, which is the shape a save has. This is
+  the number that says a save is not a rebuild: at 500 files it is 0.65 ms
+  against a 1.5 ms full render.
+- **First 24 thumbs** — a screenful reported by the observer, through to the
+  last one settling. Flat in folder size, which is the point of lazy loading.
+- **Lineage build** — one note per file, read from `metadataCache`.
+- **Resolve 10-deep** — one chain walk over ten ancestors, resolving every
+  field.
+
+Nothing here is superlinear, which is what this table exists to keep true. Run
+it again after any change to the index, the grid or the store, and compare.
+
+### What still needs a person — not done
+
+The harness cannot see image decode, layout, paint, scroll smoothness,
+`IntersectionObserver`'s own bookkeeping, or a drive that is not this one. A
+sub-millisecond scan of 500 files means the arithmetic is cheap, not that the
+pane feels fast. The design doc's manual checklist stands unrun:
+
+- [ ] Folders of 20, 100 and 500+ real files; read `ms=` off the console with
+      debug logging on, and compare against the table above
+- [ ] Pane stays responsive while thumbnails are still loading
+- [ ] Switch folders rapidly with no stale thumbnails
+- [ ] Scroll top to bottom fast, with no crash and no runaway memory
+- [ ] Save leaves scroll position and selection intact, with no rescan
+- [ ] A folder of corrupt and unsupported files still browses
+- [ ] Media on a slow external drive, reached through a vault symlink
+- [ ] Crop output opened and checked pixel-exact against the selection
+- [ ] Rename a parent through Asset Renamer; every child resolves afterwards
+- [ ] Move a parent to another folder; same check
+- [ ] Rename a parent with Obsidian's link updating **off**; same check
+- [ ] Three-deep chain: crop of a crop of a capture, then rename the root
