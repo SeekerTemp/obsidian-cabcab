@@ -34,19 +34,9 @@
               "icon": "lucide-file",
               "title": "AssetDatabase.base"
             }
-          },
-          {
-            "id": "ddd296cd88d16cfa",
-            "type": "leaf",
-            "state": {
-              "type": "schema-sync-dashboard",
-              "state": {},
-              "icon": "workflow",
-              "title": "Schema Sync"
-            }
           }
         ],
-        "currentTab": 2
+        "currentTab": 1
       },
       {
         "id": "6faaa601951983b9",
@@ -81,6 +71,16 @@
             }
           },
           {
+            "id": "5ea9a0d1d1ceab71",
+            "type": "leaf",
+            "state": {
+              "type": "schema-sync-dashboard",
+              "state": {},
+              "icon": "workflow",
+              "title": "Schema Sync"
+            }
+          },
+          {
             "id": "7f14b533171c2436",
             "type": "leaf",
             "state": {
@@ -95,7 +95,7 @@
             }
           }
         ],
-        "currentTab": 1
+        "currentTab": 2
       }
     ],
     "direction": "vertical"
@@ -261,7 +261,7 @@
       "schema-sync:Open schema dashboard": false
     }
   },
-  "active": "143043ea79a49332",
+  "active": "5ea9a0d1d1ceab71",
   "lastOpenFiles": [
     "data/config/LifeForm/attachment.md",
     "data/config/LifeForm/attachment 1.md",
