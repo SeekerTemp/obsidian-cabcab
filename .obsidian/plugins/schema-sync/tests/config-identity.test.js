@@ -372,6 +372,34 @@ test("a .schema suffix is not left in a field name", () => {
   assert.strictEqual(normalizeFieldName("[[Realm.schema]]"), "Realm");
 });
 
+// --- Renaming a value list is renaming the attribute ------------------------
+
+const { configSourceOfPath, renameField } = generators;
+
+test("a config note's path names the schema and field it belongs to", () => {
+  assert.deepStrictEqual(configSourceOfPath("data/config/LifeForm/trait.md"), { schemaName: "LifeForm", fieldName: "trait" });
+});
+
+test("plugin bookkeeping is not a value list", () => {
+  assert.strictEqual(configSourceOfPath("data/config/schema-mappings.md"), null);
+});
+
+test("a note nested deeper than one schema folder is not a value list", () => {
+  assert.strictEqual(configSourceOfPath("data/config/LifeForm/deep/trait.md"), null);
+});
+
+test("a note outside data/config is not a value list", () => {
+  assert.strictEqual(configSourceOfPath("data/record/lifeforms/trait.md"), null);
+  assert.strictEqual(configSourceOfPath("data/config/LifeForm/trait.base"), null);
+});
+
+test("renaming a field keeps its position and definition", () => {
+  const fields = { id: { type: "string" }, trait: { type: "string", required: true }, cover: { type: "attachment" } };
+  const next = renameField(fields, "trait", "feature");
+  assert.deepStrictEqual(Object.keys(next), ["id", "feature", "cover"]);
+  assert.strictEqual(next.feature.required, true);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`  ok    ${name}`); }

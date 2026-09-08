@@ -405,6 +405,17 @@ function fieldNameError(name) {
   return null;
 }
 
+// data/config/<Schema>/<field>.md — the two halves a value list is named for.
+// Exactly two segments: one deeper is somebody's own folder, one shallower is
+// plugin bookkeeping.
+function configSourceOfPath(path) {
+  const prefix = `${CONFIG_FOLDER}/`;
+  const text = String(path || "");
+  if (!text.startsWith(prefix) || !text.endsWith(".md")) return null;
+  const parts = text.slice(prefix.length, -3).split("/");
+  return parts.length === 2 && parts[0] && parts[1] ? { schemaName: parts[0], fieldName: parts[1] } : null;
+}
+
 // Merging two config notes would silently discard one side's hand-written Notes
 // column, which is the whole reason these files are never auto-deleted. Two
 // fields in one schema cannot share a name, so an occupied target can only be a
@@ -550,18 +561,20 @@ function renderErdNote(databaseName, schemas, existingRaw) {
 /* --------------------------- end pure generators -------------------------- */
 
 class SchemaInputModal extends Modal {
-  constructor(app, title, placeholder, defaultValue, onSubmit) {
+  constructor(app, title, placeholder, defaultValue, onSubmit, description) {
     super(app);
     this.title = title;
     this.placeholder = placeholder;
     this.defaultValue = defaultValue;
     this.onSubmit = onSubmit;
+    this.description = description;
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: this.title });
+    if (this.description) contentEl.createEl("p", { text: this.description });
     const input = contentEl.createEl("input", { type: "text", placeholder: this.placeholder });
     input.value = this.defaultValue || "";
     input.style.width = "100%";
@@ -1432,6 +1445,9 @@ class SchemaSyncPlugin extends Plugin {
   // Guards against a second modal for the same property while one is open, and
   // against re-asking after the modal is dismissed without an answer.
   askingAbout = new Set();
+  // Paths this plugin renamed back itself. Without this the undo arrives as a
+  // fresh rename event and the prompt loops.
+  revertedRenames = new Set();
   // Schema notes edited while focused. Their sync is held until focus leaves the
   // file, so typing is never interrupted by a vault-wide rewrite.
   pendingSchemaEdits = new Set();
@@ -1510,7 +1526,7 @@ class SchemaSyncPlugin extends Plugin {
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       if (this.isSchemaPath(file.path) || this.isSchemaPath(oldPath)) this.scheduleSchemaReload();
-      void this.handleTrackedRename(oldPath, file.path);
+      void this.handleRename(file, oldPath);
     }));
     this.addCommand({
       id: "validate-schema-notes",
@@ -2001,6 +2017,77 @@ class SchemaSyncPlugin extends Plugin {
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       frontmatter.configFor = [plan.configFor];
     });
+  }
+
+  // One field rename, everywhere it lands: the property on every record, the
+  // value list's file name, and the schema entry — in that order, so our own
+  // regeneration of the schema note is the last write.
+  async renameSchemaField(schemaName, oldName, newName) {
+    const fields = this.schemas.get(schemaName);
+    if (!fields || !Object.prototype.hasOwnProperty.call(fields, oldName)) return new Notice(`"${oldName}" is not a field of ${schemaName}.`);
+    if (newName === oldName) return;
+    const error = fieldNameError(newName);
+    if (error) return new Notice(error);
+    if (Object.keys(fields).some((name) => name !== oldName && name.toLowerCase() === newName.toLowerCase())) {
+      return new Notice(`${schemaName} already has a field named "${newName}".`);
+    }
+    await this.renameRecordField(schemaName, oldName, newName);
+    await this.renameFieldConfig(schemaName, oldName, newName);
+    const next = renameField(fields, oldName, newName);
+    await this.writeSchemaFile(schemaName, next);
+    this.schemas.set(schemaName, next);
+    await this.syncBaseViews();
+    this.refreshDashboards();
+    new Notice(`Renamed ${schemaName}.${oldName} to ${newName}. The records, the value list and the schema all moved together.`, 7000);
+  }
+
+  // Renaming a value list IS renaming the attribute: the note is the thing, so
+  // its file name is the field name. Obsidian offers no way to veto a rename, so
+  // the file is put back and the real rename offered instead — renaming the file
+  // alone would strand it and the next sync would generate a fresh one beside it.
+  async interceptConfigRename(file, oldPath) {
+    // Our own undo, coming back round as another rename event.
+    if (this.revertedRenames.delete(file.path)) return true;
+
+    // The folder is the schema's name, so renaming it is renaming the schema —
+    // which is done from the schema note, and moveSchemaConfigFolder brings the
+    // folder along. Renaming it here would leave every configFor inside it
+    // pointing at a schema whose lists are no longer where they say they are.
+    const folderSchema = oldPath.startsWith(`${CONFIG_FOLDER}/`) && !oldPath.endsWith(".md")
+      ? oldPath.slice(CONFIG_FOLDER.length + 1)
+      : null;
+    if (folderSchema && !folderSchema.includes("/") && this.schemas.has(folderSchema)) {
+      this.revertedRenames.add(oldPath);
+      await this.app.fileManager.renameFile(file, normalizePath(oldPath));
+      new Notice(`${oldPath} holds ${folderSchema}'s value lists, and its name is the schema's name. It has been put back — rename ${SCHEMA_FOLDER}/${folderSchema}.schema.md instead and the folder follows it.`, 10000);
+      return true;
+    }
+
+    const source = configSourceOfPath(oldPath);
+    if (!source) return false;
+    const fields = this.schemas.get(source.schemaName);
+    if (!fields || !Object.prototype.hasOwnProperty.call(fields, source.fieldName)) return false;
+
+    const moved = configSourceOfPath(file.path);
+    const proposed = normalizeFieldName(moved ? moved.fieldName : file.basename);
+    this.revertedRenames.add(oldPath);
+    await this.app.fileManager.renameFile(file, normalizePath(oldPath));
+    if (!proposed || proposed === source.fieldName) return true;
+
+    new SchemaInputModal(
+      this.app,
+      `Rename the ${source.fieldName} field of ${source.schemaName}?`,
+      "New field name",
+      proposed,
+      (value) => this.renameSchemaField(source.schemaName, source.fieldName, normalizeFieldName(value)),
+      `${oldPath} is the value list for ${source.schemaName}.${source.fieldName}, so its file name is the field's name. It has been put back for now. Renaming the field from here moves the list, the schema entry and every record's property together.`,
+    ).open();
+    return true;
+  }
+
+  async handleRename(file, oldPath) {
+    if (await this.interceptConfigRename(file, oldPath)) return;
+    await this.handleTrackedRename(oldPath, file.path);
   }
 
   async saveSchemaFromDashboard(schemaName, editor) {
@@ -3240,6 +3327,7 @@ module.exports.generators = {
   parseConfigValues,
   parseConfigRows,
   configPathFor,
+  configSourceOfPath,
   configRenamePlan,
   orphanedConfigs,
   normalizeFieldName,
