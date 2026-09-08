@@ -44,6 +44,22 @@ const THUMBNAIL_PRELOAD_MARGIN = "300px 0px";
 const ZOOM_WHEEL_RATIO = 1.12;
 const ZOOM_KEY_RATIO = 1.25;
 
+// W and S seek by five seconds, the step every video player has settled on: far
+// enough to skip past something, short enough to land near it.
+const VIDEO_SEEK_SECONDS = 5;
+// One frame, assumed. HTMLVideoElement reports no frame rate and no frame
+// index, and the APIs that come close — requestVideoFrameCallback's metadata,
+// WebCodecs — describe frames that have already been shown rather than the one
+// before the current position. So a step is a fixed nudge of a thirtieth of a
+// second: right for 30fps material, near enough on 24 and 25, half a step on
+// 60. MV-REVERSE measures real timings and can revisit this.
+const VIDEO_FRAME_SECONDS = 1 / 30;
+// The scrub bar ranges over a fixed number of steps rather than over the
+// duration, so its max never changes as metadata arrives and both conversions
+// stay pure. A thousand steps is finer than the bar is ever wide in pixels, so
+// no position on it is unreachable by a drag.
+const SCRUB_RESOLUTION = 1000;
+
 // Encoding follows the source, because encoding everything to PNG turns a 2 MB
 // JPEG crop into a 15 MB file. Rotation, flipping and cropping never introduce
 // transparency, so a JPEG source stays safely a JPEG.
@@ -213,6 +229,72 @@ function panAfterZoom(pan, cursor, oldZoom, newZoom) {
   const at = Number(cursor);
   if (!(from > 0) || !(to > 0) || !Number.isFinite(offset) || !Number.isFinite(at)) return offset || 0;
   return at - (at - offset) * (to / from);
+}
+
+// Playback position, kept inside the media. A video whose metadata has not
+// arrived reports a duration of NaN, which is why each of these treats an
+// unknown duration as zero rather than letting it reach a currentTime the
+// element would reject.
+function clampTime(time, duration) {
+  const value = Number(time);
+  const limit = Number(duration);
+  const max = Number.isFinite(limit) && limit > 0 ? limit : 0;
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return value > max ? max : value;
+}
+
+// Seeking and frame-stepping are one operation at two scales, so they are one
+// function: a signed distance from where the head is now.
+function seekTime(current, delta, duration) {
+  const step = Number(delta);
+  return clampTime(clampTime(current, duration) + (Number.isFinite(step) ? step : 0), duration);
+}
+
+function frameStepTime(current, frames, duration, frameSeconds) {
+  const size = Number(frameSeconds);
+  const unit = Number.isFinite(size) && size > 0 ? size : VIDEO_FRAME_SECONDS;
+  const count = Number(frames);
+  return seekTime(current, (Number.isFinite(count) ? count : 0) * unit, duration);
+}
+
+// Position on the scrub bar, as an integer step. Zero while the duration is
+// unknown — which is also when the bar is disabled.
+function scrubPositionFor(time, duration, resolution) {
+  const steps = scrubSteps(resolution);
+  const length = Number(duration);
+  if (!Number.isFinite(length) || length <= 0) return 0;
+  return Math.round((clampTime(time, length) / length) * steps);
+}
+
+// The other direction: where a drag to this step lands in the media.
+function timeFromScrub(position, duration, resolution) {
+  const steps = scrubSteps(resolution);
+  const length = Number(duration);
+  if (!Number.isFinite(length) || length <= 0) return 0;
+  const at = Number(position);
+  if (!Number.isFinite(at)) return 0;
+  return clampTime((Math.min(Math.max(at, 0), steps) / steps) * length, length);
+}
+
+function scrubSteps(resolution) {
+  const steps = Number(resolution);
+  return Number.isFinite(steps) && steps > 0 ? Math.floor(steps) : SCRUB_RESOLUTION;
+}
+
+// m:ss, or h:mm:ss once there is an hour to show. Seconds floor rather than
+// round, so the readout never shows a time the head has not reached: a counter
+// that reads 1:20 on a 1:20 video half a second early looks like playback
+// stopped short. An unknown duration reads as dashes rather than 0:00, because
+// "not known yet" and "empty" are different states.
+function formatTimecode(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return "--:--";
+  const total = Math.floor(value);
+  const pad = (n) => String(n).padStart(2, "0");
+  const s = total % 60;
+  const m = Math.floor(total / 60) % 60;
+  const h = Math.floor(total / 3600);
+  return h > 0 ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
 }
 
 // A/D step through the list without wrapping. Wrapping from the last file back
@@ -496,6 +578,15 @@ const core = {
   siblingPath,
   ZOOM_WHEEL_RATIO,
   ZOOM_KEY_RATIO,
+  VIDEO_SEEK_SECONDS,
+  VIDEO_FRAME_SECONDS,
+  SCRUB_RESOLUTION,
+  clampTime,
+  seekTime,
+  frameStepTime,
+  scrubPositionFor,
+  timeFromScrub,
+  formatTimecode,
   timestampFor,
   uniquePath,
   clonePathFor,
@@ -722,6 +813,17 @@ class MediaViewerView extends ItemView {
     this.naturalHeight = 0;
     this.imageEl = null;
     this.dragging = null;
+
+    // Video state. The element owns the position — asking it is always right,
+    // where a copy kept here would drift every time playback advanced — so
+    // what is held is only what the element cannot answer: the duration last
+    // seen, whether a drag is in progress, and a seek waiting for metadata.
+    this.videoEl = null;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.videoDuration = 0;
+    this.scrubbing = false;
+    this.pendingSeek = null;
   }
 
   getViewType() {
@@ -755,6 +857,9 @@ class MediaViewerView extends ItemView {
   }
 
   async onClose() {
+    // A detached <video> keeps its stream: closing the pane on a playing file
+    // and still hearing it is the bug this exists to prevent.
+    this.releaseVideo();
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
@@ -834,6 +939,8 @@ class MediaViewerView extends ItemView {
     // zoom.
     stage.addEventListener("dblclick", () => this.toggleFit());
 
+    this.buildVideoBar(viewer);
+
     const bar = viewer.createDiv({ cls: "mv-viewer-bar" });
     this.viewerBarEl = bar;
 
@@ -841,7 +948,9 @@ class MediaViewerView extends ItemView {
     this.nextEl = this.barButton(bar, "Next", () => this.plugin.selectSibling(1));
     this.zoomEl = bar.createDiv({ cls: "mv-zoom" });
     this.fitEl = this.barButton(bar, "Fit", () => this.fitToPane());
+    this.fitEl.addClass("mv-zoom-control");
     this.fullEl = this.barButton(bar, "100%", () => this.zoomToActualSize());
+    this.fullEl.addClass("mv-zoom-control");
 
     this.viewerNameEl = bar.createDiv({ cls: "mv-viewer-name" });
 
@@ -849,6 +958,66 @@ class MediaViewerView extends ItemView {
     // as null — so the empty stage has to be drawn once here rather than
     // waiting for a selection that may never come.
     this.renderViewer();
+  }
+
+  /* The transport. Built once and hidden by class rather than created when a
+     video opens, so stepping video → image → video does not rebuild it, and so
+     the scrub element's identity survives — which is what makes a drag in
+     progress something the pane can track at all. */
+  buildVideoBar(parent) {
+    const bar = parent.createDiv({ cls: "mv-video-bar" });
+    this.videoBarEl = bar;
+
+    this.playEl = this.barButton(bar, "Play", () => this.togglePlayback());
+    this.playEl.addClass("mv-play");
+
+    this.stepBackEl = this.barButton(bar, "◀|", () => this.stepFrame(-1));
+    this.stepBackEl.addClass("mv-step");
+    this.stepBackEl.setAttribute("aria-label", "Step back one frame");
+    this.stepBackEl.title = "Step back one frame (,)";
+
+    this.stepForwardEl = this.barButton(bar, "|▶", () => this.stepFrame(1));
+    this.stepForwardEl.addClass("mv-step");
+    this.stepForwardEl.setAttribute("aria-label", "Step forward one frame");
+    this.stepForwardEl.title = "Step forward one frame (.)";
+
+    const scrub = bar.createEl("input", {
+      cls: "mv-scrub",
+      attr: {
+        type: "range",
+        min: "0",
+        max: String(SCRUB_RESOLUTION),
+        step: "1",
+        value: "0",
+        "aria-label": "Playback position",
+      },
+    });
+    // "input" fires throughout a drag, so seeking follows the thumb rather
+    // than waiting for release. The flag stops the element's own timeupdate
+    // from writing the thumb back underneath the pointer holding it.
+    scrub.addEventListener("input", () => {
+      this.scrubbing = true;
+      this.seekToScrub(scrub.value);
+    });
+    scrub.addEventListener("change", () => {
+      this.scrubbing = false;
+      this.seekToScrub(scrub.value);
+    });
+    // A drag that ends outside the bar still ends the drag; without these the
+    // thumb would stay frozen for the rest of the file.
+    scrub.addEventListener("pointerup", () => {
+      this.scrubbing = false;
+    });
+    scrub.addEventListener("pointercancel", () => {
+      this.scrubbing = false;
+    });
+    scrub.addEventListener("blur", () => {
+      this.scrubbing = false;
+    });
+    this.scrubEl = scrub;
+
+    this.timeEl = bar.createDiv({ cls: "mv-time", text: "--:-- / --:--" });
+    this.updateVideoBar();
   }
 
   barButton(parent, label, onClick) {
@@ -1115,6 +1284,9 @@ class MediaViewerView extends ItemView {
     if (!this.stageEl) return;
     const path = this.viewerPath;
 
+    // Before the stage is emptied: an element that has left the document can
+    // no longer be paused through it.
+    this.releaseVideo();
     this.stageEl.empty();
     this.stageEl.removeClass("is-broken");
     this.imageEl = null;
@@ -1134,14 +1306,8 @@ class MediaViewerView extends ItemView {
       return;
     }
 
-    if (classifyPath(path) !== "image") {
-      // MV-VIDEO replaces this. Saying so is better than a blank stage that
-      // looks like a failure.
-      this.stageEl.createDiv({
-        cls: "mv-stage-message",
-        text: "Video playback arrives with the video viewer.",
-      });
-      this.updateViewerBar();
+    if (classifyPath(path) === "video") {
+      this.renderVideo(path, file);
       return;
     }
 
@@ -1169,6 +1335,187 @@ class MediaViewerView extends ItemView {
     this.applyTransform();
   }
 
+  /* Video mode.
+   *
+   * The video is fitted by CSS rather than by the zoom maths: it has no decode
+   * budget to work around and nothing to inspect at 400%, and pointing the pan
+   * machinery at an element whose size the browser controls would mean two
+   * things owning one layout. So naturalWidth stays zero here — which is also
+   * what leaves wheel-zoom, panning and double-click-to-fit inert on a video
+   * without any of them needing to know videos exist.
+   */
+  renderVideo(path, file) {
+    const video = document.createElement("video");
+    video.className = "mv-video";
+    // No native controls: the transport below is the one that carries the
+    // keyboard, the frame step and the readout, and two scrub bars disagreeing
+    // about the position is worse than either alone.
+    video.controls = false;
+    video.preload = "metadata";
+    video.playsInline = true;
+
+    video.addEventListener("loadedmetadata", () => {
+      if (this.videoEl !== video) return;
+      this.videoWidth = video.videoWidth || 0;
+      this.videoHeight = video.videoHeight || 0;
+      // A reload after a vault modify wants its position back; a fresh open
+      // has nothing pending and starts at zero.
+      if (this.pendingSeek !== null) {
+        const at = this.pendingSeek;
+        this.pendingSeek = null;
+        video.currentTime = clampTime(at, video.duration);
+      }
+      this.updateVideoBar();
+    });
+    for (const type of ["durationchange", "timeupdate", "seeked", "play", "pause", "ended"]) {
+      video.addEventListener(type, () => {
+        if (this.videoEl === video) this.updateVideoBar();
+      });
+    }
+    video.addEventListener("error", () => {
+      if (this.videoEl !== video) return;
+      this.showVideoError(path);
+    });
+
+    video.src = this.plugin.app.vault.getResourcePath(file);
+    this.stageEl.appendChild(video);
+    this.videoEl = video;
+    this.setViewerMode("video");
+    this.updateVideoBar();
+    this.updateViewerBar();
+  }
+
+  // The element's error codes say almost nothing a user can act on, so the
+  // message names the container instead — the part they can check. MV-ERRORS
+  // refines this once the whole error table is built.
+  showVideoError(path) {
+    this.releaseVideo();
+    this.stageEl.empty();
+    this.stageEl.addClass("is-broken");
+    const extension = extensionOf(path);
+    this.stageEl.createDiv({
+      cls: "mv-stage-message",
+      text: extension
+        ? "This video could not be played. The " + extension.toUpperCase() + " codec may be unsupported."
+        : "This video could not be played.",
+    });
+    this.updateVideoBar();
+    this.updateViewerBar();
+  }
+
+  // Which bar the viewer shows. Driven by class, so the layout stays in the
+  // stylesheet and a test can ask which mode the pane is in.
+  setViewerMode(mode) {
+    if (!this.viewerEl) return;
+    this.viewerEl.toggleClass("is-video", mode === "video");
+  }
+
+  // Detach the stream. Emptying the stage removes the element from the
+  // document but leaves it decoding and, with audio, audible.
+  releaseVideo() {
+    const video = this.videoEl;
+    this.videoEl = null;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.videoDuration = 0;
+    this.scrubbing = false;
+    this.pendingSeek = null;
+    this.setViewerMode("empty");
+    if (!video) return;
+    try {
+      if (typeof video.pause === "function") video.pause();
+      // Clearing src alone leaves the fetch running in some builds; load()
+      // after it is what actually abandons the request.
+      if (typeof video.removeAttribute === "function") video.removeAttribute("src");
+      video.src = "";
+      if (typeof video.load === "function") video.load();
+    } catch (error) {
+      console.error("Media Viewer: releasing the video failed", error);
+    }
+  }
+
+  togglePlayback() {
+    const video = this.videoEl;
+    if (!video) return false;
+    if (video.paused) {
+      const started = typeof video.play === "function" ? video.play() : null;
+      // play() rejects when the browser refuses — a codec it turns out not to
+      // decode, or an autoplay policy. Unhandled, that is an error in the
+      // console and no visible change in the pane.
+      if (started && typeof started.catch === "function") {
+        started.catch((error) => {
+          console.error("Media Viewer: playback failed", error);
+          this.updateVideoBar();
+        });
+      }
+    } else if (typeof video.pause === "function") {
+      video.pause();
+    }
+    this.updateVideoBar();
+    return true;
+  }
+
+  seekBy(seconds) {
+    const video = this.videoEl;
+    if (!video) return false;
+    video.currentTime = seekTime(video.currentTime, seconds, video.duration);
+    this.updateVideoBar();
+    return true;
+  }
+
+  // Stepping while playing would be overtaken by playback before the frame
+  // could be looked at, so a step pauses first — which is also what every
+  // editor's frame step does.
+  stepFrame(frames) {
+    const video = this.videoEl;
+    if (!video) return false;
+    if (!video.paused && typeof video.pause === "function") video.pause();
+    video.currentTime = frameStepTime(video.currentTime, frames, video.duration, VIDEO_FRAME_SECONDS);
+    this.updateVideoBar();
+    return true;
+  }
+
+  seekToScrub(position) {
+    const video = this.videoEl;
+    if (!video) return false;
+    const duration = Number(video.duration);
+    // Dragging a bar that cannot know where it is would seek to zero on every
+    // move; the bar is disabled in that state, and this is the second guard.
+    if (!Number.isFinite(duration) || duration <= 0) return false;
+    video.currentTime = timeFromScrub(position, duration, SCRUB_RESOLUTION);
+    this.updateVideoBar();
+    return true;
+  }
+
+  updateVideoBar() {
+    if (!this.videoBarEl) return;
+    const video = this.videoEl;
+    const reported = video ? Number(video.duration) : NaN;
+    const duration = Number.isFinite(reported) && reported > 0 ? reported : 0;
+    this.videoDuration = duration;
+    const time = video ? clampTime(video.currentTime, duration) : 0;
+    const seekable = Boolean(video) && duration > 0;
+
+    if (this.playEl) {
+      this.playEl.setText(video && !video.paused ? "Pause" : "Play");
+      this.playEl.disabled = !video;
+    }
+    if (this.stepBackEl) this.stepBackEl.disabled = !seekable;
+    if (this.stepForwardEl) this.stepForwardEl.disabled = !seekable;
+    if (this.scrubEl) {
+      this.scrubEl.disabled = !seekable;
+      // Not while a drag is in progress: writing the thumb back from the
+      // element's position would fight the pointer holding it.
+      if (!this.scrubbing) {
+        this.scrubEl.value = String(scrubPositionFor(time, duration, SCRUB_RESOLUTION));
+      }
+    }
+    if (this.timeEl) {
+      const position = video ? formatTimecode(time) : "--:--";
+      this.timeEl.setText(position + " / " + formatTimecode(duration > 0 ? duration : NaN));
+    }
+  }
+
   applyTransform() {
     if (this.imageEl && this.imageEl.style) {
       this.imageEl.style.width = this.naturalWidth ? this.naturalWidth * this.zoom + "px" : "";
@@ -1179,9 +1526,15 @@ class MediaViewerView extends ItemView {
   }
 
   updateViewerBar() {
+    const video = Boolean(this.videoEl);
     if (this.zoomEl) {
-      this.zoomEl.setText(this.naturalWidth ? Math.round(this.zoom * 100) + "%" : "");
+      this.zoomEl.setText(!video && this.naturalWidth ? Math.round(this.zoom * 100) + "%" : "");
     }
+    // Hidden by the stylesheet in video mode, and disabled as well: a control
+    // still reachable by Tab that silently does nothing is worse than one that
+    // says it cannot.
+    if (this.fitEl) this.fitEl.disabled = video;
+    if (this.fullEl) this.fullEl.disabled = video;
     if (this.prevEl) this.prevEl.disabled = !this.plugin.siblingOf(-1);
     if (this.nextEl) this.nextEl.disabled = !this.plugin.siblingOf(1);
   }
@@ -1305,6 +1658,12 @@ class MediaViewerView extends ItemView {
   handleKey(event) {
     if (event.ctrlKey || event.metaKey || event.altKey) return false;
     const key = String(event.key || "").toLowerCase();
+    // The video keys are asked first and fall through to the shared ones, so
+    // A and D still step siblings in both modes.
+    if (this.videoEl && this.handleVideoKey(key)) {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      return true;
+    }
     let handled = true;
     if (key === "w") this.setZoom(stepZoom(this.zoom, 1, ZOOM_KEY_RATIO));
     else if (key === "s") this.setZoom(stepZoom(this.zoom, -1, ZOOM_KEY_RATIO));
@@ -1317,13 +1676,39 @@ class MediaViewerView extends ItemView {
     return handled;
   }
 
+  /* In video mode W and S seek rather than zoom: it is the same gesture doing
+     the same job — move through the thing being looked at — which is why the
+     pair is reused instead of a second set of keys being invented. Space plays
+     and pauses, comma and full stop step a frame, the pair every editor uses.
+
+     Returning false rather than swallowing an unknown key is what lets Space
+     scroll normally when the viewer holds an image. */
+  handleVideoKey(key) {
+    if (key === " " || key === "spacebar") return this.togglePlayback();
+    if (key === "w") return this.seekBy(VIDEO_SEEK_SECONDS);
+    if (key === "s") return this.seekBy(-VIDEO_SEEK_SECONDS);
+    if (key === ",") return this.stepFrame(-1);
+    if (key === ".") return this.stepFrame(1);
+    return false;
+  }
+
   // The displayed file was written to underneath the viewer. Re-read it, but
   // keep the zoom and pan: the user is looking at a particular part of a
   // particular image, and an edit saved elsewhere should not move their view.
   reloadViewer(path) {
-    if (!path || path !== this.viewerPath || !this.imageEl) return;
+    if (!path || path !== this.viewerPath) return;
     const file = this.index.fileFor(path);
     if (!file) return;
+    if (this.videoEl) {
+      // Re-reading a video restarts it at zero, so the position is carried
+      // across and re-applied when the new metadata arrives — the same reason
+      // the image path keeps its zoom.
+      this.pendingSeek = clampTime(this.videoEl.currentTime, this.videoEl.duration);
+      this.videoEl.src = this.plugin.app.vault.getResourcePath(file);
+      if (typeof this.videoEl.load === "function") this.videoEl.load();
+      return;
+    }
+    if (!this.imageEl) return;
     this.imageEl.src = this.plugin.app.vault.getResourcePath(file);
   }
 

@@ -36,6 +36,39 @@ class StubElement {
     // What an <img> reports once decoded. A test sets them, then fires "load".
     this.naturalWidth = 0;
     this.naturalHeight = 0;
+    // Form value, for the scrub bar. A range's value is a string in the real
+    // DOM, which is why the plugin converts rather than trusting the type.
+    this.value = "";
+    /* What a <video> reports. duration is NaN before metadata arrives, which
+       is the state most of the transport's guards exist for, so it starts
+       there rather than at a convenient zero. A test sets these and fires
+       "loadedmetadata". */
+    this.paused = true;
+    this.currentTime = 0;
+    this.duration = NaN;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.loadCount = 0;
+  }
+
+  /* Media element methods. play() resolves, because the interesting rejection
+     — a codec the browser will not decode — is driven by a test replacing this
+     method rather than by the stub guessing when to fail. */
+  play() {
+    this.paused = false;
+    this.fire("play");
+    return Promise.resolve();
+  }
+
+  pause() {
+    if (!this.paused) {
+      this.paused = true;
+      this.fire("pause");
+    }
+  }
+
+  load() {
+    this.loadCount += 1;
   }
 
   // Derived from clientWidth/clientHeight, positioned at the origin. Enough
@@ -141,6 +174,13 @@ class StubElement {
 
   setAttribute(name, value) {
     this.attributes[name] = String(value);
+    // A value attribute is an input's initial value in the real DOM, and the
+    // scrub bar is built with one.
+    if (name === "value") this.value = String(value);
+  }
+
+  removeAttribute(name) {
+    delete this.attributes[name];
   }
 
   getAttribute(name) {

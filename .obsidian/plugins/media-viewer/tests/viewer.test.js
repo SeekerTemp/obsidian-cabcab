@@ -178,11 +178,13 @@ group("what the stage shows", () => {
     equal(view.viewerNameEl.textContent, "b.png");
   });
 
-  test("a video says so rather than showing a blank stage", async () => {
+  test("a video opens in the video element, not as an image", async () => {
+    // What the video viewer then does with it is tests/video.test.js.
     const { plugin, view } = await paneOver(FILES);
     plugin.select("data/assets/d.mp4");
     equal(image(view), null);
-    equal(message(view), "Video playback arrives with the video viewer.");
+    ok(view.videoEl, "a video element on the stage");
+    equal(view.videoEl.src, "app://local/data/assets/d.mp4?v=0");
   });
 
   test("an image that will not decode says so, and the pane survives it", async () => {

@@ -124,6 +124,17 @@
   -webkit-user-drag: none;
 }
 
+/* Fitted by the browser rather than by the zoom maths — see renderVideo. The
+   dark ground is the letterbox: a video that does not match the stage's aspect
+   should read as a video with bars, not as a stage that failed to fill. */
+.media-viewer .mv-video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  background-color: #000;
+  outline: none;
+}
+
 .media-viewer .mv-stage-message {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
@@ -133,6 +144,59 @@
 
 .media-viewer .mv-stage.is-broken .mv-stage-message {
   color: var(--text-error);
+}
+
+/* The transport exists in the DOM whether or not a video is open — building it
+   once is what lets a drag survive — so it is the mode class that shows it. */
+.media-viewer .mv-video-bar {
+  display: none;
+}
+
+.media-viewer .mv-viewer.is-video .mv-video-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-2-2) var(--size-4-2);
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Zoom means nothing on a video, and a control that is present but inert is a
+   question the user has to answer for themselves. */
+.media-viewer .mv-viewer.is-video .mv-zoom,
+.media-viewer .mv-viewer.is-video .mv-zoom-control {
+  display: none;
+}
+
+/* Fixed width, so the label swapping between Play and Pause does not shuffle
+   everything to its right on every press. */
+.media-viewer .mv-video-bar .mv-play {
+  min-width: 4.5em;
+}
+
+.media-viewer .mv-scrub {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--size-4-4);
+  margin: 0;
+  accent-color: var(--interactive-accent);
+  cursor: pointer;
+}
+
+.media-viewer .mv-scrub:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.media-viewer .mv-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  /* Tabular figures and a fixed width: a readout that changes width as the
+     digits change drags the scrub bar with it, four times a second. */
+  font-variant-numeric: tabular-nums;
+  min-width: 8.5em;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .media-viewer .mv-viewer-bar {
@@ -343,6 +407,17 @@
      already under the selected tile. */
   .media-viewer .mv-viewer-name {
     display: none;
+  }
+
+  /* At this width the transport keeps what has no keyboard equivalent within
+     reach of the mouse — play and the scrub bar. Frame stepping stays on the
+     comma and full stop keys. */
+  .media-viewer .mv-video-bar .mv-step {
+    display: none;
+  }
+
+  .media-viewer .mv-time {
+    min-width: 0;
   }
 }
 
