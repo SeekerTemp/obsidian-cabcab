@@ -24,7 +24,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 		# New branch on the remote: judge the whole tree, not a range.
 		files=$(git ls-tree -r --name-only "$local_sha" -- data)
 	else
-		files=$(git diff --name-only "$remote_sha" "$local_sha" -- data)
+		# Deletions are excluded: dropping data/ from a branch is the whole
+		# point of these rules, so a push that only removes it must go through.
+		files=$(git diff --name-only --diff-filter=ACMRT "$remote_sha" "$local_sha" -- data)
 	fi
 
 	if [ -n "$files" ]; then
