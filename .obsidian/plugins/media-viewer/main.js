@@ -1,4 +1,4 @@
-const { Plugin, ItemView, Notice, TFile, TFolder } = require("obsidian");
+const { Plugin, ItemView, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder } = require("obsidian");
 
 const VIEW_TYPE_MEDIA_VIEWER = "media-viewer-pane";
 
@@ -3192,6 +3192,62 @@ class MetadataResolver {
   }
 }
 
+/* The break report, on screen.
+ *
+ * A list rather than a fixer. Every row names the note and what is wrong with
+ * it, and offers to open the note — because every break here is something only
+ * a person can decide about: a file that has moved, a file that is genuinely
+ * gone, a `source:` typed by hand. The console gets the same list, so it
+ * survives the modal being closed.
+ */
+class LineageBreakModal extends Modal {
+  constructor(app, plugin, breaks) {
+    super(app);
+    this.plugin = plugin;
+    this.breaks = breaks || [];
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("mv-breaks");
+    contentEl.createEl("h3", {
+      text: this.breaks.length === 1 ? "1 lineage break" : this.breaks.length + " lineage breaks",
+    });
+    contentEl.createEl("p", {
+      cls: "mv-breaks-intro",
+      text:
+        "Nothing here has been changed. A source naming a file that is not in the vault may be a file that has moved, one that is genuinely gone, or one that has not synced yet — and only you can tell which.",
+    });
+    const list = contentEl.createDiv({ cls: "mv-breaks-list" });
+    for (const entry of this.breaks) {
+      const row = list.createDiv({ cls: "mv-breaks-row" });
+      const name = entry.notePath || entry.mediaPath || "";
+      const link = row.createEl("button", {
+        cls: "mv-breaks-link",
+        text: baseNameOf(name),
+        attr: { type: "button", title: name },
+      });
+      link.addEventListener("click", () => this.openNote(entry));
+      row.createSpan({ cls: "mv-breaks-message", text: entry.message });
+    }
+  }
+
+  openNote(entry) {
+    const path = entry.notePath || entry.mediaPath;
+    if (!path) return false;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return false;
+    this.close();
+    void this.app.workspace.getLeaf(false).openFile(file);
+    return true;
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 class MediaViewerView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -5386,6 +5442,18 @@ class MediaViewerPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "repair-lineage",
+      name: "Repair lineage",
+      callback: () => this.repairLineage(),
+    });
+
+    this.addCommand({
+      id: "lineage-breaks",
+      name: "Report lineage breaks",
+      callback: () => this.showLineageBreaks(),
+    });
+
+    this.addCommand({
       id: "mark-reviewed",
       name: "Mark as reviewed",
       callback: () => this.markReviewed(),
@@ -5913,6 +5981,118 @@ let created = null;
       new Notice("Media Viewer: could not write a note for " + baseNameOf(target));
       return null;
     }
+  }
+
+  /* ---------------------------------------------------------------------- *
+   * Repair and reporting — MV-REPAIR.
+   *
+   * Two operations that look alike and are not. Repair writes; the report only
+   * ever reads. The line between them is the design's rule: a dangling
+   * `source:` is reported and never silently fixed, because the file it names
+   * may simply be arriving from the other end of a sync, and a guess written
+   * into a record is indistinguishable from a fact.
+   * ---------------------------------------------------------------------- */
+
+  /* Repair the lineage of one file.
+   *
+   * The case this exists for is a save whose binary was written and whose note
+   * was not — the file survives, untracked, and needs a record. What it writes
+   * is a root note, and it says so: by the time anyone asks, the session that
+   * knew what the file was cut from is gone, and the only other place that
+   * information could come from is the filename, which is precisely the
+   * mechanism this design retired.
+   */
+  async repairLineage(path) {
+    const target = path || this.selectedPath || this.activeMediaPath();
+    if (!target) {
+      new Notice("Media Viewer: select a media file to repair its lineage");
+      return null;
+    }
+    if (!isMediaPath(target)) {
+      new Notice("Media Viewer: " + baseNameOf(target) + " is not a media file");
+      return null;
+    }
+
+    const record = this.lineage.recordFor(target);
+    if (record) {
+      const walk = this.resolver.walk(target);
+      const problem = chainProblemMessage(walk, target);
+      if (!problem) {
+        new Notice("Media Viewer: " + baseNameOf(target) + " is tracked and its chain is whole");
+        return this.lineage.noteFileFor(target);
+      }
+      // Reported, not repaired. Guessing at a parent writes a claim nobody can
+      // tell from a fact.
+      new Notice("Media Viewer: " + problem + " Nothing was changed.");
+      console.warn("Media Viewer: repair found a break at " + target + " — " + problem);
+      return null;
+    }
+
+    try {
+      const file = await this.ensureRootNote(target, {});
+      new Notice(
+        "Media Viewer: wrote a root note for " +
+          baseNameOf(target) +
+          ". What it was derived from could not be recovered."
+      );
+      return file;
+    } catch (error) {
+      console.error("Media Viewer: could not repair the lineage of " + target, error);
+      new Notice("Media Viewer: could not write a note for " + baseNameOf(target));
+      return null;
+    }
+  }
+
+  /* Every break in the vault, as data.
+   *
+   * Two kinds from the store — a `media:` or a `source:` naming a file that is
+   * not here — plus the two the walk finds, which need a walk to find: a cycle
+   * and a chain past the hop cap. Sorted so the report reads the same twice.
+   */
+  lineageBreakReport() {
+    const started = Date.now();
+    const found = this.lineage.breaks().map((entry) =>
+      Object.assign({}, entry, {
+        message:
+          entry.kind === "media"
+            ? "media: names " + entry.link + ", which is not in the vault"
+            : "source: names " + entry.link + ", which is not in the vault",
+      })
+    );
+
+    // A cycle is a property of the walk rather than of any one note, so it is
+    // reported once against the file it was found from.
+    const seen = new Set();
+    for (const mediaPath of this.lineage.byMedia.keys()) {
+      const walk = walkChain(mediaPath, (path) => this.lineage.recordFor(path), CHAIN_HOP_LIMIT);
+      if (walk.stopped === CHAIN_END || walk.stopped === CHAIN_MISSING) continue;
+      const key = walk.chain.map((step) => step.path).sort().join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({
+        kind: walk.stopped,
+        notePath: this.lineage.byMedia.get(mediaPath),
+        mediaPath,
+        link: null,
+        message: chainProblemMessage(walk, mediaPath),
+      });
+    }
+
+    this.logTiming("lineage-report", found.length + " breaks", started);
+    return found;
+  }
+
+  showLineageBreaks() {
+    const breaks = this.lineageBreakReport();
+    for (const entry of breaks) {
+      console.warn("Media Viewer: " + (entry.notePath || entry.mediaPath) + " — " + entry.message);
+    }
+    if (!breaks.length) {
+      new Notice("Media Viewer: no lineage breaks");
+      return breaks;
+    }
+    new LineageBreakModal(this.app, this, breaks).open();
+    return breaks;
   }
 
   // The media file the workspace has open, if it has one. Lets the command

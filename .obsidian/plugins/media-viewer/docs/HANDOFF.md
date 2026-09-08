@@ -136,7 +136,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 22 `MV-RESOLVE`
 - [x] 23 `MV-PANEL`
 - [x] 24 `MV-RENAME`
-- [ ] 25 `MV-REPAIR`
+- [x] 25 `MV-REPAIR`
 - [ ] 26 `MV-TIMING`
 - [ ] 27 `MV-ERRORS`
 - [ ] 28 `MV-SETTINGS`
