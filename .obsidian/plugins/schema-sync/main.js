@@ -297,6 +297,30 @@ function undeclaredPropertyFor({ schemaName, frontmatter, fields, ignored, askin
     && !asking.has(`${schemaName}.${name}`)) || null;
 }
 
+const ILLEGAL_FIELD_NAME = /[\\/:#^|[\]]/;
+
+// A field name typed as a wikilink is the user reaching for the value list the
+// field points at. Keep the target, drop the brackets: the link belongs in the
+// Field Reference cell, which the generator writes, not in `fields:`. A trailing
+// ".config" goes too — Asset Renamer used to derive property names from config
+// filenames, which is where fields called "Cultures.config" came from.
+function normalizeFieldName(raw) {
+  let text = String(raw ?? "").trim();
+  const link = text.match(/^\[\[([^\]]+)\]\]$/);
+  if (link) {
+    text = link[1].split("|")[0].split("#")[0];
+    text = text.slice(text.lastIndexOf("/") + 1);
+  }
+  return text.trim().replace(/\.config$/i, "").trim();
+}
+
+// A field name is a file name now, so it has to survive being one.
+function fieldNameError(name) {
+  if (!name) return "A field name cannot be blank.";
+  if (ILLEGAL_FIELD_NAME.test(name)) return `"${name}" cannot be a field name: / \\ : # ^ | [ and ] are not allowed in a file name.`;
+  return null;
+}
+
 // Carries every property a field has, Relation included, so the table is a
 // lossless representation of `fields:` and a bottom-to-top pull cannot drop
 // anything it is unable to express.
@@ -2266,6 +2290,8 @@ module.exports.generators = {
   parseConfigValues,
   parseConfigRows,
   configFileNameFor,
+  normalizeFieldName,
+  fieldNameError,
   shouldValidateNote,
   undeclaredPropertyFor,
   extractUserNotes,
