@@ -2028,7 +2028,13 @@ class MediaViewerPlugin extends Plugin {
       workspace.revealLeaf(existing[0]);
       return existing[0];
     }
-    const leaf = workspace.getRightLeaf(false);
+    // A tab in the main area, not the right sidebar. The pane is a viewer and
+    // a grid side by side; a sidebar is around 290px, which is narrower than
+    // the point where MV-LAYOUT can put them side by side at all, so opening
+    // there means a postage-stamp video above a two-column grid. The layout
+    // still handles a sidebar — someone who drags it there gets the stacked
+    // form — but that is a choice to make, not the default to land in.
+    const leaf = workspace.getLeaf("tab");
     await leaf.setViewState({ type: VIEW_TYPE_MEDIA_VIEWER, active: true });
     workspace.revealLeaf(leaf);
     return leaf;
