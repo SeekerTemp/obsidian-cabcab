@@ -3605,6 +3605,7 @@ class MediaViewerView extends ItemView {
           if (!path) continue;
           if (entry.isIntersecting) {
             this.visible.add(path);
+            this.watchFirstThumbs(path);
             this.loadThumbnail(entry.target, path);
           } else {
             this.visible.delete(path);
@@ -3639,6 +3640,12 @@ class MediaViewerView extends ItemView {
     }
 
     const paths = folder === null ? [] : this.plugin.visiblePaths();
+    /* The clock for first-visible-thumbs. Started when the grid is drawn and
+       stopped when the first batch the observer reports has finished loading,
+       which is the number M6's performance pass is actually about: how long
+       until there is something to look at. */
+    this.gridDrawnAt = Date.now();
+    this.firstThumbs = null;
     this.syncTiles(paths);
     this.showInViewer(this.plugin.selectedPath);
     this.updateViewerBar();
@@ -3731,12 +3738,57 @@ class MediaViewerView extends ItemView {
    *
    * The LRU holds the path of every loaded tile. Its eviction callback strips
    * the image, which is what actually releases the decoded pixels. */
+  /* First-visible-thumbnails, measured — MV-TIMING.
+   *
+   * The number the performance pass is about is not "how long did the scan
+   * take" but "how long until there was something to look at", and those are
+   * different by however long the first decodes take. So the clock starts when
+   * the grid is drawn and stops when every tile in the first batch the observer
+   * reported has either loaded or failed.
+   *
+   * Only the first batch. Everything after it is scrolling, which is a
+   * different question and would turn one measurement into a stream.
+   */
+  watchFirstThumbs(path) {
+    if (!this.gridDrawnAt) return false;
+    if (!this.firstThumbs) this.firstThumbs = { pending: new Set(), done: false };
+    if (this.firstThumbs.done) return false;
+    this.firstThumbs.pending.add(path);
+    return true;
+  }
+
+  // Called by whatever finishes a tile: a decoded image, a failed one, or a
+  // video frame. A tile that never resolves simply leaves the measurement
+  // unreported, which is better than reporting a number that is not one.
+  settleFirstThumb(path) {
+    const watch = this.firstThumbs;
+    if (!watch || watch.done) return false;
+    watch.pending.delete(path);
+    if (watch.pending.size) return false;
+    watch.done = true;
+    this.plugin.logTiming(
+      "first-visible-thumbs",
+      this.index.folder,
+      this.gridDrawnAt,
+      "tiles=" + this.visible.size
+    );
+    return true;
+  }
+
   loadThumbnail(tile, path) {
     // get(), not has(): a hit is a use, and the tile should age from now
     // rather than from whenever it first loaded.
-    if (this.thumbnails.get(path)) return;
+    // Already loaded: nothing to wait for, so it settles immediately rather
+    // than holding the measurement open for a tile that is already on screen.
+    if (this.thumbnails.get(path)) {
+      this.settleFirstThumb(path);
+      return;
+    }
     const file = this.index.fileFor(path);
-    if (!file) return;
+    if (!file) {
+      this.settleFirstThumb(path);
+      return;
+    }
 
     const frame = tile.querySelector(".mv-tile-frame");
     if (!frame) return;
@@ -3750,6 +3802,7 @@ class MediaViewerView extends ItemView {
 
     if (classifyPath(path) !== "image") {
       frame.addClass("is-placeholder");
+      this.settleFirstThumb(path);
       return;
     }
 
@@ -3763,8 +3816,12 @@ class MediaViewerView extends ItemView {
       tile.addClass("is-broken");
       img.remove();
       frame.addClass("is-placeholder");
+      this.settleFirstThumb(path);
     });
-    img.addEventListener("load", () => tile.removeClass("is-broken"));
+    img.addEventListener("load", () => {
+      tile.removeClass("is-broken");
+      this.settleFirstThumb(path);
+    });
     // getResourcePath carries the mtime, so a modified file yields a different
     // URL and the browser cache is bypassed rather than serving the old pixels.
     img.src = this.plugin.app.vault.getResourcePath(file);
@@ -3950,6 +4007,7 @@ class MediaViewerView extends ItemView {
   // may have been recycled or scrolled away since the job started, which is
   // why nothing here assumes the tile it began with still exists.
   applyFrame(path, url) {
+    this.settleFirstThumb(path);
     const tile = this.tiles.get(path);
     if (!tile) return;
     const frame = tile.querySelector(".mv-tile-frame");
@@ -3958,6 +4016,7 @@ class MediaViewerView extends ItemView {
   }
 
   failFrame(path) {
+    this.settleFirstThumb(path);
     this.frameFailures.add(path);
     const tile = this.tiles.get(path);
     if (!tile) return;
@@ -5371,7 +5430,9 @@ class MediaViewerView extends ItemView {
    * rather than merely present.
    */
   lineageFields(body, path) {
+    const started = Date.now();
     const { fields } = this.plugin.resolver.resolveAll(path);
+    this.plugin.logTiming("resolution", path, started, "fields=" + Object.keys(fields).length);
     const names = Object.keys(fields).sort((a, b) => {
       const order = INSTANCE_FIELD_ORDER.indexOf(a) - INSTANCE_FIELD_ORDER.indexOf(b);
       if (INSTANCE_FIELD_ORDER.includes(a) && INSTANCE_FIELD_ORDER.includes(b)) return order;
@@ -5515,7 +5576,9 @@ class MediaViewerPlugin extends Plugin {
       const found = this.lineage.build();
       this.logTiming("lineage-build", found + " notes", started);
       if (this.settings.lastFolder !== null) {
+        const scanned = Date.now();
         this.index.setFolder(this.settings.lastFolder, this.settings.recursive);
+        this.logTiming("scan", this.index.folder, scanned, "files=" + this.index.size);
       }
       this.followActiveFile(this.app.workspace.getActiveFile());
     });
@@ -5701,7 +5764,9 @@ class MediaViewerPlugin extends Plugin {
   showFolder(folder) {
     if (this.index.folder === folder) return;
     this.selectedPath = null;
+    const started = Date.now();
     this.index.setFolder(folder, this.settings.recursive);
+    this.logTiming("scan", this.index.folder, started, "files=" + this.index.size);
     this.settings.lastFolder = this.index.folder;
     void this.saveSettings();
     this.refreshViews();
@@ -5781,7 +5846,9 @@ class MediaViewerPlugin extends Plugin {
   setRecursive(recursive) {
     this.settings.recursive = Boolean(recursive);
     void this.saveSettings();
+    const started = Date.now();
     this.index.setRecursive(this.settings.recursive);
+    this.logTiming("scan", this.index.folder, started, "files=" + this.index.size);
     this.refreshViews();
   }
 
