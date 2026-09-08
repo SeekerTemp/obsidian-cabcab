@@ -129,3 +129,10 @@
 .schema-sync-choice button { justify-self: start; }
 .schema-sync-choice small { color: var(--text-muted); line-height: 1.45; }
 .schema-sync-choice-footer { display: block; margin-top: 16px; color: var(--text-faint); }
+
+/* Orphaned-config picker. Each row is a checkbox, the path, and why it is
+   listed, so nothing is trashed without the reason being on screen. */
+.schema-sync-orphans { display: grid; gap: 10px; margin-top: 14px; max-height: 45vh; overflow-y: auto; }
+.schema-sync-orphans .schema-sync-choice { grid-template-columns: auto 1fr; align-items: baseline; column-gap: 8px; }
+.schema-sync-orphans .schema-sync-choice span { font-family: var(--font-monospace); word-break: break-all; }
+.schema-sync-orphans .schema-sync-choice small { grid-column: 2; }

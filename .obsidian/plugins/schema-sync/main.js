@@ -530,6 +530,52 @@ class ConfirmDeleteModal extends Modal {
   }
 }
 
+// Config notes are the one thing the sync never deletes on its own — they carry
+// a hand-curated Notes column — so this picker is deliberately opt-in per file
+// and preselects nothing.
+class OrphanedConfigModal extends Modal {
+  constructor(app, orphans, onResolve) {
+    super(app);
+    this.orphans = orphans;
+    this.onResolve = onResolve;
+    this.chosen = new Set();
+    this.answered = false;
+  }
+
+  resolve(paths) {
+    if (this.answered) return;
+    this.answered = true;
+    this.onResolve(paths);
+    this.close();
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: `${this.orphans.length} value list(s) no longer belong to a schema` });
+    contentEl.createEl("p", { text: "These carry rows and notes you may have written by hand, so nothing is selected and nothing is deleted until you say so. Selected files go to the trash." });
+    const list = contentEl.createDiv({ cls: "schema-sync-orphans" });
+    for (const orphan of this.orphans) {
+      const row = list.createDiv({ cls: "schema-sync-choice" });
+      const box = row.createEl("input", { type: "checkbox" });
+      box.addEventListener("change", () => box.checked ? this.chosen.add(orphan.path) : this.chosen.delete(orphan.path));
+      row.createEl("span", { text: orphan.path });
+      row.createEl("small", { text: `${orphan.schemaName}.${orphan.fieldName} is no longer declared — ${orphan.rows} row(s)` });
+    }
+    const actions = contentEl.createDiv({ cls: "schema-sync-choices" });
+    actions.createEl("button", { text: "Move selected to trash", cls: "mod-warning" })
+      .addEventListener("click", () => this.resolve([...this.chosen]));
+    actions.createEl("button", { text: "Keep everything" })
+      .addEventListener("click", () => this.resolve([]));
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    // Dismissing the modal is not an instruction to delete anything.
+    this.resolve([]);
+  }
+}
+
 class UndeclaredPropertyModal extends Modal {
   constructor(app, { property, type, schemaName, recordName }, onResolve) {
     super(app);
@@ -603,7 +649,7 @@ class SchemaSyncView extends ItemView {
     const fieldRows = Object.entries(fields).map(([name, definition]) => { const value = Object.prototype.hasOwnProperty.call(selectedFrontmatter, name) ? selectedFrontmatter[name] : definition.hasDefault ? definition.defaultValue : "—"; return `<div class="schema-sync-property"><span><b>${name}</b><small>${definition.type}${definition.required ? " · required" : ""}</small></span><code>${this.plugin.yamlValue(value)}</code></div>`; }).join("");
     this.contentEl.empty();
     this.contentEl.addClass("schema-sync-view");
-        this.contentEl.innerHTML = `<div class="schema-sync-head"><div><small>SCHEMA SYNC / VAULT ARCHITECTURE</small><h1>Schema dashboard</h1></div><div class="schema-sync-head-actions"><button data-action="reload" class="schema-sync-danger" title="Bottom to top: the Field Reference table in each .schema note becomes the definition. Rows deleted there drop the field. Blank cells mean string, no default, not required, unbound, no relation.">↑ Pull from notes</button><button data-action="sync" title="Top to bottom: push the schema out to records, config lists, base views and the ERD">↓ Sync schema system</button></div></div><div class="schema-sync-grid"><section><small class="schema-sync-label">01 / Registry</small><h2>Manage schemas</h2><div class="schema-sync-list">${schemas.map(([name, schemaFields]) => `<button class="schema-sync-schema ${name === schemaName ? "is-active" : ""}" data-schema="${name}"><span>${name.slice(0, 1)}</span><b>${name}</b><small>${Object.keys(schemaFields).length} properties</small></button>`).join("")}</div></section><section><small class="schema-sync-label">02 / Relation</small><h2>Entity mapping</h2><div class="schema-sync-count"><b>${entities.length}</b><small>mapped entities</small></div><div class="schema-sync-entities">${entities.map((file) => { const fm = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}; const isTemplate = file.basename.startsWith(PLACEHOLDER_PREFIX); const missing = Object.keys(fields).filter((name) => !(name in fm) && fields[name].required).length; const badge = isTemplate ? "template" : missing ? `${missing} issue` : "In sync"; return `<button class="schema-sync-entity ${file.path === this.selectedEntity?.path ? "is-active" : ""}" data-entity="${file.path}"><b>${file.basename}</b><small>${file.path}</small><em class="${isTemplate ? "is-template" : missing ? "is-warning" : ""}">${badge}</em></button>`; }).join("") || "<p class=\"schema-sync-empty\">No mapped entities.</p>"}</div></section><section><small class="schema-sync-label">03 / Resolved entity</small><h2>${this.selectedEntity?.basename || "Select an entity"}</h2><small class="schema-sync-path">${this.selectedEntity?.path || "Choose a note from the mapping panel"}</small><div class="schema-sync-inherits">↳ Inherits from <b>${schemaName || "—"}</b></div><div class="schema-sync-properties">${this.selectedEntity ? fieldRows : "<p class=\"schema-sync-empty\">No entity selected.</p>"}</div></section></div>`;
+        this.contentEl.innerHTML = `<div class="schema-sync-head"><div><small>SCHEMA SYNC / VAULT ARCHITECTURE</small><h1>Schema dashboard</h1></div><div class="schema-sync-head-actions"><button data-action="reload" class="schema-sync-danger" title="Bottom to top: the Field Reference table in each .schema note becomes the definition. Rows deleted there drop the field. Blank cells mean string, no default, not required, unbound, no relation.">↑ Pull from notes</button><button data-action="sync" title="Top to bottom: push the schema out to records, config lists, base views and the ERD">↓ Sync schema system</button></div></div><div class="schema-sync-grid"><section><small class="schema-sync-label">01 / Registry</small><h2>Manage schemas</h2><button data-clean-orphans class="schema-sync-row-action" title="Find value lists whose field or schema no longer exists. Nothing is deleted without you selecting it.">Clean orphaned configs</button><div class="schema-sync-list">${schemas.map(([name, schemaFields]) => `<button class="schema-sync-schema ${name === schemaName ? "is-active" : ""}" data-schema="${name}"><span>${name.slice(0, 1)}</span><b>${name}</b><small>${Object.keys(schemaFields).length} properties</small></button>`).join("")}</div></section><section><small class="schema-sync-label">02 / Relation</small><h2>Entity mapping</h2><div class="schema-sync-count"><b>${entities.length}</b><small>mapped entities</small></div><div class="schema-sync-entities">${entities.map((file) => { const fm = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}; const isTemplate = file.basename.startsWith(PLACEHOLDER_PREFIX); const missing = Object.keys(fields).filter((name) => !(name in fm) && fields[name].required).length; const badge = isTemplate ? "template" : missing ? `${missing} issue` : "In sync"; return `<button class="schema-sync-entity ${file.path === this.selectedEntity?.path ? "is-active" : ""}" data-entity="${file.path}"><b>${file.basename}</b><small>${file.path}</small><em class="${isTemplate ? "is-template" : missing ? "is-warning" : ""}">${badge}</em></button>`; }).join("") || "<p class=\"schema-sync-empty\">No mapped entities.</p>"}</div></section><section><small class="schema-sync-label">03 / Resolved entity</small><h2>${this.selectedEntity?.basename || "Select an entity"}</h2><small class="schema-sync-path">${this.selectedEntity?.path || "Choose a note from the mapping panel"}</small><div class="schema-sync-inherits">↳ Inherits from <b>${schemaName || "—"}</b></div><div class="schema-sync-properties">${this.selectedEntity ? fieldRows : "<p class=\"schema-sync-empty\">No entity selected.</p>"}</div></section></div>`;
         const grid = this.contentEl.querySelector(".schema-sync-grid");
         const sections = grid ? [...grid.children] : [];
         if (grid && sections.length === 3) {
@@ -841,6 +887,7 @@ class SchemaSyncView extends ItemView {
     }));
     this.contentEl.querySelector("[data-action=sync]")?.addEventListener("click", () => void this.plugin.syncSystem(true));
     this.contentEl.querySelector("[data-action=reload]")?.addEventListener("click", () => void this.plugin.reloadFromDisk());
+    this.contentEl.querySelector("[data-clean-orphans]")?.addEventListener("click", () => void this.plugin.cleanOrphanedConfigs());
     this.contentEl.querySelector("[data-action=open-base]")?.addEventListener("click", () => void this.plugin.openBaseNote(schemaName));
         this.contentEl.querySelector("[data-action=create-schema]")?.addEventListener("click", () => void this.plugin.createSchema());
         this.contentEl.querySelector("[data-action=update-schema]")?.addEventListener("click", () => void this.plugin.updateSchema(schemaName));
@@ -1031,6 +1078,11 @@ class SchemaSyncPlugin extends Plugin {
       id: "open-schema-dashboard",
       name: "Open schema dashboard",
       callback: () => this.openDashboard(),
+    });
+    this.addCommand({
+      id: "clean-orphaned-configs",
+      name: "Clean orphaned config notes",
+      callback: () => this.cleanOrphanedConfigs(),
     });
     this.addCommand({
       id: "open-schema-erd",
@@ -1923,6 +1975,36 @@ class SchemaSyncPlugin extends Plugin {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) return new Notice(`${path} has not been generated yet. Run Sync schema system first.`);
     await this.app.workspace.getLeaf(true).openFile(file);
+  }
+
+  // The only path that removes a config note. syncConfigLists deliberately never
+  // registers them as generated, so cleanupGeneratedPaths cannot reach them and
+  // an orphan otherwise survives forever.
+  async cleanOrphanedConfigs() {
+    const notes = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(`${CONFIG_FOLDER}/`) || file.path === SCHEMA_MAPPING_FILE) continue;
+      const sources = this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor;
+      const source = Array.isArray(sources) ? sources[0] : null;
+      if (typeof source !== "string" || !source.includes(".")) continue;
+      notes.push({
+        path: file.path,
+        schemaName: source.slice(0, source.indexOf(".")),
+        fieldName: source.slice(source.indexOf(".") + 1),
+        rows: parseConfigValues(await this.app.vault.read(file)).length,
+      });
+    }
+    const orphans = orphanedConfigs(notes, this.schemas);
+    if (orphans.length === 0) return new Notice("Every value list still belongs to a declared field.");
+    const chosen = await new Promise((resolve) => new OrphanedConfigModal(this.app, orphans, resolve).open());
+    for (const path of chosen) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      if (this.app.fileManager.trashFile) await this.app.fileManager.trashFile(file);
+      else await this.app.vault.trash(file, true);
+    }
+    this.refreshDashboards();
+    new Notice(chosen.length ? `Moved ${chosen.length} value list(s) to the trash.` : "Nothing was deleted.");
   }
 
   async duplicateRecord(recordPath) {
