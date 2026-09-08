@@ -136,9 +136,15 @@ test("a relation links to the target schema's own-name config", () => {
   assert.strictEqual(fieldReferenceLink("Verse", "Realm", field, SCHEMAS), "[[Realm/Realm\\|Realm]]");
 });
 
-test("a relation whose target has no own-name field links to the schema note", () => {
+test("a relation whose target has no own-name field links to its first list", () => {
   const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
-  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm.schema\\|owner]]");
+  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm/trait\\|owner]]");
+});
+
+test("a relation to an entity with no lists links to its schema note", () => {
+  const schemas = new Map([["Ghost", { id: { type: "string", required: true } }]]);
+  const field = { type: "string", bind: true, relation: { target: "Ghost" } };
+  assert.strictEqual(fieldReferenceLink("Pack", "haunt", field, schemas), "[[Ghost.schema\\|haunt]]");
 });
 
 test("a field with no config is plain text", () => {
@@ -417,11 +423,21 @@ test("a relation points at the target's own value list", () => {
   assert.strictEqual(t.link, "Realm/Realm");
 });
 
-test("a relation with no such list points at the target schema", () => {
+test("a relation whose target has no same-named field falls to its first list", () => {
+  // LifeForm has no LifeForm field, but it does have trait. A list is what the
+  // button is for, so it goes there rather than to the schema note.
   const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
   const t = fieldReferenceTarget("Pack", "owner", field, SCHEMAS);
-  assert.strictEqual(t.path, "data/schema/LifeForm.schema.md");
-  assert.strictEqual(t.link, "LifeForm.schema");
+  assert.strictEqual(t.path, "data/config/LifeForm/trait.md");
+  assert.strictEqual(t.link, "LifeForm/trait");
+});
+
+test("a relation to an entity with no lists at all falls back to its schema", () => {
+  const schemas = new Map([["Ghost", { id: { type: "string", required: true } }]]);
+  const field = { type: "string", bind: true, relation: { target: "Ghost" } };
+  const t = fieldReferenceTarget("Pack", "haunt", field, schemas);
+  assert.strictEqual(t.path, "data/schema/Ghost.schema.md");
+  assert.strictEqual(t.link, "Ghost.schema");
 });
 
 test("a field with no list still has somewhere to open, but no link", () => {

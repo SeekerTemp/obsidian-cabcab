@@ -42,7 +42,7 @@
             }
           },
           {
-            "id": "4cc840463b41d8fe",
+            "id": "204d29c57eef158d",
             "type": "leaf",
             "state": {
               "type": "schema-sync-dashboard",
@@ -235,13 +235,15 @@
   },
   "active": "e92d22094a311932",
   "lastOpenFiles": [
+    "data/schema/LifeForm.schema.md",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
+    "data/schema/Realm.schema.md",
     "data/AssetDatabase.base.md",
     "data/config/Verse/LifeForm.md",
     "data/config/Verse/Realm.md",
     "data/config/Verse",
     "data/record/verses/_placeholder.Verse.md",
     "data/record/verses/_placeholder2.Verse.md",
-    "data/record/lifeforms/_placeholder.LifeForm.md",
     "README.md",
     "data/base/LifeForm.base",
     "data/config/schema-mappings.md",
@@ -257,8 +259,6 @@
     "data/record/verses",
     "data/schema/Verse.schema.md",
     "data/config/LifeForm/trait2.md",
-    "data/schema/LifeForm.schema.md",
-    "data/schema/Realm.schema.md",
     "doc/config_environment.md",
     "data/config/Realm/Realm.md",
     "doc/MAP.md",

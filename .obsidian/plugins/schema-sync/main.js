@@ -464,14 +464,15 @@ function fieldReferenceTarget(schemaName, fieldName, definition, schemas) {
   const target = definition?.relation?.target;
   if (target) {
     // A foreign key never gets a list of its own: it points at the one list the
-    // target entity already owns, so values cannot drift between the two.
-    const targetFields = schemas?.get?.(target);
-    const ownField = targetFields && Object.prototype.hasOwnProperty.call(targetFields, target) ? targetFields[target] : null;
-    if (ownField && configPathFor(target, target, ownField)) {
-      return { path: `${CONFIG_FOLDER}/${target}/${target}.md`, link: `${target}/${target}` };
-    }
-    // An entity keyed by `id` has no list, because identity fields are
-    // excluded, so fall back to its definition.
+    // target entity already owns, so values cannot drift between the two. The
+    // entity's own-name field is that list when it has one — Realm.Realm — and
+    // otherwise its first list will do, because a list is what the button is
+    // for. Only an entity with no lists at all falls back to its definition.
+    const targetFields = schemas?.get?.(target) || {};
+    const ownField = Object.prototype.hasOwnProperty.call(targetFields, target) ? targetFields[target] : null;
+    const named = ownField && configPathFor(target, target, ownField) ? target : null;
+    const first = named || Object.keys(targetFields).find((name) => configPathFor(target, name, targetFields[name]));
+    if (first) return { path: `${CONFIG_FOLDER}/${target}/${first}.md`, link: `${target}/${first}` };
     return { path: `${SCHEMA_FOLDER}/${target}.schema.md`, link: `${target}.schema` };
   }
   const config = configPathFor(schemaName, fieldName, definition);
