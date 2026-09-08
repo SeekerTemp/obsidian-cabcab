@@ -370,6 +370,161 @@
   background-color: var(--background-modifier-hover);
 }
 
+/* The lineage panel.
+
+   A third section of the body, beside the viewer and the grid, so the pane
+   reflows it the same way MV-LAYOUT reflows the other two. It is the part of
+   this plugin that is not a media browser, so it is open by default — nobody
+   would find it folded away. */
+.media-viewer .mv-lineage {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 40%;
+  overflow: auto;
+}
+
+.media-viewer .mv-lineage.is-collapsed .mv-lineage-body {
+  display: none;
+}
+
+.media-viewer .mv-lineage-header {
+  display: flex;
+  align-items: center;
+  padding: var(--size-2-2) var(--size-4-2);
+  position: sticky;
+  top: 0;
+  background-color: var(--background-primary);
+  z-index: 1;
+}
+
+.media-viewer .mv-lineage-toggle {
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.media-viewer .mv-lineage-toggle::before {
+  content: "▾ ";
+}
+
+.media-viewer .mv-lineage.is-collapsed .mv-lineage-toggle::before {
+  content: "▸ ";
+}
+
+.media-viewer .mv-lineage-body {
+  padding: 0 var(--size-4-2) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+}
+
+.media-viewer .mv-lineage-empty,
+.media-viewer .mv-lineage-row.is-root {
+  color: var(--text-faint);
+  padding: var(--size-2-1) 0;
+}
+
+/* A break is the one thing in this panel that is not simply information: it
+   says something in the vault is wrong and nothing here is going to fix it
+   silently. */
+.media-viewer .mv-lineage-problem {
+  color: var(--text-error);
+  background-color: var(--background-modifier-error);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-2) var(--size-4-1);
+  margin-bottom: var(--size-4-1);
+}
+
+.media-viewer .mv-lineage-section {
+  margin-top: var(--size-4-1);
+}
+
+.media-viewer .mv-lineage-label {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--size-2-1);
+}
+
+.media-viewer .mv-lineage-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-1);
+}
+
+.media-viewer .mv-lineage-link {
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  color: var(--text-accent);
+  cursor: pointer;
+  text-align: left;
+  font-size: inherit;
+}
+
+.media-viewer .mv-lineage-link:hover {
+  text-decoration: underline;
+}
+
+.media-viewer .mv-lineage-row.is-broken {
+  color: var(--text-error);
+}
+
+.media-viewer .mv-lineage-note {
+  color: var(--text-faint);
+}
+
+.media-viewer .mv-lineage-action {
+  margin-top: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  cursor: pointer;
+}
+
+/* Three columns: what, what it is, and where it came from. The third is the
+   one the panel exists for — an inherited value nobody can trace back is a
+   value nobody can check. */
+.media-viewer .mv-lineage-field {
+  display: grid;
+  grid-template-columns: minmax(4em, 8em) 1fr auto;
+  gap: var(--size-4-1);
+  padding: 1px 0;
+  align-items: baseline;
+}
+
+.media-viewer .mv-lineage-key {
+  color: var(--text-muted);
+}
+
+.media-viewer .mv-lineage-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-viewer .mv-lineage-from {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.media-viewer .mv-lineage-field.is-inherited .mv-lineage-value {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.media-viewer .mv-lineage-field.is-inherited .mv-lineage-from {
+  color: var(--text-accent);
+}
+
 .media-viewer .mv-viewer-button.is-active {
   background-color: var(--background-modifier-hover);
   color: var(--text-accent);

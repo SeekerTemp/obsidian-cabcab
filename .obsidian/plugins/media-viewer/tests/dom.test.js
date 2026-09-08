@@ -411,11 +411,11 @@ group("the structure the layout rules stand on", () => {
     );
   });
 
-  test("the body holds the viewer, the grid and the empty message as siblings", async () => {
+  test("the body holds the viewer, the grid, the empty message and the lineage panel", async () => {
     const { view } = await paneOver(FILES);
     deepEqual(
       view.bodyEl.children.map((child) => child.className.split(" ")[0]),
-      ["mv-viewer", "mv-grid", "mv-empty"]
+      ["mv-viewer", "mv-grid", "mv-empty", "mv-lineage"]
     );
   });
 

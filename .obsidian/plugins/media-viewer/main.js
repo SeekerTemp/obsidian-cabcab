@@ -1616,6 +1616,34 @@ function chainProblemMessage(walk, startPath) {
   return null;
 }
 
+/* A frontmatter value as one line of text, for the lineage panel.
+ *
+ * Compact rather than faithful: a crop reads as "120,40 800x600" because that
+ * is a rectangle someone can check against what they see, where
+ * {"x":120,...} is JSON someone has to parse in their head.
+ */
+function formatFieldValue(name, value) {
+  if (value === null || value === undefined) return "";
+  if (name === "crop" && value && typeof value === "object") {
+    return value.x + "," + value.y + " " + value.w + "x" + value.h;
+  }
+  if (name === "transform" && value && typeof value === "object") {
+    const parts = [];
+    if (value.rotate) parts.push(value.rotate + "°");
+    if (value.flipH) parts.push("flip H");
+    if (value.flipV) parts.push("flip V");
+    return parts.length ? parts.join(" · ") : "none";
+  }
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
+  if (value instanceof Date) return asIsoString(value) || "";
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, item]) => key + ": " + item)
+      .join(", ");
+  }
+  return String(value);
+}
+
 // Numeric-aware and case-insensitive, so "shot2" sorts before "shot10" and the
 // grid reads in the order the file explorer shows. Ties break on the full path,
 // which is only reachable under a recursive scan and keeps the order total —
@@ -1852,6 +1880,7 @@ const core = {
   resolveField,
   resolveFields,
   chainProblemMessage,
+  formatFieldValue,
   scaleRect,
   MAX_DECODE_MEGAPIXELS,
   MAX_DISPLAY_EDGE,
@@ -3248,6 +3277,10 @@ class MediaViewerView extends ItemView {
     // start a second one and so a decode that finishes after the user has
     // moved on can tell that it has.
     this.editLoading = null;
+    // The panel is open by default: it is the part of this plugin that is not
+    // a media browser, and one nobody would find if it started folded away.
+    this.lineageOpen = true;
+    this.lineageEl = null;
     // Set while an encode and write are in flight, so a second Save does not
     // produce a second file from the same click.
     this.saving = null;
@@ -3338,6 +3371,8 @@ class MediaViewerView extends ItemView {
 
     this.gridEl = body.createDiv({ cls: "mv-grid" });
     this.emptyEl = body.createDiv({ cls: "mv-empty" });
+
+    this.buildLineage(body);
 
     // Delegated, so a folder of 500 files installs one listener rather than
     // 500 — and so tiles can be added and removed without touching listeners.
@@ -3549,6 +3584,10 @@ class MediaViewerView extends ItemView {
     this.syncTiles(paths);
     this.showInViewer(this.plugin.selectedPath);
     this.updateViewerBar();
+    // The panel is about the selected file, so it is redrawn with everything
+    // else that follows the selection. Its other trigger is the store
+    // changing, which reaches it through refreshLineageViews.
+    this.renderLineage();
 
     const message =
       folder === null
@@ -5143,6 +5182,166 @@ class MediaViewerView extends ItemView {
     return false;
   }
 
+  /* ---------------------------------------------------------------------- *
+   * The lineage panel — MV-PANEL.
+   *
+   * Three questions, answered in one place: where did this come from, what
+   * came from it, and which of the values shown are actually this file's.
+   *
+   * That third one is the reason the panel exists at all. Resolved values are
+   * never written to disk — a child note read on its own is deliberately not
+   * self-describing — so without somewhere that says "16:9, from cover.png",
+   * inheritance is a mechanism nobody can check.
+   * ---------------------------------------------------------------------- */
+
+  buildLineage(parent) {
+    const panel = parent.createDiv({ cls: "mv-lineage" });
+    this.lineageEl = panel;
+
+    const header = panel.createDiv({ cls: "mv-lineage-header" });
+    this.lineageToggleEl = header.createEl("button", {
+      cls: "mv-lineage-toggle",
+      text: "Lineage",
+      attr: { type: "button", "aria-expanded": "true" },
+    });
+    this.lineageToggleEl.addEventListener("click", () => this.toggleLineage());
+
+    this.lineageBodyEl = panel.createDiv({ cls: "mv-lineage-body" });
+    this.renderLineage();
+  }
+
+  toggleLineage() {
+    this.lineageOpen = this.lineageOpen === false;
+    if (this.lineageEl) this.lineageEl.toggleClass("is-collapsed", !this.lineageOpen);
+    if (this.lineageToggleEl) {
+      this.lineageToggleEl.setAttribute("aria-expanded", this.lineageOpen ? "true" : "false");
+    }
+    return this.lineageOpen;
+  }
+
+  renderLineage() {
+    const body = this.lineageBodyEl;
+    if (!body) return;
+    body.empty();
+    const path = this.plugin.selectedPath;
+    if (!path) {
+      body.createDiv({ cls: "mv-lineage-empty", text: "Select a file to see its lineage." });
+      return;
+    }
+
+    const store = this.plugin.lineage;
+    const record = store.recordFor(path);
+
+    if (!record) {
+      /* Untracked is a normal state, not a fault: most of a vault has never
+         been edited. The panel says what the file is missing and offers the
+         one action that would give it one. */
+      const empty = body.createDiv({ cls: "mv-lineage-empty" });
+      empty.setText("No lineage note. Nothing has been done to this file yet.");
+      const button = body.createEl("button", {
+        cls: "mv-lineage-action",
+        text: "Mark as reviewed",
+        attr: { type: "button" },
+      });
+      button.addEventListener("click", () => this.plugin.markReviewed(path));
+      return;
+    }
+
+    const walk = this.plugin.resolver.walk(path);
+    const problem = chainProblemMessage(walk, path);
+    if (problem) {
+      // Surfaced as well as logged. A cycle that only reached the console is a
+      // cycle nobody knows about.
+      body.createDiv({ cls: "mv-lineage-problem", text: problem });
+    }
+
+    this.lineageChain(body, path, record, walk);
+    this.lineageChildren(body, path);
+    this.lineageFields(body, path);
+  }
+
+  /* The chain above this file, nearest first. Every entry is a jump, because a
+     lineage you can see and not follow is half a feature. */
+  lineageChain(body, path, record, walk) {
+    const section = body.createDiv({ cls: "mv-lineage-section" });
+    section.createDiv({ cls: "mv-lineage-label", text: "From" });
+    const chain = walk.chain.slice(1);
+    if (!chain.length) {
+      const line = section.createDiv({ cls: "mv-lineage-row is-root" });
+      line.setText(record.sourceLink ? "Missing: " + record.sourceLink : "Nothing — this is a root.");
+      if (record.sourceLink) line.addClass("is-broken");
+      return;
+    }
+    for (const step of chain) {
+      this.lineageLink(section, step.path, step.record ? null : "untracked");
+    }
+  }
+
+  lineageChildren(body, path) {
+    const children = this.plugin.lineage.childrenOf(path);
+    const section = body.createDiv({ cls: "mv-lineage-section" });
+    section.createDiv({
+      cls: "mv-lineage-label",
+      text: children.length === 1 ? "1 derived file" : children.length + " derived files",
+    });
+    if (!children.length) {
+      section.createDiv({ cls: "mv-lineage-row is-root", text: "Nothing has been made from this yet." });
+      return;
+    }
+    for (const child of children) this.lineageLink(section, child, null);
+  }
+
+  // One navigable entry. Named by its file rather than its path, with the path
+  // in the tooltip: the grid is a folder of files and the name is what the
+  // user is looking at.
+  lineageLink(section, path, note) {
+    const row = section.createDiv({ cls: "mv-lineage-row" });
+    const link = row.createEl("button", {
+      cls: "mv-lineage-link",
+      text: baseNameOf(path),
+      attr: { type: "button", title: path },
+    });
+    link.addEventListener("click", () => this.plugin.revealMedia(path));
+    if (note) row.createSpan({ cls: "mv-lineage-note", text: note });
+    return row;
+  }
+
+  /* What this file's metadata resolves to, and from where.
+   *
+   * "own" against a value means this note declares it; anything else names the
+   * ancestor it came from, which is what makes an inherited value checkable
+   * rather than merely present.
+   */
+  lineageFields(body, path) {
+    const { fields } = this.plugin.resolver.resolveAll(path);
+    const names = Object.keys(fields).sort((a, b) => {
+      const order = INSTANCE_FIELD_ORDER.indexOf(a) - INSTANCE_FIELD_ORDER.indexOf(b);
+      if (INSTANCE_FIELD_ORDER.includes(a) && INSTANCE_FIELD_ORDER.includes(b)) return order;
+      if (INSTANCE_FIELD_ORDER.includes(a)) return -1;
+      if (INSTANCE_FIELD_ORDER.includes(b)) return 1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    const section = body.createDiv({ cls: "mv-lineage-section" });
+    section.createDiv({ cls: "mv-lineage-label", text: "Metadata" });
+    if (!names.length) {
+      section.createDiv({ cls: "mv-lineage-row is-root", text: "This note declares nothing." });
+      return;
+    }
+    const table = section.createDiv({ cls: "mv-lineage-fields" });
+    for (const name of names) {
+      const entry = fields[name];
+      const row = table.createDiv({ cls: "mv-lineage-field" });
+      row.toggleClass("is-inherited", entry.inherited);
+      row.createSpan({ cls: "mv-lineage-key", text: name });
+      row.createSpan({ cls: "mv-lineage-value", text: formatFieldValue(name, entry.value) });
+      const from = row.createSpan({
+        cls: "mv-lineage-from",
+        text: entry.inherited ? baseNameOf(entry.from) : "own",
+      });
+      if (entry.inherited) from.title = "Inherited from " + entry.from;
+    }
+  }
+
   // The pane can be resized while an image is open, which changes what "fit"
   // means and can leave the pan outside its new bounds.
   handleResize() {
@@ -5331,6 +5530,32 @@ class MediaViewerPlugin extends Plugin {
     this.settings.lastFolder = this.index.folder;
     void this.saveSettings();
     this.refreshViews();
+  }
+
+  /* Jump to a media file that may not be in the folder the pane is showing.
+   *
+   * The lineage panel links across folders — a crop lives beside its source,
+   * but a source may not live beside its own parent — so following one has to
+   * be able to change what the grid is looking at. Selection is a path, so it
+   * survives that change rather than being invalidated by it. */
+  revealMedia(path) {
+    if (!path) return false;
+    if (!this.index.has(path)) {
+      const folder = folderOf(path);
+      this.index.setFolder(folder, this.settings.recursive);
+      this.settings.lastFolder = this.index.folder;
+      void this.saveSettings();
+    }
+    if (!this.index.has(path)) {
+      new Notice("Media Viewer: " + baseNameOf(path) + " is not in the vault any more");
+      return false;
+    }
+    this.selectedPath = path;
+    this.refreshViews();
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
+      if (leaf.view instanceof MediaViewerView) leaf.view.revealSelection();
+    }
+    return true;
   }
 
   select(path) {

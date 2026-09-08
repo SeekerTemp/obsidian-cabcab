@@ -291,6 +291,10 @@ class StubElement {
     return this.createEl("div", options);
   }
 
+  createSpan(options) {
+    return this.createEl("span", options);
+  }
+
   createEl(tag, options) {
     const element = new StubElement(tag);
     const settings = options || {};
