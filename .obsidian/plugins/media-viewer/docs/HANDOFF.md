@@ -43,6 +43,7 @@ with the retirement.
 | 5 | `MV-GRID` | Thumbnail grid: `IntersectionObserver` lazy loading, LRU cap, selection keyed by **path**, image/video/both filter | `main.js`, `styles.css` | 4 | 500-file folder scrolls smoothly; only visible thumbs load |
 | 6 | `MV-IMAGE` | Image viewer: wheel and `W`/`S` zoom, pan, fit-to-pane, reset to 100%, `A`/`D` sibling navigation | `main.js`, `styles.css` | 5 | Zoom, pan and keyboard navigation all work |
 | 7 | `MV-LAYOUT` | Container-query layout so the pane reflows on **pane** width when docked in a split | `styles.css` | 6 | Narrow split stacks; wide split sits side by side |
+| 7a | `MV-PASTE` | Paste an image into the folder the pane is showing: `Ctrl+V` on the pane and a command, named `pasted+<ts>.<ext>`, selection moves to it. Only images are claimed; every other paste is left alone | `main.js` | 4 | Copy a screenshot, focus the pane, paste — the file lands in that folder, not the vault root |
 
 ## M2 — Video
 
@@ -120,6 +121,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 8 `MV-VIDEO`
 - [x] 9 `MV-SPEED`
 - [x] 10 `MV-VTHUMB`
+- [x] 7a `MV-PASTE` — added after M2, out of sequence because it needed nothing from M3
 - [ ] 11 `MV-REVERSE`
 - [ ] 12 `MV-FRAME`
 - [ ] 13 `MV-CROPMATH`

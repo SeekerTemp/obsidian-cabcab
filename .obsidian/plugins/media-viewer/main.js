@@ -1,4 +1,4 @@
-const { Plugin, ItemView, TFile, TFolder } = require("obsidian");
+const { Plugin, ItemView, Notice, TFile, TFolder } = require("obsidian");
 
 const VIEW_TYPE_MEDIA_VIEWER = "media-viewer-pane";
 
@@ -96,6 +96,23 @@ const VIDEO_FRAME_CACHE_SIZE = 120;
 // Encoding follows the source, because encoding everything to PNG turns a 2 MB
 // JPEG crop into a 15 MB file. Rotation, flipping and cropping never introduce
 // transparency, so a JPEG source stays safely a JPEG.
+/* What a pasted image is called, by what the clipboard says it is.
+ *
+ * Not the inverse of MIME_BY_EXTENSION below: that map answers "what should
+ * this be encoded as", which deliberately sends BMP and GIF to PNG. This one
+ * answers "what did I just receive", where a GIF must stay a GIF — the bytes
+ * are already decided and renaming them would be a lie about the file. */
+const EXTENSION_BY_MIME = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/bmp": "bmp",
+  "image/avif": "avif",
+  "image/svg+xml": "svg",
+};
+
 const MIME_BY_EXTENSION = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -393,6 +410,36 @@ function thumbnailCanvasSize(width, height, maxEdge) {
   };
 }
 
+// A clipboard type arrives as "image/png" or occasionally with parameters
+// attached, and case is not guaranteed. Anything not recognised is not an
+// image this plugin will write, which is the caller's cue to let the paste
+// through untouched rather than to guess an extension.
+function extensionForMime(mime) {
+  const value = String(mime == null ? "" : mime)
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  return Object.prototype.hasOwnProperty.call(EXTENSION_BY_MIME, value)
+    ? EXTENSION_BY_MIME[value]
+    : null;
+}
+
+/* Where a pasted image is written: into the folder the pane is showing.
+ *
+ * Obsidian already pastes images, into the attachment folder — the vault root
+ * unless configured otherwise. That is the right default for a note being
+ * written, and the wrong one for a pane that is looking at a particular folder
+ * of assets. The name carries no source stem because a pasted image has no
+ * source; the timestamp is what makes it collision-free and sortable, exactly
+ * as it does for a clone or a capture. */
+function pastePathFor(folder, extension, taken, date) {
+  const normalised = String(extension == null ? "" : extension)
+    .toLowerCase()
+    .replace(/^\./, "");
+  const suffix = normalised || "png";
+  return uniquePath(folder, "pasted+" + timestampFor(date), suffix, taken);
+}
+
 // A/D step through the list without wrapping. Wrapping from the last file back
 // to the first reads as a jump to somewhere else rather than as a step, and
 // there is no way to tell the two apart from the keyboard.
@@ -645,6 +692,7 @@ const core = {
   matchesFilter,
   mimeForExtension,
   outputExtensionFor,
+  EXTENSION_BY_MIME,
   clampZoom,
   stepZoom,
   fitZoom,
@@ -681,6 +729,8 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  pastePathFor,
+  extensionForMime,
   compareMediaPaths,
   isInFolder,
   sortedInsertIndex,
@@ -1099,6 +1149,12 @@ class MediaViewerView extends ItemView {
     // swallowed them globally would break typing.
     root.setAttribute("tabindex", "0");
     root.addEventListener("keydown", (event) => this.handleKey(event));
+
+    // Bound to the pane, not the document: Obsidian's own paste puts an image
+    // in the attachment folder and a link in the note, which is right for a
+    // note being written. This one only applies where the pane is what has
+    // focus, and where "the current folder" is a thing that exists.
+    root.addEventListener("paste", (event) => this.handlePaste(event));
   }
 
   buildViewer(parent) {
@@ -2186,6 +2242,56 @@ class MediaViewerView extends ItemView {
     return false;
   }
 
+  /* Paste an image into the folder the pane is showing.
+   *
+   * Only images are claimed. A paste carrying text, or nothing this plugin can
+   * name, is left alone entirely — no preventDefault — so pasting a path or a
+   * link into the pane still does whatever it would have done.
+   */
+  handlePaste(event) {
+    const items = this.imagesFrom(event);
+    if (!items.length) return false;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    if (this.index.folder === null) {
+      new Notice("Media Viewer: open a folder before pasting into it");
+      return false;
+    }
+    // Deliberately not awaited: a paste handler that returns a promise still
+    // has to have called preventDefault synchronously, and the writes report
+    // themselves.
+    this.plugin.writePastedImages(items);
+    return true;
+  }
+
+  // Images on a clipboard event, as {blob, mime}. Both shapes are read because
+  // Electron populates `items` and `files` differently depending on where the
+  // copy came from, and a screenshot tool is exactly the case that only fills
+  // one of them.
+  imagesFrom(event) {
+    const data = event && event.clipboardData;
+    if (!data) return [];
+    const found = [];
+    const seen = new Set();
+    const consider = (blob, type) => {
+      const mime = type || (blob && blob.type) || "";
+      if (!blob || !extensionForMime(mime)) return;
+      // The same image can appear in both collections; a paste must not write
+      // it twice.
+      const key = mime + ":" + (blob.size === undefined ? "" : blob.size);
+      if (seen.has(key)) return;
+      seen.add(key);
+      found.push({ blob, mime });
+    };
+    const items = data.items || [];
+    for (const item of items) {
+      if (!item || item.kind !== "file") continue;
+      consider(typeof item.getAsFile === "function" ? item.getAsFile() : null, item.type);
+    }
+    const files = data.files || [];
+    for (const entry of files) consider(entry, entry && entry.type);
+    return found;
+  }
+
   // The displayed file was written to underneath the viewer. Re-read it, but
   // keep the zoom and pan: the user is looking at a particular part of a
   // particular image, and an edit saved elsewhere should not move their view.
@@ -2235,6 +2341,12 @@ class MediaViewerPlugin extends Plugin {
       id: "open-media-viewer",
       name: "Open Media Viewer",
       callback: () => this.activateView(),
+    });
+
+    this.addCommand({
+      id: "paste-image-into-folder",
+      name: "Paste image into the current folder",
+      callback: () => this.pasteFromClipboard(),
     });
 
     // Registered on the vault rather than inside the view, so the index stays
@@ -2414,6 +2526,99 @@ class MediaViewerPlugin extends Plugin {
 
   // Reuse an existing pane rather than stacking duplicates; a second ribbon
   // click should reveal the pane already open, not open another.
+  /* Write pasted images into the pane's folder.
+   *
+   * Each becomes its own file, because a clipboard carrying two images is two
+   * images. Failures are per-file: one that will not write must not stop the
+   * next, which is the same rule the grid follows for one bad file.
+   */
+  async writePastedImages(items) {
+    const folder = this.index.folder;
+    if (folder === null) return [];
+    const written = [];
+    for (const item of items) {
+      const path = await this.writePastedImage(folder, item);
+      if (path) written.push(path);
+    }
+    if (written.length === 1) new Notice("Pasted " + baseNameOf(written[0]));
+    else if (written.length > 1) new Notice("Pasted " + written.length + " images into " + folderLabelFor(folder));
+    return written;
+  }
+
+  async writePastedImage(folder, item) {
+    const extension = extensionForMime(item && item.mime);
+    if (!extension || !item.blob) return null;
+    const path = pastePathFor(folder, extension, (candidate) => this.pathExists(candidate));
+let created = null;
+    try {
+      const bytes = await item.blob.arrayBuffer();
+      created = await this.app.vault.createBinary(path, bytes);
+    } catch (error) {
+      console.error("Media Viewer: could not write a pasted image to " + path, error);
+      new Notice("Media Viewer: could not write the pasted image");
+      return null;
+    }
+    // Inserted here rather than left to the vault's create event, because the
+    // order of that event against createBinary's promise is not something to
+    // depend on — and selecting a path the index has not heard of yet does
+    // nothing. Insertion is idempotent by path, which is exactly what makes
+    // doing it in both places safe.
+    if (created) this.index.handleCreate(created);
+    // Moving the selection is what makes the paste visible rather than merely
+    // successful.
+    this.select(path);
+    return path;
+  }
+
+  pathExists(path) {
+    const vault = this.app.vault;
+    if (vault && typeof vault.getAbstractFileByPath === "function") {
+      return vault.getAbstractFileByPath(path) !== null && vault.getAbstractFileByPath(path) !== undefined;
+    }
+    return this.index.fileFor(path) !== null && this.index.fileFor(path) !== undefined;
+  }
+
+  /* Paste from the command palette, where there is no clipboard event to read.
+   *
+   * navigator.clipboard.read() needs the window focused and can be refused
+   * outright, so this is the second way in rather than the only one: Ctrl+V on
+   * the pane goes through the event, which is both more reliable and what
+   * anyone will actually press. */
+  async pasteFromClipboard() {
+    if (this.index.folder === null) {
+      new Notice("Media Viewer: open a folder before pasting into it");
+      return [];
+    }
+    const clipboard = typeof navigator !== "undefined" && navigator.clipboard;
+    if (!clipboard || typeof clipboard.read !== "function") {
+      new Notice("Media Viewer: this build cannot read the clipboard directly — press Ctrl+V on the pane");
+      return [];
+    }
+    let contents = [];
+    try {
+      contents = await clipboard.read();
+    } catch (error) {
+      console.error("Media Viewer: reading the clipboard failed", error);
+      new Notice("Media Viewer: could not read the clipboard");
+      return [];
+    }
+    const items = [];
+    for (const entry of contents) {
+      const mime = (entry.types || []).find((type) => extensionForMime(type));
+      if (!mime) continue;
+      try {
+        items.push({ blob: await entry.getType(mime), mime });
+      } catch (error) {
+        console.error("Media Viewer: could not read a clipboard image", error);
+      }
+    }
+    if (!items.length) {
+      new Notice("Media Viewer: no image on the clipboard");
+      return [];
+    }
+    return this.writePastedImages(items);
+  }
+
   async activateView() {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER);

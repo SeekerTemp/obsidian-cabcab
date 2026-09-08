@@ -25,8 +25,13 @@ capture, and `MediaInstance` lineage records with inherited metadata.
 
 **Out.** Renaming, category dropdowns, the JSON preset editor, the old app's
 Page 2 entirely, its `FolderBrowserWidget` folder tree, folders outside the
-vault, clipboard paste, annotation, and video trimming. Nothing here reads or
-writes a Schema Sync schema.
+vault, annotation, and video trimming.
+
+Clipboard paste was out and is now in, for a reason the first draft missed:
+Obsidian already pastes an image, into the attachment folder — the vault root
+in this vault. That is right for a note being written and wrong for a pane
+looking at a particular folder of assets. The gap is not the pasting, it is
+**which folder**, and only the pane knows the answer.
 
 ## Plugin shape
 
@@ -361,6 +366,10 @@ Beside the source, collision-safe:
 
 - Edits: `<stem>+clone+<yymmddHHMMSS>.<ext>`, then `.1`, `.2` … on collision.
 - Frame captures: `<stem>+frame+<yymmddHHMMSS>.png`.
+- Pasted images: `pasted+<yymmddHHMMSS>.<ext>`, with no stem, because a pasted
+  image has no source to name it after. The extension follows what the
+  clipboard says it is — a pasted GIF stays a GIF, since the bytes are already
+  decided and renaming them would be a lie about the file.
 
 The timestamp earns its place: it makes a name collision-free without a lookup,
 and it sorts. What has gone is the old app's habit of encoding data into the
@@ -447,6 +456,7 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 | UC-11 | Play a video backwards |
 | UC-12 | Step one frame forward or back |
 | UC-13 | Capture the current video frame as a PNG, tracked as a child of the video |
+| UC-13a | Paste an image from the clipboard into the folder the pane is showing |
 | UC-14 | Drag a crop selection over an image |
 | UC-15 | Adjust that selection by its handles, optionally with a locked aspect ratio |
 | UC-16 | Rotate in 90° steps, flip horizontally or vertically |
@@ -481,6 +491,7 @@ the old app crash-logged instead, in `logs/app_crash.log`.
 - [ ] Keyboard navigation through siblings, selection keyed by path
 - [ ] Image/video/both filter
 - [ ] Container-query layout so the pane reflows when docked in a split
+- [ ] Paste an image from the clipboard into the pane's folder
 - [ ] Vault `create`/`modify`/`delete`/`rename` handling, idempotent by path
 
 ### M2 — Video
