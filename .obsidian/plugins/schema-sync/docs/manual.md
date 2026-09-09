@@ -1,0 +1,166 @@
+# CabCab Scheme DB — manual
+
+Using the Schema Sync plugin from inside Obsidian. The agent-facing rules are in
+[`agent-contract.md`](agent-contract.md); the design record is in
+[`README.md`](../../../../README.md).
+
+## The idea in one paragraph
+
+Markdown is the database. A **schema** is a note listing an entity's fields. A
+**record** is a note declaring `implements: <Schema>`. A **value list** is a
+generated note holding every value one field has taken, which is what makes a
+field behave like a dropdown. The plugin keeps those three consistent and
+generates a Bases table per entity and one DBML ERD over the lot. Your job is to
+write notes; its job is to keep them in shape.
+
+It is deliberately not a DBMS. It optimises for editability and for relationships
+between notes. Anything needing real constraints belongs in a real database.
+
+## The dashboard
+
+Ribbon icon, or the command **Open schema dashboard**. Three panels.
+
+### 01 / Registry
+
+Every schema in the vault. Per row: open the note, ⧉ duplicate, × delete.
+**Clean orphaned config notes** lives here and in the command palette — it lists
+value lists whose field or schema is gone, or that are stray copies, each with
+the reason it was flagged. Nothing is preselected and files go to the trash.
+
+### 02 / Definition
+
+The field editor for the selected schema, and where most work happens.
+
+Rows are **live by default** — no gate, changes apply as you make them, **Enter**
+commits and **Escape** reverts a row you are part-way through. Drag ⠿ to reorder;
+field order flows through to the schema note, the base columns and the ERD. A
+blank field name is refused rather than saved.
+
+**× is two-stage and non-destructive first.** On a bound field the first press
+**unbinds** it — no confirmation, because nothing is written away and the bind
+dropdown reverses it. The field stops reaching records, value lists, base views
+and the ERD, and values already stored in records stay put as ordinary
+properties. A second press on the now-unbound field removes it from the schema,
+and that step asks, with "don't ask again this session".
+
+**⤓** turns a field's value list into records — one record per row, named after
+the value, with that field and the schema's identity field set to it. Existing
+notes are skipped, so it is safe to press twice.
+
+**☰** jumps to where the field's values live: its own value list, or for a
+foreign key, the list belonging to the entity it points at.
+
+### 03 / Relation
+
+Records for the selected schema, templates included and badged. Per row: open,
+⧉ duplicate, 🖼 Asset Renamer, × delete to trash. **+ New &lt;Schema&gt; record**
+writes `_placeholder<N>.<Schema>.md` carrying every field, and is repeatable.
+
+The layout reflows to the **pane** width rather than the window, so it behaves
+when docked in a split.
+
+## The two sync directions
+
+The header has one button per direction. They are not symmetrical, and the
+difference matters.
+
+**↓ Sync schema system.** The schema is authoritative. Pushes it out to records,
+value lists, base views and the ERD, and regenerates each Field Reference table
+from `fields:`. Additive and safe — it never removes a record property. This also
+runs automatically on change.
+
+**↑ Pull from notes.** Bottom-to-top, and **destructive by design**. Each schema
+note's Field Reference table *becomes* the field set: a row deleted there deletes
+the field, a row added there adds it, blank cells resolve to the quiet defaults
+(`string`, no default, not required, unbound, no relation). It confirms first and
+lists exactly what will go. Values already in records are never touched — a
+dropped field just becomes a free-form property. It pushes nothing outward, so
+follow it with a sync.
+
+## Editing a schema note by hand
+
+Supported, and the plugin stays out of the way.
+
+**A schema note open in any leaf is never rewritten** — not merely the active
+one, but open anywhere, including a background tab. While it is the active view
+changes are held entirely; only the dashboard refreshes. Move focus off it and
+one sync applies your edits *outward*, leaving the note itself alone. It is
+normalised once actually closed.
+
+Both directions of the note are read. `fields:` frontmatter is authoritative.
+The Field Reference table is an input too, **but only for adding**: a row with a
+blank `Bound` cell is treated as hand-typed and adopted as an unbound field.
+Rows carrying `yes` or `no` are the generator's own output and are ignored on the
+way back in — which is what stops a deleted field resurrecting itself.
+
+So **delete a field in `fields:`, or with × in 02 / Definition — never by
+deleting its table row.**
+
+## Where you can write in generated files
+
+Generated files are rebuilt wholesale, so three places are protected:
+
+| Where | Protected |
+| --- | --- |
+| Below `<!-- schema-sync:notes -->` in any generated file | Verbatim |
+| The `Notes` column of a value-list row | Per row |
+| Prose between the title and the Field Reference in a schema note | Verbatim |
+
+**Record notes are never rewritten at all.** Only frontmatter keys are added,
+never removed, and the body is untouched.
+
+## Undeclared properties
+
+Add a property to a record its schema does not declare and you are asked once:
+
+| Choice | Effect |
+| --- | --- |
+| **Define and bind** | Adds the field to the schema *and* to every record of that schema, then opens the dashboard on it. |
+| **Define, unbound** | Adds it as documentation only. Other records untouched, ready to bind later. |
+| **Leave it alone** | Stays a property of that record alone, and is remembered so you are not asked again. |
+
+Dismissing the dialog answers nothing — it asks again later. The type is inferred
+from the value, including `attachment` when the value links to a non-markdown
+file. Whatever you choose, the property itself is never removed or rewritten.
+
+## Asset Renamer
+
+Merged in, with its own ribbon icon, commands and file-menu entry — naming an
+attachment is a separate job from keeping schemas in sync. Its dropdowns are
+built from the record's **own schema's** value lists, so a note declaring no
+schema is offered nothing. A note's schema is resolved from `implements:`, from a
+value list's `configFor`, or from its path.
+
+Commands: **Open asset renamer for active note**, **Configure asset renamer
+sources**, **Bulk rename category dependencies**, **Bulk reload attachment names
+from metadata**.
+
+## Settings
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| Require unlock before editing a field | off | On, every row in 02 / Definition needs its ✎ pressed first. Slower, but harder to change a schema by accident. |
+| Ask about undeclared record properties | on | The prompt described above. |
+| Forget dismissed properties | — | Clears the "leave it alone" list so those properties are offered again. |
+| Confirm before removing a field or deleting a record | on | Gates the second × on a field, and record deletion. Unbinding is never confirmed. |
+| Fallback config folder | `assets/config` | Files here become dropdowns for notes declaring no schema. |
+| config.base path | `assets/config/config.base` | One is always generated for `data/config` as well. |
+| Metadata Menu mapping | off | Registers `Select` preset fields from the value lists. |
+
+## Commands
+
+**Sync schema system** · **Pull from notes** · **Validate schema notes** ·
+**Open schema dashboard** · **Open schema ERD** · **Clean orphaned config
+notes** · **Toggle schema safety for the active note** (pins a note as
+never-rewritten even after closing) · **Generate config.base views**
+
+## Working with the agent
+
+Drop raw material into `data/raw/` — an export, a paste, a scribble. The agent
+reads it, creates or extends the schema, writes the records, and moves the source
+to `data/raw/done/`. It never writes value lists, base views or the ERD; those
+appear the next time you open the vault and sync runs.
+
+If it got a field's type wrong, fix it in 02 / Definition. If it invented a
+schema that duplicates one you had, that is the one thing worth catching early —
+merging two schemas after the fact means rewriting every record.

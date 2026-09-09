@@ -6,6 +6,19 @@ Markdown is the database. Schemas are notes, records are notes, and the value li
 
 The goal is **minimal constraint on editability**. This is a personal knowledge manager, not a database — it optimises for the relationships between notes and for quickly renaming external attachments. Anything needing real constraints belongs in a real DBMS.
 
+The system is called **CabCab Scheme DB**; `schema-sync` is the plugin that implements it.
+
+## Documentation
+
+This file is the design record — what was built and why. Two documents cover use:
+
+| Document | For |
+| --- | --- |
+| [`docs/manual.md`](.obsidian/plugins/schema-sync/docs/manual.md) | You. The dashboard, the two sync directions, editing schema notes by hand, settings. |
+| [`docs/agent-contract.md`](.obsidian/plugins/schema-sync/docs/agent-contract.md) | An AI agent. What it may author, what is generated, and the procedure for turning `data/raw/` into schemas and records. |
+
+[`CLAUDE.md`](CLAUDE.md) loads automatically in an agent session and carries the five invariants plus a pointer to the contract.
+
 ## Problems
 
 ### Done
@@ -71,6 +84,8 @@ _Nothing outstanding from the original list._
 ```
 MyVault/
 ├── data/
+│   ├── raw/                           Inbox — raw notes and exports awaiting normalisation
+│   │   └── done/                        Sources already filed, kept as evidence
 │   ├── schema/<Name>.schema.md        Entity definitions (fields, types, relations)
 │   ├── record/<name>s/                Records implementing a schema
 │   │   ├── _placeholder.<Name>.md       Template — never validated, never counted as data
