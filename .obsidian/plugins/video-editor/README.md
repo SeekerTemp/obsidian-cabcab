@@ -17,10 +17,17 @@ remux. The plugin is `isDesktopOnly: true` and drives a native binary through
 `child_process`.
 
 They do not have to be *installed*. ffmpeg ships as a self-contained static
-executable, so the simplest complete install is to drop `ffmpeg` and
-`ffprobe` into this plugin's own `bin/` folder — no admin rights, nothing on
-`PATH`, and it travels with the vault to whatever machine opens it next. That
-is how this vault has it.
+executable, so the simplest complete install is to put `ffmpeg` and `ffprobe`
+in this plugin's own `bin/` folder — no admin rights, nothing on `PATH`. That
+is how this vault has it, and one command does it:
+
+```bash
+node scripts/fetch-ffmpeg.js
+```
+
+**On a fresh clone that command is the whole setup.** `bin/` is git-ignored, so
+a pull arrives with it empty — see [docs/SETUP.md](docs/SETUP.md) for what does
+and does not travel with the repo.
 
 The plugin looks in three places, in order:
 

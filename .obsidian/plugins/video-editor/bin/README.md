@@ -19,6 +19,11 @@ vault is the repository. They are also platform-specific, so a vault synced
 between a Mac and a Windows machine wants a different pair on each and cannot
 usefully carry both.
 
-Windows builds: <https://www.gyan.dev/ffmpeg/builds/> — the "essentials" release
-is enough. macOS: `brew install ffmpeg`, or copy the binaries here from
-wherever brew put them.
+The quickest way to fill this folder, on Windows or Linux:
+
+```bash
+node ../scripts/fetch-ffmpeg.js
+```
+
+macOS has no single build worth fetching blind: `brew install ffmpeg`, then
+either leave it on `PATH` or copy the two binaries here.

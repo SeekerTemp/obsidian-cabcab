@@ -117,6 +117,9 @@ whether the clip starts on the frame you meant.
 - [x] ffmpeg and ffprobe are in the plugin's own `bin/` — a GPL build, so
       `libx264` is present and re-encode works. `node tests/smoke.js` finds
       them there and passes
+- [x] `node scripts/fetch-ffmpeg.js` puts them there from empty, verified by
+      moving the existing pair aside and running it. See
+      [SETUP.md](SETUP.md) for what a clone on another machine needs
 - [x] **Video Editor** is enabled in `community-plugins.json`
 - [ ] Reload Obsidian so it loads
 
