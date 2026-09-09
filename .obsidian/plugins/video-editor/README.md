@@ -198,6 +198,10 @@ Classes below the banner, in dependency order: `FfmpegRunner`, `Filmstrip`,
 
 ## Tests
 
+**`tests/` is git-ignored and not in the repository** — what has to work on
+another machine is the plugin, not the harness, and Obsidian loads `main.js`
+and nothing else. On a machine that has them:
+
 ```bash
 node tests/all.js            # every suite, each in its own process
 node tests/ffmpeg.test.js    # one suite — every test file runs directly

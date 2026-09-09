@@ -8,8 +8,9 @@ no business being in a git repository.
 
 Both plugins are plain JavaScript with **no build step, no npm, and no
 `package.json`**. `main.js` is what Obsidian loads. There is nothing to
-install, compile or bundle, and node is needed only to run the tests — not to
-use the plugins.
+install, compile or bundle. Node is not needed to *use* either plugin — only to
+run the one setup command below, and Obsidian itself does not care whether node
+is on the machine at all.
 
 | | Travels with the repo | Does not |
 | --- | --- | --- |
@@ -83,22 +84,27 @@ different pair on each and cannot usefully carry both.
 
 ## Checking it worked
 
-```bash
-node tests/all.js     # 276 tests, needs no ffmpeg at all
-node tests/smoke.js   # 29 more, against the real binary
-```
+All of it is in the app, because that is where it matters:
 
-`smoke.js` builds a 60-minute video and cuts it, so it takes a couple of
-minutes. It prints which of the three places the binary came from, which is the
-fastest way to confirm the `bin/` folder is being found:
+1. **The header badge** turns green and names the version. Red means nothing
+   was found anywhere.
+2. **Settings → Video Editor → Where it is looking** names the exact path each
+   binary resolved to, and which of the three places it came from. It reports
+   ffmpeg and ffprobe separately, because half an install is a real state and
+   looks identical to none from the badge alone.
+3. **Open the Video Editor.** The browser should list the vault's videos with a
+   still on each tile. The stills come from ffmpeg, so blank grey rectangles
+   mean the binary is not being found.
+4. **Trim something short.** A few seconds with the default stream copy should
+   finish almost instantly and produce a file beside the source, plus a
+   `MediaInstance` note in `data/media/`.
 
-```
-found via: bundled — .../plugins/video-editor/bin/ffmpeg.exe
-```
+### A note on the test suites
 
-If it says `Skipped: nothing to test against`, the fetch has not run.
+They are not in the repository — `tests/` is git-ignored, because what has to
+work on a new machine is the plugin, not the harness. They exist on the machine
+the work was done on, and none of them is needed to run either plugin: Obsidian
+loads `main.js` and nothing else.
 
-In the app itself: open the Video Editor, and the browser should list the
-vault's videos with a still on each tile. Stills come from ffmpeg, so if the
-tiles are blank grey rectangles the binary is not being found — check the
-header badge and the **Where it is looking** row in settings.
+If you do want them on another machine, they can be un-ignored again with one
+line in `.gitignore`.

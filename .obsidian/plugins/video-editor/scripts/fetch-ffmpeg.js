@@ -191,8 +191,10 @@ async function main() {
     }
   }
 
-  console.log("\nDone. Reload Obsidian; the header badge should turn green.");
-  console.log("Check it with:  node tests/smoke.js");
+  console.log("");
+  console.log("Done. Reload Obsidian.");
+  console.log("The header badge should turn green and name the version, and");
+  console.log("Settings > Video Editor > Where it is looking should say bin.");
 }
 
 main().catch((error) => {

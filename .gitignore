@@ -5,3 +5,5 @@
 .obsidian/plugins/video-editor/bin/*
 !.obsidian/plugins/video-editor/bin/README.md
 ref/
+.obsidian/plugins/media-viewer/tests/
+.obsidian/plugins/video-editor/tests/
