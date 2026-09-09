@@ -984,3 +984,36 @@
     flex: 0 0 auto;
   }
 }
+
+/* The board picker — MV-BOARD. A question asked rarely, because the answer is
+   remembered, so it gets a plain list rather than a search field. */
+.mv-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  margin-bottom: var(--size-4-2);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.mv-board-option {
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The board last added to, marked so the common answer is the obvious one. */
+.mv-board-option.is-suggested {
+  font-weight: var(--font-semibold);
+  border-color: var(--interactive-accent);
+}
+
+.mv-board-new {
+  display: flex;
+  gap: var(--size-4-1);
+  align-items: center;
+}
+
+.mv-board-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

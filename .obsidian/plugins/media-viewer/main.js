@@ -27,6 +27,26 @@ const CRASH_LOG_BUFFER = 300;
 // says something is wrong without burying the app in toasts.
 const CRASH_NOTICE_INTERVAL_MS = 15000;
 
+/* Boards — MV-BOARD.
+ *
+ * A board is an Obsidian canvas: JSON Canvas, a documented open format, an
+ * ordinary file in the vault. This plugin does not build a canvas, own one, or
+ * populate one from a scan — dragging a folder of 500 onto a board is what no
+ * machine handles and nobody wanted. It adds what it is asked to add, connects
+ * what is already there, and leaves everything else alone.
+ *
+ * Nodes are placed at a common height so a board of screenshots reads as a
+ * board rather than as a pile of different-sized pictures. Width follows the
+ * image's own ratio, because a node that distorts its picture is worse than an
+ * untidy row.
+ */
+const BOARD_NODE_HEIGHT = 512;
+const BOARD_NODE_GAP = 64;
+// How wide a board grows before it wraps to another row. Wide enough that a
+// walkthrough reads left to right, short enough that it does not become one
+// endless line nobody can follow.
+const BOARD_ROW_WIDTH = 4096;
+
 const DEFAULT_SETTINGS = {
   lastFolder: null,
   recursive: false,
@@ -52,6 +72,10 @@ const DEFAULT_SETTINGS = {
   // what stops is the record, which is a choice someone editing a vault they
   // do not want indexed should have.
   writeLineage: true,
+  // The board "Add to board" writes to. Remembered rather than asked for every
+  // time, because adding evidence is a repeated action and a picker on each one
+  // would be the friction that stops it being used.
+  lastBoard: null,
   // On by default, unlike debugLogging. This is not tracing — it is the record
   // of things that actually went wrong, which is worth having before anyone
   // knows they need it.
@@ -606,6 +630,110 @@ function labelsChanged(before, after) {
   if (String(a.useCase || "") !== String(b.useCase || "")) return true;
   if (String(a.shows || "") !== String(b.shows || "")) return true;
   return formatLabels(parseLabels(a.labels)) !== formatLabels(parseLabels(b.labels));
+}
+
+/* A node's size on the board, from the image's own proportions.
+ *
+ * Height is fixed so a board reads as a board. Width follows the ratio, since
+ * a node that stretches its picture to a uniform box is worse than an untidy
+ * row — and for evidence, a distorted screenshot is a misleading one. */
+function boardNodeSize(width, height, targetHeight) {
+  const w = Number(width);
+  const h = Number(height);
+  const target = Number(targetHeight) > 0 ? Number(targetHeight) : BOARD_NODE_HEIGHT;
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    // Nothing known about the picture: a square is the honest guess, and the
+    // user can resize it in a canvas built for resizing things.
+    return { width: Math.round(target), height: Math.round(target) };
+  }
+  return { width: Math.max(1, Math.round((w / h) * target)), height: Math.round(target) };
+}
+
+/* Where the next node goes.
+ *
+ * To the right of everything already placed, wrapping to a new row when the
+ * row gets long. Deliberately not a layout: nothing already on the board
+ * moves, ever. Somebody arranged that, and a plugin tidying it up is the most
+ * annoying thing it could do. */
+function boardPlacement(nodes, size, options) {
+  const settings = options || {};
+  const gap = Number.isFinite(Number(settings.gap)) ? Number(settings.gap) : BOARD_NODE_GAP;
+  const rowWidth = Number.isFinite(Number(settings.rowWidth)) ? Number(settings.rowWidth) : BOARD_ROW_WIDTH;
+  const placed = Array.isArray(nodes) ? nodes.filter((node) => node && Number.isFinite(Number(node.x))) : [];
+  if (!placed.length) return { x: 0, y: 0 };
+
+  let minX = Infinity;
+  let maxRight = -Infinity;
+  let maxBottom = -Infinity;
+  let rowTop = Infinity;
+  for (const node of placed) {
+    const x = Number(node.x);
+    const y = Number(node.y);
+    const right = x + (Number(node.width) || 0);
+    const bottom = y + (Number(node.height) || 0);
+    if (x < minX) minX = x;
+    if (right > maxRight) maxRight = right;
+    if (bottom > maxBottom) maxBottom = bottom;
+    if (y < rowTop) rowTop = y;
+  }
+  const nextX = maxRight + gap;
+  if (nextX - minX + size.width <= rowWidth) {
+    return { x: nextX, y: rowTop };
+  }
+  // The row is full, so start another below everything — below the lowest
+  // node rather than below the row, since a board is arranged by hand and the
+  // rows are not necessarily rows any more.
+  return { x: minX, y: maxBottom + gap };
+}
+
+/* An edge's id, derived from the two nodes it joins.
+ *
+ * Deterministic, so re-adding a file or syncing again recognises an edge that
+ * already exists rather than stacking a second one on top of it. */
+function boardEdgeId(fromNode, toNode) {
+  return "mv-" + String(fromNode) + "-" + String(toNode);
+}
+
+/* Which sides an edge leaves and arrives on.
+ *
+ * Chosen from where the nodes actually are, so an arrow leaves the right-hand
+ * edge of a node sitting to the left rather than cutting back through it. */
+function boardEdgeSides(from, to) {
+  const fx = Number(from && from.x) || 0;
+  const fy = Number(from && from.y) || 0;
+  const tx = Number(to && to.x) || 0;
+  const ty = Number(to && to.y) || 0;
+  const dx = tx - fx;
+  const dy = ty - fy;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? { fromSide: "right", toSide: "left" } : { fromSide: "left", toSide: "right" };
+  }
+  return dy >= 0 ? { fromSide: "bottom", toSide: "top" } : { fromSide: "top", toSide: "bottom" };
+}
+
+/* What an edge says before anyone renames it.
+ *
+ * A bare arrow between two screenshots says nothing six weeks later, so the
+ * provenance goes on as a starting label. The moment it exists it is the
+ * user's: MV writes it once and never touches it again. */
+function boardEdgeLabel(record) {
+  const fields = record || {};
+  const op = String(fields.op || "").toLowerCase();
+  if (op === "capture") {
+    const at = Number(fields.sourceTime);
+    return Number.isFinite(at) && at > 0 ? "frame @ " + formatTimecode(at) : "frame";
+  }
+  if (op === "crop") return "crop";
+  if (op === "transform") return "transform";
+  return op || "from";
+}
+
+// A canvas node id. Random rather than derived from the path, because the same
+// file may legitimately appear on a board twice — in two different flows — and
+// two nodes sharing an id would be one node.
+function boardNodeId(random) {
+  const source = typeof random === "function" ? random : Math.random;
+  return "mv" + Math.floor(source() * 1e12).toString(36) + Date.now().toString(36);
 }
 
 // A/D step through the list without wrapping. Wrapping from the last file back
@@ -2102,6 +2230,15 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  boardNodeSize,
+  boardPlacement,
+  boardEdgeId,
+  boardEdgeSides,
+  boardEdgeLabel,
+  boardNodeId,
+  BOARD_NODE_HEIGHT,
+  BOARD_NODE_GAP,
+  BOARD_ROW_WIDTH,
   parseLabels,
   formatLabels,
   labelsChanged,
@@ -3199,6 +3336,161 @@ function guarded(operation, subject, action, fallback) {
   }
 }
 
+/* BoardStore — the canvas file, read and written.
+ *
+ * Obsidian's canvas is the board: infinite pan and zoom, drag to move,
+ * multi-select, groups, labelled edges, and persistence, all of it already
+ * built and all of it a first-class vault document an MCP can read as JSON.
+ * Rebuilding that inside the pane would be the largest thing in this plugin
+ * and worse at every part of it.
+ *
+ * So this class does the small half Obsidian cannot: put a specific file on a
+ * board at a sensible size, and draw the provenance edge if the parent is
+ * already there. Everything else on the board — positions, groups, sticky
+ * notes, the labels a person retypes — is untouched on every write.
+ */
+class BoardStore {
+  constructor(app) {
+    this.app = app;
+  }
+
+  // An empty JSON Canvas. The format is two arrays; anything else in the file
+  // is somebody's and is carried across.
+  static empty() {
+    return { nodes: [], edges: [] };
+  }
+
+  async read(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return null;
+    const raw = await this.app.vault.read(file);
+    if (!String(raw || "").trim()) return BoardStore.empty();
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
+        edges: Array.isArray(parsed.edges) ? parsed.edges : [],
+        // Kept so a write does not drop whatever else the format grows.
+        rest: Object.assign({}, parsed, { nodes: undefined, edges: undefined }),
+      };
+    } catch (error) {
+      // A canvas that will not parse must not be overwritten with a fresh one:
+      // that would delete somebody's board to fix a typo in it.
+      throw new Error("the canvas " + path + " is not valid JSON");
+    }
+  }
+
+  async write(path, board) {
+    const payload = Object.assign({}, board.rest || {}, {
+      nodes: board.nodes || [],
+      edges: board.edges || [],
+    });
+    delete payload.rest;
+    const text = JSON.stringify(payload, null, 2);
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (file) {
+      await this.app.vault.modify(file, text);
+      return file;
+    }
+    await this.ensureFolder(folderOf(path));
+    return this.app.vault.create(path, text);
+  }
+
+  async ensureFolder(folder) {
+    if (!folder) return;
+    if (this.app.vault.getAbstractFileByPath(folder)) return;
+    try {
+      await this.app.vault.createFolder(folder);
+    } catch (error) {
+      // Already there, or created by something else between the check and the
+      // call. Either way the write that follows is what actually matters.
+    }
+  }
+
+  // Every node on the board pointing at this file. More than one is legitimate
+  // — the same frame can appear in two flows — which is why this returns a
+  // list rather than the first match.
+  nodesFor(board, mediaPath) {
+    return (board.nodes || []).filter((node) => node && node.type === "file" && node.file === mediaPath);
+  }
+
+  /* Add a file to a board, and connect it to its parent if the parent is
+     already on it.
+   *
+   * Never adds the parent. Curation is the whole constraint: nothing appears
+   * on a board that was not asked for. */
+  async add(path, mediaPath, options) {
+    const settings = options || {};
+    const board = (await this.read(path)) || BoardStore.empty();
+    const size = boardNodeSize(settings.width, settings.height, settings.nodeHeight);
+    const node = {
+      id: boardNodeId(settings.random),
+      type: "file",
+      file: mediaPath,
+      x: 0,
+      y: 0,
+      width: size.width,
+      height: size.height,
+    };
+    const at = boardPlacement(board.nodes, size, settings);
+    node.x = at.x;
+    node.y = at.y;
+    board.nodes = (board.nodes || []).concat([node]);
+    const edges = this.connect(board, node, mediaPath, settings);
+    await this.write(path, board);
+    return { node, edges };
+  }
+
+  /* Draw the provenance edges for a node just added.
+   *
+   * Both directions: the parent if it is already here, and any children of
+   * this file that are. Adding the video after its captures should join them
+   * up, not leave the board looking unrelated. */
+  connect(board, node, mediaPath, options) {
+    const settings = options || {};
+    const lineage = settings.lineage;
+    if (!lineage) return [];
+    const drawn = [];
+    const byPath = new Map();
+    for (const existing of board.nodes || []) {
+      if (existing && existing.type === "file" && existing.file) byPath.set(existing.file, existing);
+    }
+
+    const record = lineage.recordFor(mediaPath);
+    const parent = record && record.sourcePath ? record.sourcePath : null;
+    if (parent && byPath.has(parent)) {
+      drawn.push(this.edge(board, byPath.get(parent), node, boardEdgeLabel(record && record.frontmatter)));
+    }
+    for (const child of lineage.childrenOf(mediaPath) || []) {
+      const childNode = byPath.get(child);
+      if (!childNode) continue;
+      const childRecord = lineage.recordFor(child);
+      drawn.push(this.edge(board, node, childNode, boardEdgeLabel(childRecord && childRecord.frontmatter)));
+    }
+    return drawn.filter(Boolean);
+  }
+
+  // One edge, added only if an edge between those two nodes is not already
+  // there. An edge that exists is the user's — its label may have been
+  // rewritten — so it is left exactly as it is.
+  edge(board, from, to, label) {
+    const id = boardEdgeId(from.id, to.id);
+    board.edges = board.edges || [];
+    if (board.edges.some((existing) => existing && existing.id === id)) return null;
+    const sides = boardEdgeSides(from, to);
+    const edge = {
+      id,
+      fromNode: from.id,
+      fromSide: sides.fromSide,
+      toNode: to.id,
+      toSide: sides.toSide,
+      label,
+    };
+    board.edges.push(edge);
+    return edge;
+  }
+}
+
 class LineageStore {
   constructor(app, options) {
     const settings = options || {};
@@ -3607,6 +3899,65 @@ class LineageBreakModal extends Modal {
 
   onClose() {
     this.contentEl.empty();
+  }
+}
+
+/* Choosing a board.
+ *
+ * A list of the vault's canvases, plus the option of a new one. Deliberately
+ * plain: this is a question asked rarely, because the answer is remembered.
+ */
+class BoardPickerModal extends Modal {
+  constructor(app, boards, suggested, onChoose) {
+    super(app);
+    this.boards = boards;
+    this.suggested = suggested;
+    this.onChoose = onChoose;
+    this.answered = false;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Add to which board?" });
+    const list = contentEl.createDiv({ cls: "mv-board-list" });
+    for (const path of this.boards) {
+      const button = list.createEl("button", {
+        cls: "mv-board-option",
+        text: baseNameOf(path),
+        attr: { type: "button", title: path },
+      });
+      if (path === this.suggested) button.addClass("is-suggested");
+      button.addEventListener("click", () => this.choose(path));
+    }
+    const fresh = contentEl.createDiv({ cls: "mv-board-new" });
+    const input = fresh.createEl("input", {
+      cls: "mv-board-input",
+      attr: { type: "text", placeholder: "…or a new board's path", value: "" },
+    });
+    const create = fresh.createEl("button", {
+      cls: "mv-board-option",
+      text: "New board",
+      attr: { type: "button" },
+    });
+    create.addEventListener("click", () => {
+      const typed = String(input.value || "").trim();
+      if (!typed) return;
+      this.choose(typed.toLowerCase().endsWith(".canvas") ? typed : typed + ".canvas");
+    });
+  }
+
+  choose(path) {
+    this.answered = true;
+    this.close();
+    this.onChoose(path);
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    // Closing without choosing is an answer too, and the caller is waiting on
+    // a promise that must settle either way.
+    if (!this.answered) this.onChoose(null);
   }
 }
 
@@ -4119,6 +4470,14 @@ class MediaViewerView extends ItemView {
         .setTitle("Reveal in file explorer")
         .setIcon("folder-open")
         .onClick(() => this.plugin.revealInExplorer(path))
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle("Add to board")
+        .setIcon("layout-dashboard")
+        .onClick(() => {
+          void this.plugin.addSelectionToBoard();
+        })
     );
     menu.addItem((item) =>
       item
@@ -6281,6 +6640,10 @@ class MediaViewerPlugin extends Plugin {
 
     this.resolver = new MetadataResolver(this.lineage);
 
+    // Boards are Obsidian canvases. This only ever adds what it is asked to
+    // add — see BoardStore for why it never populates one from a scan.
+    this.boards = new BoardStore(this.app);
+
     this.index = new MediaIndex(this.app.vault);
     this.index.recursive = this.settings.recursive;
     this.index.onChange = (reason, path, oldPath) => this.handleIndexChange(reason, path, oldPath);
@@ -6319,6 +6682,22 @@ class MediaViewerPlugin extends Plugin {
       id: "paste-image-into-folder",
       name: "Paste image into the current folder",
       callback: () => this.pasteFromClipboard(),
+    });
+
+    this.addCommand({
+      id: "add-to-board",
+      name: "Add to board",
+      callback: () => {
+        void this.addSelectionToBoard();
+      },
+    });
+
+    this.addCommand({
+      id: "add-to-board-choose",
+      name: "Add to board (choose a board)",
+      callback: () => {
+        void this.addSelectionToBoard({ choose: true });
+      },
     });
 
     this.addCommand({
@@ -6881,6 +7260,79 @@ let created = null;
    * Only the three fields are passed: LineageStore carries every other field
    * across, so a label edit cannot lose a crop rectangle or a source link.
    */
+  /* Put the selected file on a board.
+   *
+   * The board is remembered rather than asked for each time: adding evidence
+   * is a repeated action, and a picker on every one is the friction that stops
+   * a feature being used. Passing choose asks anyway.
+   */
+  async addSelectionToBoard(options) {
+    const settings = options || {};
+    const path = this.selectedPath;
+    if (!path) {
+      new Notice("Media Viewer: select a file to add to a board");
+      return null;
+    }
+    let board = settings.board || null;
+    if (!board && !settings.choose) board = this.settings.lastBoard;
+    // Nothing remembered, or an explicit ask: the picker settles it, and
+    // closing it without choosing is an answer too.
+    if (!board) board = await this.promptForBoard();
+    if (!board) return null;
+    return this.addToBoard(path, board);
+  }
+
+  async addToBoard(path, boardPath) {
+    const view = this.activeView();
+    const record = this.lineage.recordFor(path);
+    const front = record && record.frontmatter ? record.frontmatter : {};
+    // The dimensions the note recorded, falling back to what the viewer has
+    // decoded. Neither is guaranteed, and boardNodeSize copes with neither.
+    const width = Number(front.width) || (view ? view.naturalWidth || view.videoWidth : 0);
+    const height = Number(front.height) || (view ? view.naturalHeight || view.videoHeight : 0);
+    try {
+      const added = await this.boards.add(boardPath, path, {
+        width,
+        height,
+        lineage: this.lineage,
+      });
+      this.settings.lastBoard = boardPath;
+      await this.saveSettings();
+      const joined = added.edges.length
+        ? " (" + added.edges.length + (added.edges.length === 1 ? " link" : " links") + ")"
+        : "";
+      new Notice("Added " + baseNameOf(path) + " to " + baseNameOf(boardPath) + joined);
+      return added;
+    } catch (error) {
+      reportFailure("board", "could not add " + path + " to " + boardPath, error);
+      new Notice("Media Viewer: could not add this to the board");
+      return null;
+    }
+  }
+
+  /* Which board. Existing canvases first, because the common case is adding to
+     one that is already going. */
+  async promptForBoard() {
+    const canvases = this.app.vault
+      .getFiles()
+      .filter((file) => extensionOf(file.path) === "canvas")
+      .map((file) => file.path)
+      .sort(compareMediaPaths);
+    const suggested = this.settings.lastBoard || (canvases.length ? canvases[0] : null);
+    if (!canvases.length) {
+      // Nothing to choose between yet: the first board is made where the
+      // evidence is, which is the folder the pane is showing.
+      const folder = this.index.folder === null ? "" : this.index.folder;
+      const fresh = joinPath(folder, "board.canvas");
+      new Notice("Media Viewer: starting a new board at " + fresh);
+      return fresh;
+    }
+    return new Promise((resolve) => {
+      const modal = new BoardPickerModal(this.app, canvases, suggested, resolve);
+      modal.open();
+    });
+  }
+
   async saveLabels(path, values) {
     const record = this.lineage.recordFor(path);
     if (!record) {
@@ -7299,6 +7751,8 @@ module.exports = MediaViewerPlugin;
 module.exports.core = core;
 // Exported so the crash log can be driven against a stub adapter.
 module.exports.CrashLog = CrashLog;
+// Exported so the board can be driven against a stub vault.
+module.exports.BoardStore = BoardStore;
 // MediaIndex is not pure — it holds a vault — but the vault surface it uses is
 // one method, so it is testable against a stub and worth testing.
 module.exports.MediaIndex = MediaIndex;

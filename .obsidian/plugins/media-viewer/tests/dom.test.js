@@ -492,7 +492,7 @@ group("a tile is a file, and acts like one", () => {
     ok(menu, "file-menu was triggered, which is what lets other plugins add items");
     deepEqual(
       menu.items.map((item) => item.title),
-      ["Reveal in file explorer", "Open in default app"]
+      ["Reveal in file explorer", "Add to board", "Open in default app"]
     );
   });
 
