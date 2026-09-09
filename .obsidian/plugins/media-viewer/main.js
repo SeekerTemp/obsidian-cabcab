@@ -13,6 +13,20 @@ const DEFAULT_NOTE_FOLDER = "data/media";
 
 // Deliberately small. Anything the user can see in the pane header lives here
 // so the pane comes back the way they left it, and nothing else does.
+// Where the crash log is written, and how much of it is kept. A support tool
+// whose log grows without bound becomes the problem it was meant to report, so
+// the file is trimmed from the front — the newest failure is the one being
+// asked about.
+const CRASH_LOG_PATH = ".obsidian/plugins/media-viewer/crash.log";
+const CRASH_LOG_MAX_BYTES = 262144;
+// Entries held in memory for "Copy crash log", so the command answers without
+// a file read and still works if the write failed.
+const CRASH_LOG_BUFFER = 300;
+// A failure usually arrives with friends — one bad file in a loop, or a
+// re-render that throws on every frame. One notice per this many milliseconds
+// says something is wrong without burying the app in toasts.
+const CRASH_NOTICE_INTERVAL_MS = 15000;
+
 const DEFAULT_SETTINGS = {
   lastFolder: null,
   recursive: false,
@@ -38,6 +52,10 @@ const DEFAULT_SETTINGS = {
   // what stops is the record, which is a choice someone editing a vault they
   // do not want indexed should have.
   writeLineage: true,
+  // On by default, unlike debugLogging. This is not tracing — it is the record
+  // of things that actually went wrong, which is worth having before anyone
+  // knows they need it.
+  crashLog: true,
 };
 
 /* ------------------------------------------------------------------------ *
@@ -464,6 +482,59 @@ function pastePathFor(folder, extension, taken, date) {
     .replace(/^\./, "");
   const suffix = normalised || "png";
   return uniquePath(folder, "pasted+" + timestampFor(date), suffix, taken);
+}
+
+/* The crash log's text, as pure functions.
+ *
+ * Reading a log is the one thing you do when everything else has failed, so
+ * the format is fixed-width at the front and greppable: time, level, scope,
+ * then whatever the failure said. */
+function logTimestamp(date) {
+  const d = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  return d.toISOString();
+}
+
+// An Error, a string, or whatever a rejected promise happened to carry — all
+// three reach this, and none of them may throw on the way through.
+function errorText(error) {
+  if (error === null || error === undefined) return "";
+  if (typeof error === "string") return error;
+  const message = error.message ? String(error.message) : String(error);
+  const stack = error.stack ? String(error.stack) : "";
+  // A stack normally opens "Error: <message>", so printing the message as well
+  // would say it twice. Testing the first line rather than the whole string,
+  // because the message also turns up inside frames often enough.
+  if (stack && stack.split("\n")[0].indexOf(message) !== -1) return stack;
+  return stack ? message + "\n" + stack : message;
+}
+
+// One entry, one line at the front. A stack keeps its own newlines, indented
+// so that a reader — or a grep for "^2026" — can tell entries apart.
+function formatLogEntry(entry) {
+  const record = entry || {};
+  const head = [
+    logTimestamp(record.time),
+    (record.level || "ERROR").toUpperCase(),
+    record.scope || "plugin",
+    record.message || "",
+  ].join(" | ");
+  const detail = errorText(record.error);
+  if (!detail) return head;
+  return head + "\n" + detail.split("\n").map((line) => "    " + line).join("\n");
+}
+
+// Keep the tail. Cutting at a byte offset would leave a fragment of whatever
+// entry straddles it, so the first whole line after the cut is where the kept
+// text starts.
+function trimLogText(text, maxBytes) {
+  const value = String(text == null ? "" : text);
+  const cap = Number(maxBytes);
+  const limit = Number.isFinite(cap) && cap > 0 ? cap : CRASH_LOG_MAX_BYTES;
+  if (value.length <= limit) return value;
+  const tail = value.slice(value.length - limit);
+  const newline = tail.indexOf("\n");
+  const whole = newline === -1 ? tail : tail.slice(newline + 1);
+  return "… earlier entries trimmed …\n" + whole;
 }
 
 // A/D step through the list without wrapping. Wrapping from the last file back
@@ -1800,7 +1871,7 @@ class LruCache {
     try {
       this.onEvict(key, value);
     } catch (error) {
-      console.error("Media Viewer: thumbnail eviction failed for " + key, error);
+      reportFailure("plugin", "thumbnail eviction failed for " + key, error);
     }
   }
 
@@ -1960,6 +2031,13 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  logTimestamp,
+  errorText,
+  formatLogEntry,
+  trimLogText,
+  CRASH_LOG_PATH,
+  CRASH_LOG_MAX_BYTES,
+  CRASH_LOG_BUFFER,
   pastePathFor,
   extensionForMime,
   compareMediaPaths,
@@ -2288,7 +2366,7 @@ function buildDisplayProxy(image, width, height, maxEdge) {
     context.drawImage(image, 0, 0, size.width, size.height);
     return { image: canvas, width: size.width, height: size.height, scale: size.scale };
   } catch (error) {
-    console.error("Media Viewer: building a display proxy failed", error);
+    reportFailure("plugin", "building a display proxy failed", error);
     return { image, width, height, scale: 1 };
   }
 }
@@ -2891,11 +2969,156 @@ class CropOverlay {
  * it is a wall. A Notice belongs where the user asked for something and did not
  * get it.
  * ------------------------------------------------------------------------ */
+/* The crash log.
+ *
+ * MV-LOG was retired for good reason — a ring buffer and a file writer
+ * reproducing a worse devtools console. This is not that. It exists so that
+ * someone using the plugin can hand over what broke without being asked to
+ * open devtools and reproduce it, which is the difference between a bug report
+ * and a shrug.
+ *
+ * So: only failures, never tracing. Writes are debounced because a loop that
+ * throws on every file would otherwise turn one bad folder into a thousand
+ * disk writes, and the file is trimmed from the front because the newest
+ * failure is the one being asked about.
+ */
+class CrashLog {
+  constructor(app, options) {
+    const settings = options || {};
+    this.app = app;
+    this.path = settings.path || CRASH_LOG_PATH;
+    this.maxBytes = settings.maxBytes || CRASH_LOG_MAX_BYTES;
+    this.enabled = settings.enabled !== false;
+    this.onNotice = typeof settings.onNotice === "function" ? settings.onNotice : null;
+    // Held in memory as well as on disk, so "Copy crash log" answers even if
+    // every write failed — which is exactly the situation worth reporting.
+    this.entries = [];
+    this.pending = [];
+    this.timer = null;
+    this.lastNoticeAt = 0;
+    // A write that fails must not be retried on every entry forever; one
+    // report is enough, and the memory buffer still holds everything.
+    this.writeFailed = false;
+  }
+
+  record(scope, message, error) {
+    if (!this.enabled) return null;
+    const entry = { time: new Date(), level: "ERROR", scope, message, error };
+    const line = formatLogEntry(entry);
+    this.entries.push(line);
+    while (this.entries.length > CRASH_LOG_BUFFER) this.entries.shift();
+    this.pending.push(line);
+    this.scheduleFlush();
+    this.notice();
+    return line;
+  }
+
+  // One notice per interval. A failure usually arrives with friends, and a
+  // toast per file is worse than the failure.
+  notice() {
+    if (!this.onNotice) return;
+    const now = Date.now();
+    if (now - this.lastNoticeAt < CRASH_NOTICE_INTERVAL_MS) return;
+    this.lastNoticeAt = now;
+    this.onNotice();
+  }
+
+  scheduleFlush() {
+    if (this.timer !== null) return;
+    if (typeof window === "undefined" || !window.setTimeout) {
+      // No timer to schedule against — flush inline rather than never.
+      this.flush();
+      return;
+    }
+    this.timer = window.setTimeout(() => {
+      this.timer = null;
+      this.flush();
+    }, 500);
+  }
+
+  async flush() {
+    if (!this.pending.length || this.writeFailed) return false;
+    const text = this.pending.join("\n") + "\n";
+    this.pending = [];
+    const adapter = this.app && this.app.vault && this.app.vault.adapter;
+    if (!adapter || typeof adapter.write !== "function") return false;
+    try {
+      let existing = "";
+      if (typeof adapter.exists === "function" && (await adapter.exists(this.path))) {
+        existing = typeof adapter.read === "function" ? await adapter.read(this.path) : "";
+      }
+      await adapter.write(this.path, trimLogText(existing + text, this.maxBytes));
+      return true;
+    } catch (error) {
+      // Reported once, to the console rather than to itself — a log that
+      // recurses on its own write failure helps nobody.
+      this.writeFailed = true;
+      console.error("Media Viewer: could not write the crash log", error);
+      return false;
+    }
+  }
+
+  text() {
+    return this.entries.join("\n");
+  }
+
+  async clear() {
+    this.entries = [];
+    this.pending = [];
+    this.writeFailed = false;
+    const adapter = this.app && this.app.vault && this.app.vault.adapter;
+    if (!adapter || typeof adapter.write !== "function") return false;
+    try {
+      await adapter.write(this.path, "");
+      return true;
+    } catch (error) {
+      console.error("Media Viewer: could not clear the crash log", error);
+      return false;
+    }
+  }
+
+  dispose() {
+    if (this.timer !== null && typeof window !== "undefined" && window.clearTimeout) {
+      window.clearTimeout(this.timer);
+    }
+    this.timer = null;
+    return this.flush();
+  }
+}
+
+/* The log every guarded path reports to.
+ *
+ * Module-level rather than passed down, because guarded() is called from
+ * places that hold no plugin reference — and threading one through forty call
+ * sites to reach a logger would be a worse cost than this. Set on load,
+ * cleared on unload, so a stale plugin instance cannot keep logging. */
+let activeCrashLog = null;
+
+function setCrashLog(log) {
+  activeCrashLog = log;
+  return activeCrashLog;
+}
+
+// Every failure in the plugin goes through here: the console keeps its message
+// for whoever has devtools open, and the log keeps it for whoever does not.
+function reportFailure(scope, message, error) {
+  // The console line every call site used to print itself, unchanged — this
+  // function widens where a failure goes, it does not reword it.
+  console.error("Media Viewer: " + message, error);
+  if (activeCrashLog) {
+    try {
+      activeCrashLog.record(scope, message, error);
+    } catch (loggingError) {
+      console.error("Media Viewer: the crash log itself failed", loggingError);
+    }
+  }
+}
+
 function guarded(operation, subject, action, fallback) {
   try {
     return action();
   } catch (error) {
-    console.error("Media Viewer: " + operation + " failed for " + (subject || "an unnamed item"), error);
+    reportFailure("guard", operation + " failed for " + (subject || "an unnamed item"), error);
     return fallback;
   }
 }
@@ -4068,7 +4291,7 @@ class MediaViewerView extends ItemView {
       // blob version would have to be careful about.
       return canvas.toDataURL("image/jpeg", 0.8);
     } catch (error) {
-      console.error("Media Viewer: could not draw a frame for the grid", error);
+      reportFailure("plugin", "could not draw a frame for the grid", error);
       return null;
     }
   }
@@ -4111,7 +4334,7 @@ class MediaViewerView extends ItemView {
       video.src = "";
       if (typeof video.load === "function") video.load();
     } catch (error) {
-      console.error("Media Viewer: releasing a thumbnail decoder failed", error);
+      reportFailure("plugin", "releasing a thumbnail decoder failed", error);
     }
   }
 
@@ -4364,7 +4587,7 @@ class MediaViewerView extends ItemView {
       video.src = "";
       if (typeof video.load === "function") video.load();
     } catch (error) {
-      console.error("Media Viewer: releasing the video failed", error);
+      reportFailure("plugin", "releasing the video failed", error);
     }
   }
 
@@ -4379,7 +4602,7 @@ class MediaViewerView extends ItemView {
       // console and no visible change in the pane.
       if (started && typeof started.catch === "function") {
         started.catch((error) => {
-          console.error("Media Viewer: playback failed", error);
+          reportFailure("plugin", "playback failed", error);
           this.updateVideoBar();
         });
       }
@@ -4610,7 +4833,7 @@ class MediaViewerView extends ItemView {
     const started = typeof video.play === "function" ? video.play() : null;
     if (started && typeof started.catch === "function") {
       started.catch((error) => {
-        console.error("Media Viewer: resuming after a hover failed", error);
+        reportFailure("plugin", "resuming after a hover failed", error);
         this.updateVideoBar();
       });
     }
@@ -4843,7 +5066,7 @@ class MediaViewerView extends ItemView {
         new Notice("Media Viewer: " + baseNameOf(path) + " is " + error.message.replace(/^\d+ x \d+ is /, ""));
         console.warn("Media Viewer: refused to decode " + path + " — " + error.message);
       } else {
-        console.error("Media Viewer: could not decode " + path + " for editing", error);
+        reportFailure("plugin", "could not decode " + path + " for editing", error);
         new Notice("Media Viewer: " + baseNameOf(path) + " could not be decoded for editing");
       }
       this.updateViewerBar();
@@ -4927,7 +5150,7 @@ class MediaViewerView extends ItemView {
     try {
       session.renderPreviewTo(this.editCanvasEl, MAX_DISPLAY_EDGE);
     } catch (error) {
-      console.error("Media Viewer: drawing the edit preview failed", error);
+      reportFailure("plugin", "drawing the edit preview failed", error);
       return;
     }
     if (this.editStatusEl) this.editStatusEl.setText(this.editSummary());
@@ -5259,7 +5482,7 @@ class MediaViewerView extends ItemView {
     try {
       encoded = await session.encode({ quality: this.settings.encodeQuality });
     } catch (error) {
-      console.error("Media Viewer: encoding " + session.path + " failed", error);
+      reportFailure("plugin", "encoding " + session.path + " failed", error);
       new Notice("Media Viewer: this edit could not be encoded — the session is still open");
       return null;
     }
@@ -5271,7 +5494,7 @@ class MediaViewerView extends ItemView {
     try {
       created = await this.plugin.app.vault.createBinary(path, encoded.bytes);
     } catch (error) {
-      console.error("Media Viewer: could not write " + path, error);
+      reportFailure("plugin", "could not write " + path, error);
       new Notice("Media Viewer: could not write " + baseNameOf(path) + " — the session is still open");
       return null;
     }
@@ -5678,12 +5901,49 @@ class MediaViewerSettingTab extends PluginSettingTab {
           void this.plugin.saveSettings();
         })
       );
+
+    new Setting(containerEl)
+      .setName("Crash log")
+      .setDesc(
+        "Record failures to .obsidian/plugins/media-viewer/crash.log so they can be handed over without reproducing them in the developer console. Only failures, never tracing — this is the one that stays on."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.crashLog !== false).onChange((value) => {
+          this.plugin.settings.crashLog = Boolean(value);
+          if (this.plugin.crashLog) this.plugin.crashLog.enabled = Boolean(value);
+          void this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Crash log actions")
+      .setDesc("Copy what has been recorded this session, or start it over.")
+      .addButton((button) =>
+        button.setButtonText("Copy").onClick(() => {
+          void this.plugin.copyCrashLog();
+        })
+      )
+      .addButton((button) =>
+        button.setButtonText("Clear").onClick(() => {
+          void this.plugin.clearCrashLog();
+        })
+      );
   }
 }
 
 class MediaViewerPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
+
+    /* First, so that anything failing during the rest of load is recorded
+       rather than lost. A plugin that cannot report its own startup failure is
+       the hardest kind to get a bug report about. */
+    this.crashLog = new CrashLog(this.app, {
+      enabled: this.settings.crashLog !== false,
+      onNotice: () => new Notice("Media Viewer hit an error — see the crash log"),
+    });
+    setCrashLog(this.crashLog);
+    this.registerCrashHandlers();
 
     // Selection is a path, never an index. This is the decision that lets a
     // save keep the scroll position and the highlight it started with.
@@ -5737,6 +5997,18 @@ class MediaViewerPlugin extends Plugin {
       id: "paste-image-into-folder",
       name: "Paste image into the current folder",
       callback: () => this.pasteFromClipboard(),
+    });
+
+    this.addCommand({
+      id: "copy-crash-log",
+      name: "Copy crash log",
+      callback: () => this.copyCrashLog(),
+    });
+
+    this.addCommand({
+      id: "clear-crash-log",
+      name: "Clear crash log",
+      callback: () => this.clearCrashLog(),
     });
 
     // Registered on the vault rather than inside the view, so the index stays
@@ -5876,7 +6148,7 @@ class MediaViewerPlugin extends Plugin {
     try {
       return vault.getConfig("alwaysUpdateLinks") === true;
     } catch (error) {
-      console.error("Media Viewer: could not read the link-updating setting", error);
+      reportFailure("plugin", "could not read the link-updating setting", error);
       return false;
     }
   }
@@ -5902,7 +6174,7 @@ class MediaViewerPlugin extends Plugin {
         console.log("Media Viewer: rewrote media: in " + own.notePath + " → " + newPath);
       } catch (error) {
         failed.push(own.notePath);
-        console.error("Media Viewer: could not rewrite media: in " + own.notePath, error);
+        reportFailure("plugin", "could not rewrite media: in " + own.notePath, error);
       }
     }
 
@@ -5915,7 +6187,7 @@ class MediaViewerPlugin extends Plugin {
         console.log("Media Viewer: rewrote source: in " + child.notePath + " → " + newPath);
       } catch (error) {
         failed.push(child.notePath);
-        console.error("Media Viewer: could not rewrite source: in " + child.notePath, error);
+        reportFailure("plugin", "could not rewrite source: in " + child.notePath, error);
       }
     }
 
@@ -5938,6 +6210,14 @@ class MediaViewerPlugin extends Plugin {
       if (!(view instanceof MediaViewerView)) continue;
       guarded("refreshing a lineage panel", this.selectedPath, () => view.renderLineage());
     }
+  }
+
+  /* The buffered entries are the ones most worth keeping — a plugin being
+     disabled right after a failure is a plugin someone is disabling because of
+     it. dispose() flushes rather than dropping the timer. */
+  async onunload() {
+    if (this.crashLog) await this.crashLog.dispose();
+    setCrashLog(null);
   }
 
   async loadSettings() {
@@ -6157,7 +6437,7 @@ let created = null;
       const bytes = await item.blob.arrayBuffer();
       created = await this.app.vault.createBinary(path, bytes);
     } catch (error) {
-      console.error("Media Viewer: could not write a pasted image to " + path, error);
+      reportFailure("plugin", "could not write a pasted image to " + path, error);
       new Notice("Media Viewer: could not write the pasted image");
       return null;
     }
@@ -6208,7 +6488,7 @@ let created = null;
         height: session.sourceHeight,
       });
     } catch (error) {
-      console.error("Media Viewer: could not write the root note for " + sourcePath, error);
+      reportFailure("plugin", "could not write the root note for " + sourcePath, error);
       new Notice("Media Viewer: " + baseNameOf(sourcePath) + " could not be tracked");
     }
     const shape = session.describe();
@@ -6227,7 +6507,7 @@ let created = null;
       this.logTiming("lineage-write", path, started);
       return written;
     } catch (error) {
-      console.error("Media Viewer: could not write the lineage note for " + path, error);
+      reportFailure("plugin", "could not write the lineage note for " + path, error);
       new Notice(
         "Media Viewer: " + baseNameOf(path) + " was saved but not tracked — use Repair lineage"
       );
@@ -6283,7 +6563,7 @@ let created = null;
       new Notice("Marked " + baseNameOf(target) + " reviewed");
       return file;
     } catch (error) {
-      console.error("Media Viewer: could not mark " + target + " reviewed", error);
+      reportFailure("plugin", "could not mark " + target + " reviewed", error);
       new Notice("Media Viewer: could not write a note for " + baseNameOf(target));
       return null;
     }
@@ -6343,7 +6623,7 @@ let created = null;
       );
       return file;
     } catch (error) {
-      console.error("Media Viewer: could not repair the lineage of " + target, error);
+      reportFailure("plugin", "could not repair the lineage of " + target, error);
       new Notice("Media Viewer: could not write a note for " + baseNameOf(target));
       return null;
     }
@@ -6437,7 +6717,7 @@ let created = null;
     try {
       contents = await clipboard.read();
     } catch (error) {
-      console.error("Media Viewer: reading the clipboard failed", error);
+      reportFailure("plugin", "reading the clipboard failed", error);
       new Notice("Media Viewer: could not read the clipboard");
       return [];
     }
@@ -6448,7 +6728,7 @@ let created = null;
       try {
         items.push({ blob: await entry.getType(mime), mime });
       } catch (error) {
-        console.error("Media Viewer: could not read a clipboard image", error);
+        reportFailure("plugin", "could not read a clipboard image", error);
       }
     }
     if (!items.length) {
@@ -6456,6 +6736,73 @@ let created = null;
       return [];
     }
     return this.writePastedImages(items);
+  }
+
+  /* Window-level failures.
+   *
+   * The guarded paths catch what this plugin calls directly; these catch what
+   * it schedules — a callback from an image decode, a rejected promise nobody
+   * awaited. Registered through registerDomEvent so Obsidian removes them on
+   * unload rather than leaving a dead plugin listening.
+   *
+   * Errors from other plugins land here too. They are kept, but marked: during
+   * a testing session "something threw while I was using the media pane" is
+   * worth having even when the something was not us.
+   */
+  registerCrashHandlers() {
+    if (typeof window === "undefined" || !this.registerDomEvent) return;
+    this.registerDomEvent(window, "error", (event) => {
+      const error = event && (event.error || event.message);
+      this.recordWindowFailure("window.error", error, event && event.filename);
+    });
+    this.registerDomEvent(window, "unhandledrejection", (event) => {
+      this.recordWindowFailure("unhandled rejection", event && event.reason, null);
+    });
+  }
+
+  recordWindowFailure(scope, error, filename) {
+    if (!this.crashLog) return;
+    const text = errorText(error) + " " + (filename || "");
+    const ours = text.indexOf("media-viewer") !== -1;
+    this.crashLog.record(scope, ours ? "in Media Viewer" : "elsewhere in Obsidian", error);
+  }
+
+  async clearCrashLog() {
+    if (!this.crashLog) return false;
+    const cleared = await this.crashLog.clear();
+    new Notice(cleared ? "Media Viewer: crash log cleared" : "Media Viewer: could not clear the crash log");
+    return cleared;
+  }
+
+  async openCrashLog() {
+    const path = this.crashLog ? this.crashLog.path : CRASH_LOG_PATH;
+    if (this.crashLog) await this.crashLog.flush();
+    const adapter = this.app.vault.adapter;
+    const exists = adapter && typeof adapter.exists === "function" ? await adapter.exists(path) : false;
+    if (!exists) {
+      new Notice("Media Viewer: nothing has been logged yet");
+      return false;
+    }
+    // Opened outside the vault's file list, because .obsidian is not a folder
+    // Obsidian will open a file from — so the text goes to the clipboard and
+    // the path is named, which is what a bug report needs anyway.
+    return this.copyCrashLog();
+  }
+
+  async copyCrashLog() {
+    const text = this.crashLog ? this.crashLog.text() : "";
+    if (!text) {
+      new Notice("Media Viewer: nothing has been logged yet");
+      return false;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice("Media Viewer: crash log copied");
+      return true;
+    } catch (error) {
+      reportFailure("crash-log", "could not copy the crash log", error);
+      return false;
+    }
   }
 
   async activateView() {
@@ -6482,6 +6829,8 @@ module.exports = MediaViewerPlugin;
 
 // Exposed for the out-of-vault test script. Obsidian ignores extra exports.
 module.exports.core = core;
+// Exported so the crash log can be driven against a stub adapter.
+module.exports.CrashLog = CrashLog;
 // MediaIndex is not pure — it holds a vault — but the vault surface it uses is
 // one method, so it is testable against a stub and worth testing.
 module.exports.MediaIndex = MediaIndex;
