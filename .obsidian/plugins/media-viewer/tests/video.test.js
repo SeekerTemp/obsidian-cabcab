@@ -182,6 +182,7 @@ const FILES = ["data/assets/a.png", "data/assets/clip.mp4", "data/assets/other.w
 
 async function paneOver(paths) {
   dom.clearTimers();
+  dom.clearFrames();
   const app = fakeApp(paths);
   const plugin = new MediaViewerPlugin(app, {});
   plugin.loadData = async () => null;
@@ -804,6 +805,95 @@ group("a video written to underneath the viewer", () => {
     plugin.index.handleDelete({ path: "data/assets/clip.mp4" });
     equal(view.viewerPath, "data/assets/other.webm");
     equal(video.paused, true, "and the deleted one is released");
+  });
+});
+
+
+/* Reverse playback — MV-REVERSE. There is no backwards in a video element, so
+   this is a seek per animation frame, and the measured rate is as much the
+   deliverable as the playback. */
+
+group("playing backwards", () => {
+  test("each frame walks the head back by the time the last one took", () => {
+    // 100ms at 1x is a tenth of a second of video.
+    close(core.reverseStep(10, 100, 1), 9.9, 1e-9);
+    close(core.reverseStep(10, 100, 2), 9.8, 1e-9, "and the speed applies");
+  });
+
+  test("a stalled frame does not jump the head backwards", () => {
+    // Without the clamp, one slow frame makes a stall look like a seek bug.
+    close(core.reverseStep(60, 5000, 1), 59.75, 1e-9);
+  });
+
+  test("it stops at the start rather than going negative", () => {
+    equal(core.reverseStep(0.05, 100, 1), 0);
+    equal(core.reverseStep(0, 100, 1), 0);
+  });
+
+  test("nonsense in does not move the head", () => {
+    equal(core.reverseStep(10, 0, 1), 10);
+    equal(core.reverseStep(10, NaN, 1), 10);
+    equal(core.reverseStep(NaN, 100, 1), 0);
+  });
+
+  test("the measured rate is frames over the time they took", () => {
+    equal(core.measuredFrameRate(30, 1000), 30);
+    equal(core.measuredFrameRate(6, 1000), 6);
+    equal(core.measuredFrameRate(0, 0), 0, "and an unrun loop reports nothing rather than dividing");
+  });
+
+  test("R starts it, and the video is paused first", async () => {
+    const { view } = await playing();
+    view.videoEl.currentTime = 30;
+    view.togglePlayback();
+    equal(view.videoEl.paused, false);
+    view.handleKey({ key: "r" });
+    ok(view.reversing, "running");
+    equal(view.videoEl.paused, true, "forward and reverse would fight over currentTime");
+  });
+
+  test("each animation frame moves the head back", async () => {
+    const { view } = await playing();
+    view.videoEl.currentTime = 30;
+    view.startReverse();
+    const before = view.videoEl.currentTime;
+    // Backdated, because a test runs inside one millisecond and a frame that
+    // took no time is deliberately a frame that moves nothing.
+    view.reversing.last = Date.now() - 100;
+    dom.runFrames();
+    ok(view.videoEl.currentTime < before, "moved back");
+  });
+
+  test("playing forwards ends the run", async () => {
+    const { view } = await playing();
+    view.videoEl.currentTime = 30;
+    view.startReverse();
+    view.togglePlayback();
+    equal(view.reversing, null);
+  });
+
+  test("reaching the start ends it, rather than looping", async () => {
+    // Forward playback stops at the end rather than looping, and this is the
+    // same rule at the other end of the file.
+    const { view } = await playing();
+    view.videoEl.currentTime = 0;
+    view.startReverse();
+    equal(view.reversing, null, "it stopped on the first step");
+    equal(view.videoEl.currentTime, 0);
+  });
+
+  test("leaving the video ends it, so nothing seeks a released element", async () => {
+    const { plugin, view } = await playing();
+    view.videoEl.currentTime = 30;
+    view.startReverse();
+    plugin.select("data/assets/a.png");
+    equal(view.reversing, null);
+    equal(dom.runFrames(), 0, "and no frame is left queued");
+  });
+
+  test("with no video there is nothing to reverse", async () => {
+    const { view } = await paneOver(FILES);
+    equal(view.toggleReverse(), false);
   });
 });
 

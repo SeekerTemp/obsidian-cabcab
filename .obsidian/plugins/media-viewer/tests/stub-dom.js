@@ -384,6 +384,17 @@ function installDom() {
     createElement: (tag) => new StubElement(tag),
   };
   global.IntersectionObserver = StubIntersectionObserver;
+  /* Animation frames, driven by hand. Reverse playback is a seek per frame,
+     and a loop that ran on its own would either never stop or run as fast as
+     node can, neither of which is a test. */
+  const frames = [];
+  global.requestAnimationFrame = (fn) => {
+    frames.push(fn);
+    return frames.length;
+  };
+  global.cancelAnimationFrame = (handle) => {
+    if (handle >= 1 && handle <= frames.length) frames[handle - 1] = null;
+  };
   StubIntersectionObserver.instances = [];
   // The grid defers one reload through setTimeout; tests drive it by hand.
   const pending = [];
@@ -396,6 +407,21 @@ function installDom() {
   };
   return {
     root,
+    // Runs whatever animation frames are queued, once. Returns how many ran,
+    // so a test can assert that a loop stopped rather than merely paused.
+    runFrames() {
+      const queued = frames.splice(0, frames.length);
+      let ran = 0;
+      for (const fn of queued) {
+        if (!fn) continue;
+        ran += 1;
+        fn();
+      }
+      return ran;
+    },
+    clearFrames() {
+      return frames.splice(0, frames.length).length;
+    },
     // Runs whatever the grid deferred, so the eviction-reload path can be
     // asserted rather than raced.
     runTimers() {

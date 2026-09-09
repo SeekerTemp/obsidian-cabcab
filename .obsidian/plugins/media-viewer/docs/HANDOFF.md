@@ -153,7 +153,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 9 `MV-SPEED`
 - [x] 10 `MV-VTHUMB`
 - [x] 7a `MV-PASTE` — added after M2, out of sequence because it needed nothing from M3
-- [ ] 11 `MV-REVERSE`
+- [x] 11 `MV-REVERSE` — built; the measured rate decides whether it stays
 - [x] 12 `MV-FRAME`
 - [x] 13 `MV-CROPMATH`
 - [x] 14 `MV-SESSION`

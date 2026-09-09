@@ -736,6 +736,37 @@ function boardNodeId(random) {
   return "mv" + Math.floor(source() * 1e12).toString(36) + Date.now().toString(36);
 }
 
+/* Reverse playback, as maths.
+ *
+ * There is no backwards in an HTMLVideoElement — a negative playbackRate is
+ * rejected — so reverse is a seek per animation frame, walking currentTime
+ * back by however long the last frame took. That makes it honestly
+ * best-effort: on long H.264 with sparse keyframes each seek can decode from
+ * the previous keyframe forward, and the achieved rate falls through the
+ * floor. Which is why it ships behind a measurement rather than a claim.
+ */
+function reverseStep(current, elapsedMs, rate) {
+  const at = Number(current);
+  if (!Number.isFinite(at)) return 0;
+  const elapsed = Number(elapsedMs);
+  const speed = Number(rate) > 0 ? Number(rate) : 1;
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return at;
+  // Clamped, so a frame the browser stalled on for a second does not jump the
+  // head half a minute backwards and make the stall look like a seek bug.
+  const step = Math.min(elapsed, 250) / 1000;
+  return Math.max(0, at - step * speed);
+}
+
+// Frames actually delivered per second. The number MV-REVERSE exists to
+// produce: below about ten this is not playback, it is a slideshow, and the
+// honest thing is to say so rather than to leave it running.
+function measuredFrameRate(frames, elapsedMs) {
+  const count = Number(frames);
+  const elapsed = Number(elapsedMs);
+  if (!Number.isFinite(count) || !Number.isFinite(elapsed) || elapsed <= 0) return 0;
+  return Math.round((count / (elapsed / 1000)) * 10) / 10;
+}
+
 // A/D step through the list without wrapping. Wrapping from the last file back
 // to the first reads as a jump to somewhere else rather than as a step, and
 // there is no way to tell the two apart from the keyboard.
@@ -2230,6 +2261,8 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  reverseStep,
+  measuredFrameRate,
   boardNodeSize,
   boardPlacement,
   boardEdgeId,
@@ -4269,6 +4302,11 @@ class MediaViewerView extends ItemView {
     });
     this.scrubEl = scrub;
 
+    this.reverseEl = this.barButton(bar, "◀◀", () => this.toggleReverse());
+    this.reverseEl.addClass("mv-reverse");
+    this.reverseEl.setAttribute("aria-label", "Play backwards");
+    this.reverseEl.title = "Play backwards (R)";
+
     this.captureEl = this.barButton(bar, "Capture", () => {
       void this.captureFrame();
     });
@@ -5081,6 +5119,9 @@ class MediaViewerView extends ItemView {
   // Note what this does not reset: playbackRate is the pane's, not the
   // element's, and outlives every video opened in it.
   releaseVideo() {
+    // Before the element goes: a reverse loop holding a released video would
+    // seek an element nothing is showing.
+    if (this.reversing) this.stopReverse();
     const video = this.videoEl;
     this.videoEl = null;
     this.videoWidth = 0;
@@ -5107,6 +5148,9 @@ class MediaViewerView extends ItemView {
     const video = this.videoEl;
     if (!video) return false;
     this.hoverPaused = false;
+    // Forward and reverse would fight over currentTime, and the video would
+    // jitter in place rather than doing either.
+    if (this.reversing) this.stopReverse();
     if (video.paused) {
       const started = typeof video.play === "function" ? video.play() : null;
       // play() rejects when the browser refuses — a codec it turns out not to
@@ -5244,6 +5288,82 @@ class MediaViewerView extends ItemView {
     return path;
   }
 
+  /* Play backwards.
+   *
+   * Each animation frame seeks back by the time the last one took. Playback is
+   * paused first, because forward playback and this loop would fight over
+   * currentTime and the video would jitter in place.
+   *
+   * The achieved frame rate is measured over the run and reported when it
+   * stops. The design allowed for dropping this feature outright if the number
+   * turns out to be unusable on real files — so the number is the deliverable
+   * as much as the playback is.
+   */
+  toggleReverse() {
+    if (this.reversing) return this.stopReverse();
+    return this.startReverse();
+  }
+
+  startReverse() {
+    const video = this.videoEl;
+    if (!video) return false;
+    if (typeof requestAnimationFrame !== "function") {
+      new Notice("Media Viewer: this build cannot play in reverse");
+      return false;
+    }
+    if (!video.paused && typeof video.pause === "function") video.pause();
+    // Reverse is a deliberate act, so it ends the hover peek the same way a
+    // wheel step does.
+    this.hoverPaused = false;
+    this.reversing = {
+      last: Date.now(),
+      started: Date.now(),
+      frames: 0,
+    };
+    this.updateVideoBar();
+    this.stepReverse();
+    return true;
+  }
+
+  stepReverse() {
+    const run = this.reversing;
+    const video = this.videoEl;
+    if (!run || !video) return;
+    const now = Date.now();
+    const elapsed = now - run.last;
+    run.last = now;
+    run.frames += 1;
+    const next = reverseStep(video.currentTime, elapsed, this.playbackRate);
+    video.currentTime = next;
+    this.updateVideoBar();
+    if (next <= 0) {
+      // The start of the file is the end of the run, the same way forward
+      // playback stops at the end rather than looping.
+      this.stopReverse();
+      return;
+    }
+    run.handle = requestAnimationFrame(() => this.stepReverse());
+  }
+
+  stopReverse() {
+    const run = this.reversing;
+    this.reversing = null;
+    if (!run) return false;
+    if (run.handle !== undefined && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(run.handle);
+    }
+    const rate = measuredFrameRate(run.frames, Date.now() - run.started);
+    this.plugin.logTiming("reverse", this.viewerPath, run.started, "fps=" + rate);
+    // Reported whether or not debug logging is on: this is the measurement the
+    // feature was made conditional on, and it is worth seeing once.
+    console.info("Media Viewer: reverse playback managed " + rate + " fps");
+    if (rate > 0 && rate < 10) {
+      new Notice("Media Viewer: reverse playback managed only " + rate + " fps on this file");
+    }
+    this.updateVideoBar();
+    return true;
+  }
+
   seekToScrub(position) {
     const video = this.videoEl;
     if (!video) return false;
@@ -5273,6 +5393,10 @@ class MediaViewerView extends ItemView {
     if (this.captureEl) {
       this.captureEl.disabled = !video || Boolean(this.capturing);
       this.captureEl.setText(this.capturing ? "Capturing…" : "Capture");
+    }
+    if (this.reverseEl) {
+      this.reverseEl.disabled = !seekable;
+      this.reverseEl.toggleClass("is-active", Boolean(this.reversing));
     }
     if (this.stepBackEl) this.stepBackEl.disabled = !seekable;
     if (this.stepForwardEl) this.stepForwardEl.disabled = !seekable;
@@ -5528,6 +5652,7 @@ class MediaViewerView extends ItemView {
     if (key === " " || key === "spacebar") return this.togglePlayback();
     if (key === "w") return this.seekBy(VIDEO_SEEK_SECONDS);
     if (key === "s") return this.seekBy(-VIDEO_SEEK_SECONDS);
+    if (key === "r") return this.toggleReverse();
     if (key === "c") {
       void this.captureFrame();
       return true;
