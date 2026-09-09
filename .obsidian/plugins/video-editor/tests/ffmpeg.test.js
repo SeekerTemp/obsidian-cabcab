@@ -355,6 +355,19 @@ group("errors", () => {
     equal(core.ffmpegErrorSummary("out_time_us=1\nspeed=2x"), "");
   });
 
+  test("a failure says what ffmpeg said, not what it returned", () => {
+    // ffmpeg returns its AVERROR as an exit code, which Windows reports
+    // unsigned: a corrupt input comes back as "exited 3199971767".
+    equal(
+      core.runFailureMessage("ffmpeg", 3199971767, "Error opening input files: Invalid data found"),
+      "ffmpeg failed: Error opening input files: Invalid data found"
+    );
+  });
+
+  test("but the code is still shown when ffmpeg said nothing at all", () => {
+    equal(core.runFailureMessage("ffmpeg", 137, ""), "ffmpeg exited 137");
+  });
+
   test("says where it looked when the binary is missing", () => {
     ok(core.missingBinaryMessage("ffmpeg", "").includes("PATH"));
     ok(core.missingBinaryMessage("ffmpeg", "C:/tools/ffmpeg.exe").includes("C:/tools/ffmpeg.exe"));

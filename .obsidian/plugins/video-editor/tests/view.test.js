@@ -34,6 +34,7 @@ function makeView(options) {
         return Buffer.from([1, 2, 3]);
       },
       killAll() {},
+      bundledRoot: () => "/vault/.obsidian/plugins/video-editor",
     },
     exporter: {
       absolute: (path) => "/vault/" + path,

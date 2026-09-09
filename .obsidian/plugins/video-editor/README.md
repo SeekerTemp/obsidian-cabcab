@@ -16,13 +16,29 @@ and `MediaRecorder` re-encodes badly, while lossless trimming is demux and
 remux. The plugin is `isDesktopOnly: true` and drives a native binary through
 `child_process`.
 
-If they are on `PATH`, nothing needs configuring. Otherwise put the full paths
-in the plugin's settings. The header badge says which state you are in, and
-**Check now** in settings re-looks after you change a path.
+They do not have to be *installed*. ffmpeg ships as a self-contained static
+executable, so the simplest complete install is to drop `ffmpeg` and
+`ffprobe` into this plugin's own `bin/` folder — no admin rights, nothing on
+`PATH`, and it travels with the vault to whatever machine opens it next. That
+is how this vault has it.
 
-- Windows: `winget install Gyan.FFmpeg`
-- macOS: `brew install ffmpeg`
-- Linux: your package manager
+The plugin looks in three places, in order:
+
+1. A full path set in the plugin's settings
+2. `bin/` beside `main.js`
+3. Whatever `PATH` has
+
+Settings reports which of the three it settled on, **for each binary
+separately** — half an install is a real state, and from the red badge it looks
+identical to no install at all. The header badge names the version when one is
+found, and **Check now** re-looks after you change anything.
+
+If you would rather install system-wide: `winget install Gyan.FFmpeg` on
+Windows, `brew install ffmpeg` on macOS, your package manager on Linux.
+
+`bin/` is git-ignored. The two executables are about 290 MB together, this
+vault is the repository, and they are platform-specific anyway — a vault synced
+between a Mac and a Windows machine wants a different pair on each.
 
 ## Opening a video
 
@@ -168,13 +184,20 @@ Classes below the banner, in dependency order: `FfmpegRunner`, `Filmstrip`,
 ```bash
 node tests/all.js            # every suite, each in its own process
 node tests/ffmpeg.test.js    # one suite — every test file runs directly
+node tests/smoke.js          # end-to-end against a real ffmpeg
 ```
 
 Plain node, a hand-written harness, no framework — the same shape as Media
 Viewer and Schema Sync. `tests/load-plugin.js` loads `main.js` with
 `require("obsidian")` redirected to a stub; `tests/stub-dom.js` supplies enough
 DOM; `tests/fake-vault.js` a vault; and the ffmpeg suites a fake child process,
-so nothing here needs a real binary to run.
+so **nothing in `all.js` needs a real binary to run**.
+
+`smoke.js` is the other half, and is not in `all.js` on purpose: it needs
+ffmpeg and takes a couple of minutes, because it builds a 60-minute video and
+cuts it. A fake child process will happily accept an argument list real ffmpeg
+rejects, so every "the arguments say X" assertion is only worth as much as the
+claim that X is what ffmpeg does. That is what this checks.
 
 ## Known edges
 

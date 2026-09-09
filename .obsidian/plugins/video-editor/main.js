@@ -564,6 +564,22 @@ function binaryName(name, platform) {
   return String(platform || "") === "win32" ? base + ".exe" : base;
 }
 
+/* Where a binary carried alongside the plugin would sit.
+ *
+ * ffmpeg ships as a self-contained static executable, so it does not have to
+ * be installed at all — dropping the two files in `bin/` is a complete
+ * install, needs no admin rights, and travels with the vault. This builds the
+ * path; whether anything is there is the runner's question.
+ *
+ * `bin/` is git-ignored: the two executables are about 170 MB, and this vault
+ * is the repository.
+ */
+function bundledBinaryPath(folder, which, platform) {
+  const dir = normaliseSeparators(folder).replace(/\/+$/, "");
+  if (!dir) return null;
+  return joinPath(dir, "bin/" + binaryName(which, platform));
+}
+
 /* Seconds as ffmpeg wants them: plain decimal, microsecond resolution, no
  * exponent. `String(1e-7)` is "1e-7", which ffmpeg reads as 1 second.
  */
@@ -941,17 +957,31 @@ function ffmpegErrorSummary(text, limit) {
   return lines.slice(-keep).join(" \u2014 ");
 }
 
-function missingBinaryMessage(name, configured) {
+/* What to tell someone when a run failed.
+ *
+ * ffmpeg returns its AVERROR as the exit code, which Windows then reports
+ * unsigned: a corrupt input comes back as "exited 3199971767". That number
+ * helps nobody, so it is only shown when ffmpeg said nothing else — and when
+ * it did say something, that is the whole message.
+ */
+function runFailureMessage(which, code, stderr) {
+  const summary = ffmpegErrorSummary(stderr);
+  const name = String(which || "ffmpeg");
+  if (summary) return name + " failed: " + summary;
+  return name + " exited " + code;
+}
+
+function missingBinaryMessage(name, configured, bundledFolder) {
   const which = String(name || "ffmpeg");
   if (configured) {
-    return (
-      which + " was not found at " + configured + ". Check the path in Video Editor settings."
-    );
+    return which + " was not found at " + configured + ". Check the path in Video Editor settings.";
   }
+  const here = bundledBinaryPath(bundledFolder, which, "");
   return (
     which +
-    " was not found on PATH. Install it, or set the full path in Video Editor settings \u2014 " +
-    "nothing here can cut video without it."
+    " was not found. Put ffmpeg and ffprobe in the plugin's own bin folder" +
+    (here ? " (" + folderOf(here) + ")" : "") +
+    ", or install them and leave them on PATH. Nothing here can cut video without them."
   );
 }
 
@@ -1345,6 +1375,7 @@ const core = {
   rulerTicks,
 
   binaryName,
+  bundledBinaryPath,
   secondsArg,
   probeArgs,
   parseFraction,
@@ -1363,6 +1394,7 @@ const core = {
   exportPlan,
   progressAcross,
   ffmpegErrorSummary,
+  runFailureMessage,
   missingBinaryMessage,
   formatBytes,
   errorText,
@@ -1424,9 +1456,40 @@ class FfmpegRunner {
     // Injected so the tests can drive a fake process; in the app it is node's.
     this.spawn = settings.spawn || null;
     this.platform = settings.platform || (typeof process !== "undefined" ? process.platform : "");
+    /* Where to look for a binary carried with the plugin. A function rather
+       than a path, because the plugin folder is only knowable once Obsidian
+       has handed over a manifest. */
+    this.bundledFolder = settings.bundledFolder || null;
+    this.fileExists = settings.fileExists || null;
+    // Resolved once per binary; existsSync on every one of 24 filmstrip stills
+    // is 24 stat calls for an answer that does not change.
+    this.resolved = new Map();
     this.available = null;
     this.version = null;
     this.running = new Set();
+  }
+
+  exists(path) {
+    if (this.fileExists) return Boolean(this.fileExists(path));
+    try {
+      return require("fs").existsSync(path);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /* A binary sitting in the plugin's own `bin/`, or null.
+   *
+   * Checked before PATH but after a configured path, so the order is: what you
+   * told it, what came with it, what the machine has. */
+  bundledRoot() {
+    return typeof this.bundledFolder === "function" ? this.bundledFolder() : this.bundledFolder;
+  }
+
+  bundledPathFor(which) {
+    const path = bundledBinaryPath(this.bundledRoot(), which, this.platform);
+    if (!path) return null;
+    return this.exists(path) ? path : null;
   }
 
   childProcess() {
@@ -1440,7 +1503,22 @@ class FfmpegRunner {
     const settings = this.getSettings();
     const configured = which === "ffprobe" ? settings.ffprobePath : settings.ffmpegPath;
     if (configured) return configured;
-    return binaryName(which, this.platform);
+    if (this.resolved.has(which)) return this.resolved.get(which);
+    const bundled = this.bundledPathFor(which);
+    const chosen = bundled || binaryName(which, this.platform);
+    this.resolved.set(which, chosen);
+    return chosen;
+  }
+
+  // Which of the three it settled on, for the settings tab to say out loud.
+  // "not found" is a real answer and is reported as one.
+  sourceOf(which) {
+    const settings = this.getSettings();
+    const configured = which === "ffprobe" ? settings.ffprobePath : settings.ffmpegPath;
+    if (configured) return { kind: "configured", path: configured };
+    const bundled = this.bundledPathFor(which);
+    if (bundled) return { kind: "bundled", path: bundled };
+    return { kind: "path", path: binaryName(which, this.platform) };
   }
 
   configuredPath(which) {
@@ -1472,6 +1550,8 @@ class FfmpegRunner {
   forget() {
     this.available = null;
     this.version = null;
+    // Dropped too: a binary may have been put into bin/ since the last look.
+    this.resolved.clear();
   }
 
   /* Read a file's shape.
@@ -1525,11 +1605,11 @@ class FfmpegRunner {
       try {
         child = spawn(binary, args, { windowsHide: true });
       } catch (error) {
-        reject(new Error(missingBinaryMessage(which, this.configuredPath(which))));
+        reject(new Error(missingBinaryMessage(which, this.configuredPath(which), this.bundledRoot())));
         return;
       }
       if (!child) {
-        reject(new Error(missingBinaryMessage(which, this.configuredPath(which))));
+        reject(new Error(missingBinaryMessage(which, this.configuredPath(which), this.bundledRoot())));
         return;
       }
       this.running.add(child);
@@ -1580,7 +1660,7 @@ class FfmpegRunner {
       child.on("error", (error) => {
         const code = error && error.code;
         if (code === "ENOENT") {
-          finish(reject, new Error(missingBinaryMessage(which, this.configuredPath(which))));
+          finish(reject, new Error(missingBinaryMessage(which, this.configuredPath(which), this.bundledRoot())));
           return;
         }
         finish(reject, error);
@@ -1599,11 +1679,7 @@ class FfmpegRunner {
           });
           return;
         }
-        const summary = ffmpegErrorSummary(stderrText);
-        finish(
-          reject,
-          new Error(which + " exited " + code + (summary ? ": " + summary : ""))
-        );
+        finish(reject, new Error(runFailureMessage(which, code, stderrText)));
       });
 
       /* Cancellation is polled rather than pushed. The alternative is handing
@@ -2813,7 +2889,7 @@ class VideoEditorView extends ItemView {
     this.renderProgress(0, label);
     try {
       if (!(await this.plugin.runner.check())) {
-        new Notice(missingBinaryMessage("ffmpeg", this.plugin.settings.ffmpegPath));
+        new Notice(missingBinaryMessage("ffmpeg", this.plugin.settings.ffmpegPath, this.plugin.runner.bundledRoot()));
         return null;
       }
       return await work(signal);
@@ -2920,7 +2996,7 @@ class VideoEditorView extends ItemView {
     this.binaryEl.setText("ffmpeg missing");
     this.binaryEl.addClass("is-missing");
     this.binaryEl.removeClass("is-ok");
-    this.binaryEl.title = missingBinaryMessage("ffmpeg", this.plugin.settings.ffmpegPath);
+    this.binaryEl.title = missingBinaryMessage("ffmpeg", this.plugin.settings.ffmpegPath, this.plugin.runner.bundledRoot());
   }
 
   renderTimes() {
@@ -3064,6 +3140,23 @@ class VideoEditorView extends ItemView {
  * ------------------------------------------------------------------------ */
 
 class VideoEditorSettingTab extends PluginSettingTab {
+  /* Which of the three sources each binary came from.
+   *
+   * Worth saying out loud: "not found" and "found somewhere you did not
+   * expect" look identical from a red badge, and the fix is different. */
+  binaryReport() {
+    const lines = [];
+    for (const which of ["ffmpeg", "ffprobe"]) {
+      const found = this.plugin.runner.sourceOf(which);
+      if (found.kind === "configured") lines.push(which + ": the path set below (" + found.path + ")");
+      else if (found.kind === "bundled") lines.push(which + ": the plugin's own bin folder (" + found.path + ")");
+      else lines.push(which + ": whatever PATH has, if anything");
+    }
+    const root = this.plugin.runner.bundledRoot();
+    if (root) lines.push("Drop the executables in " + root + "/bin to carry them with the vault.");
+    return lines.join(" — ");
+  }
+
   display() {
     const { containerEl } = this;
     containerEl.empty();
@@ -3098,13 +3191,15 @@ class VideoEditorSettingTab extends PluginSettingTab {
           })
       );
 
+    new Setting(containerEl).setName("Where it is looking").setDesc(this.binaryReport());
+
     new Setting(containerEl)
       .setName("Check for ffmpeg")
       .setDesc(this.plugin.runner.available ? "Found: " + this.plugin.runner.version : "Not found yet.")
       .addButton((button) =>
         button.setButtonText("Check now").onClick(async () => {
           const found = await this.plugin.runner.check(true);
-          new Notice(found ? "ffmpeg " + this.plugin.runner.version : missingBinaryMessage("ffmpeg", this.plugin.settings.ffmpegPath));
+          new Notice(found ? "ffmpeg " + this.plugin.runner.version : missingBinaryMessage("ffmpeg", this.plugin.settings.ffmpegPath, this.plugin.runner.bundledRoot()));
           this.display();
         })
       );
@@ -3215,7 +3310,10 @@ class VideoEditorPlugin extends Plugin {
   async onload() {
     this.settings = normaliseSettings(await this.loadData());
 
-    this.runner = new FfmpegRunner({ getSettings: () => this.settings });
+    this.runner = new FfmpegRunner({
+      getSettings: () => this.settings,
+      bundledFolder: () => this.pluginFolder(),
+    });
     this.store = new LineageStore(this.app, { noteFolder: this.settings.noteFolder });
     this.exporter = new ExportRunner({
       app: this.app,
@@ -3324,6 +3422,24 @@ class VideoEditorPlugin extends Plugin {
     });
 
     this.addSettingTab(new VideoEditorSettingTab(this.app, this));
+  }
+
+  /* This plugin's own folder, absolute.
+   *
+   * Obsidian hands over `manifest.dir` as a vault-relative path, and the
+   * adapter knows where the vault is. Together they say where `bin/` would be,
+   * which is what lets ffmpeg travel with the vault instead of being installed
+   * on every machine that opens it.
+   */
+  pluginFolder() {
+    const adapter = this.app.vault.adapter;
+    const base = adapter && typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
+    const dir = this.manifest && this.manifest.dir ? this.manifest.dir : null;
+    if (!base || !dir) return null;
+    return guarded("locating", "the plugin folder", () => {
+      const parts = String(dir).split("/").filter(Boolean);
+      return require("path").join(base, ...parts);
+    }, null);
   }
 
   onunload() {

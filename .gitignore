@@ -1,3 +1,6 @@
 .obsidian/plugins/media-viewer/debug.log
 .obsidian/plugins/media-viewer/data.json
 .obsidian/plugins/media-viewer/crash.log
+.obsidian/plugins/video-editor/data.json
+.obsidian/plugins/video-editor/bin/*
+!.obsidian/plugins/video-editor/bin/README.md

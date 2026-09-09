@@ -13,7 +13,11 @@ Rules that hold for every task:
   at the top, exported as `module.exports.core`.
 - Anything in `core` gets node tests, run with a stubbed `require("obsidian")`.
 - **Every ffmpeg argument list is built by a pure function and asserted in
-  `tests/ffmpeg.test.js`.** The binary is never run in a test.
+  `tests/ffmpeg.test.js`.** Nothing in `tests/all.js` runs the binary, so the
+  suite runs anywhere — that is what makes it worth running on every change.
+- `tests/smoke.js` is the exception and runs the real thing, because a fake
+  child process will accept an argument list ffmpeg rejects. It is not in
+  `all.js`: it needs a binary and takes a couple of minutes.
 - Reload Obsidian to test. Several Verify lines below need a person and a real
   video; they say so.
 
@@ -78,24 +82,34 @@ Rules that hold for every task:
 - [x] 17 `VE-ERRORS`
 - [x] 18 `VE-README`
 
-Everything above passes under `node tests/all.js` — 228 tests across seven
-suites. **What that does not cover is below**, and it needs a person, a real
-ffmpeg and a real video.
+Everything above passes under `node tests/all.js` — 238 tests across seven
+suites, none of which need ffmpeg.
+
+`node tests/smoke.js` adds 29 more against a **real** ffmpeg and a real
+60-minute video: probing, both trim modes, muting, a two-clip join, the
+filmstrip, audio extraction, a failing run and a cancelled one. It confirmed the
+claim the whole design rests on — see the numbers below.
+
+**What neither covers is the checklist below**, and it needs a person, because
+it is about whether the output actually plays and whether the pane feels right.
 
 ---
 
 ## Acceptance checklist — needs a person
 
-Nothing in this list can be asserted by the harness: there is no ffmpeg on the
-development machine, and a fake child process cannot tell you whether the
-output plays.
+What is left is what neither harness can reach. `tests/all.js` never runs
+ffmpeg, and `tests/smoke.js` runs it but has no Obsidian, no pane and no eyes:
+it can prove a trim lands within a keyframe of where it was asked to, and
+cannot tell you whether the output plays, whether the drag felt right, or
+whether the clip starts on the frame you meant.
 
 ### Before anything
 
-- [ ] `ffmpeg -version` answers in a terminal. If not, install it — the pane
-      says so in its header and refuses every job, which is the intended
-      behaviour but not a passing test
-- [ ] Enable **Video Editor** in Community plugins, and reload
+- [x] ffmpeg and ffprobe are in the plugin's own `bin/` — a GPL build, so
+      `libx264` is present and re-encode works. `node tests/smoke.js` finds
+      them there and passes
+- [x] **Video Editor** is enabled in `community-plugins.json`
+- [ ] Reload Obsidian so it loads
 
 ### Opening
 
@@ -160,10 +174,28 @@ output plays.
 
 ### Performance, on real footage
 
-- [ ] 60-minute file, stream-copy trim — record the seconds here:
-- [ ] 60-minute file, re-encode trim — record the minutes here:
-- [ ] Filmstrip generation for a 60-minute file — record the seconds here:
+Measured by `tests/smoke.js` against a synthetic 60-minute 320×240 file with a
+two-second keyframe interval, on the development machine. Real footage is
+larger and will be slower, but the shape should hold — and the first row is the
+one the design was built around.
+
+| What | Measured |
+| --- | --- |
+| Stream-copy trim, 30s taken **50 minutes into** a 60-minute file | **90 ms** |
+| Re-encode trim, same span, `ultrafast` CRF 28 | ~1 s |
+| Filmstrip, 10 stills across a 60-minute file | ~650 ms |
+| Stream-copy accuracy | 30.02 s for a 30 s request — one keyframe of rounding |
+| Re-encode accuracy | 30.018 s — frame-exact, as bought |
+
+The 90 ms is the whole argument for `-ss` before `-i`. With the seek after the
+input, ffmpeg decodes fifty minutes and discards them.
+
+Still needs a person, on real footage:
+
+- [ ] A real 60-minute screen recording, stream-copy trim — record the seconds:
+- [ ] The same file, re-encode — record the minutes:
 - [ ] The pane stays responsive while the strip is still filling in
+- [ ] A trimmed clip opened in a player starts on the frame you meant
 
 ---
 

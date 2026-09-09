@@ -57,6 +57,8 @@ function makeRunner(options) {
   const runner = new FfmpegRunner({
     getSettings: () => Object.assign({}, core.DEFAULT_SETTINGS, settings.settings || {}),
     platform: settings.platform || "linux",
+    bundledFolder: settings.bundledFolder || null,
+    fileExists: settings.fileExists || (() => false),
     spawn: (binary, args) => {
       calls.push({ binary, args });
       if (settings.onSpawn) {
@@ -114,7 +116,8 @@ group("a missing binary", () => {
       message = error.message;
     }
     ok(message.includes("not found"), "says it is missing");
-    ok(message.includes("Video Editor settings"), "and where to fix it");
+    ok(message.includes("bin folder"), "and names the folder to drop it in");
+    ok(message.includes("PATH"), "as well as the other way to satisfy it");
   });
 
   test("an ENOENT after spawn is treated the same way", async () => {
@@ -157,6 +160,97 @@ group("a missing binary", () => {
   });
 });
 
+group("a binary carried with the plugin", () => {
+  // ffmpeg is a self-contained static executable, so dropping the two files in
+  // the plugin's own bin/ is a complete install: no admin rights, nothing on
+  // PATH, and it travels with the vault to whatever machine opens it next.
+  function bundled(present, options) {
+    const settings = options || {};
+    return makeRunner(
+      Object.assign(
+        {
+          platform: settings.platform || "win32",
+          bundledFolder: "D:/vault/.obsidian/plugins/video-editor",
+          fileExists: (path) => present.includes(path),
+        },
+        settings
+      )
+    );
+  }
+
+  test("is preferred over PATH", async () => {
+    const { runner, calls } = bundled(["D:/vault/.obsidian/plugins/video-editor/bin/ffmpeg.exe"]);
+    const promise = runner.run("ffmpeg", [], {});
+    await Promise.resolve();
+    equal(calls[0].binary, "D:/vault/.obsidian/plugins/video-editor/bin/ffmpeg.exe");
+    runner.running.forEach((c) => c.close(0));
+    await promise;
+  });
+
+  test("but a configured path still wins over both", async () => {
+    const { runner, calls } = bundled(["D:/vault/.obsidian/plugins/video-editor/bin/ffmpeg.exe"], {
+      settings: { ffmpegPath: "C:/tools/ffmpeg.exe" },
+    });
+    const promise = runner.run("ffmpeg", [], {});
+    await Promise.resolve();
+    equal(calls[0].binary, "C:/tools/ffmpeg.exe");
+    runner.running.forEach((c) => c.close(0));
+    await promise;
+  });
+
+  test("an empty bin folder falls through to PATH", async () => {
+    const { runner, calls } = bundled([]);
+    const promise = runner.run("ffmpeg", [], {});
+    await Promise.resolve();
+    equal(calls[0].binary, "ffmpeg.exe");
+    runner.running.forEach((c) => c.close(0));
+    await promise;
+  });
+
+  test("ffmpeg and ffprobe are looked for separately", async () => {
+    // Half an install is a real state: someone copies one file and not both.
+    const { runner } = bundled(["D:/vault/.obsidian/plugins/video-editor/bin/ffmpeg.exe"]);
+    equal(runner.sourceOf("ffmpeg").kind, "bundled");
+    equal(runner.sourceOf("ffprobe").kind, "path");
+  });
+
+  test("the lookup is remembered, not repeated for every filmstrip still", async () => {
+    let looks = 0;
+    const { runner } = bundled([], {
+      fileExists: () => {
+        looks += 1;
+        return false;
+      },
+    });
+    runner.binaryFor("ffmpeg");
+    runner.binaryFor("ffmpeg");
+    runner.binaryFor("ffmpeg");
+    equal(looks, 1);
+  });
+
+  test("and looked for again after forget(), which a settings change calls", async () => {
+    // Also the case where someone drops the files in while Obsidian is open.
+    const present = [];
+    const { runner } = bundled(present, { fileExists: (path) => present.includes(path) });
+    equal(runner.binaryFor("ffmpeg"), "ffmpeg.exe");
+    present.push("D:/vault/.obsidian/plugins/video-editor/bin/ffmpeg.exe");
+    runner.forget();
+    equal(runner.binaryFor("ffmpeg"), "D:/vault/.obsidian/plugins/video-editor/bin/ffmpeg.exe");
+  });
+
+  test("names the executable the platform actually has", () => {
+    equal(
+      core.bundledBinaryPath("/vault/plugins/video-editor", "ffprobe", "win32"),
+      "/vault/plugins/video-editor/bin/ffprobe.exe"
+    );
+    equal(
+      core.bundledBinaryPath("/vault/plugins/video-editor", "ffprobe", "darwin"),
+      "/vault/plugins/video-editor/bin/ffprobe"
+    );
+    equal(core.bundledBinaryPath("", "ffmpeg", "win32"), null, "no folder, no bundled path");
+  });
+});
+
 group("failure", () => {
   test("a non-zero exit carries what ffmpeg actually said", async () => {
     const { runner, child } = makeRunner();
@@ -170,8 +264,8 @@ group("failure", () => {
     } catch (error) {
       message = error.message;
     }
-    ok(message.includes("exited 1"));
-    ok(message.includes("Invalid data found"));
+    ok(message.includes("Invalid data found"), "ffmpeg's own words, not its exit code");
+    equal(message.includes("3199971767"), false, "an unsigned AVERROR helps nobody");
   });
 
   test("a runaway error stream is trimmed rather than kept whole", async () => {
