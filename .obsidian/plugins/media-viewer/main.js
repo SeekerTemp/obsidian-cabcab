@@ -537,6 +537,24 @@ function trimLogText(text, maxBytes) {
   return "… earlier entries trimmed …\n" + whole;
 }
 
+/* How the browser should resample the image at this zoom.
+ *
+ * Above 100% a browser smooths an upscaled bitmap by default. That is right
+ * for a photograph and wrong for everything this pane exists to look at: a
+ * screenshot inspected at 400% should show its pixels, not an interpolation of
+ * them. Text goes to mush, a one-pixel border disappears, and the frame stops
+ * being evidence of what was on screen.
+ *
+ * Below 100% the default is right — a downscale wants averaging, and nearest
+ * neighbour there would alias hard edges into noise. So the mode follows the
+ * zoom rather than being a setting: at 1:1 nothing is resampled and it makes
+ * no difference either way. */
+function imageRenderingFor(zoom) {
+  const value = Number(zoom);
+  if (!Number.isFinite(value)) return "auto";
+  return value > 1 ? "pixelated" : "auto";
+}
+
 // A/D step through the list without wrapping. Wrapping from the last file back
 // to the first reads as a jump to somewhere else rather than as a step, and
 // there is no way to tell the two apart from the keyboard.
@@ -2031,6 +2049,7 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  imageRenderingFor,
   logTimestamp,
   errorText,
   formatLogEntry,
@@ -4700,6 +4719,9 @@ class MediaViewerView extends ItemView {
       this.imageEl.style.width = this.naturalWidth ? this.naturalWidth * this.zoom + "px" : "";
       this.imageEl.style.height = this.naturalHeight ? this.naturalHeight * this.zoom + "px" : "";
       this.imageEl.style.transform = "translate(" + this.panX + "px, " + this.panY + "px)";
+      // Set here rather than in the stylesheet, because it depends on the
+      // zoom and the zoom lives in script.
+      this.imageEl.style.imageRendering = imageRenderingFor(this.zoom);
     }
     this.updateViewerBar();
   }

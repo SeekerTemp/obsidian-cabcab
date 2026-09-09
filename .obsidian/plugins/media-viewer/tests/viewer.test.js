@@ -253,6 +253,36 @@ group("opening an image", () => {
   });
 });
 
+group("resampling follows the zoom", () => {
+  test("above 100% the pixels are shown, not interpolated", () => {
+    // A screenshot at 400% should show its pixels. Smoothing turns text to
+    // mush and loses a one-pixel border, which stops the frame being evidence
+    // of what was on screen.
+    equal(core.imageRenderingFor(2), "pixelated");
+    equal(core.imageRenderingFor(1.01), "pixelated");
+  });
+
+  test("at or below 100% the browser's own averaging is right", () => {
+    equal(core.imageRenderingFor(1), "auto");
+    equal(core.imageRenderingFor(0.5), "auto");
+  });
+
+  test("a nonsense zoom does not produce a nonsense mode", () => {
+    equal(core.imageRenderingFor(NaN), "auto");
+    equal(core.imageRenderingFor(undefined), "auto");
+  });
+
+  test("the viewer applies it as the zoom changes", async () => {
+    const { plugin, view } = await paneOver(FILES);
+    plugin.select("data/assets/a.png");
+    decode(view, 800, 600);
+    view.setZoom(4);
+    equal(image(view).style.imageRendering, "pixelated");
+    view.setZoom(0.5);
+    equal(image(view).style.imageRendering, "auto");
+  });
+});
+
 group("zooming", () => {
   async function openLarge() {
     const pane = await paneOver(FILES);

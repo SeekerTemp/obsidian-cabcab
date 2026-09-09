@@ -177,7 +177,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 30 `MV-README`
 - [ ] 31 `MV-OVERVIEW` (deferred)
 - [x] 35 `MV-CRASHLOG` — added on request, so a tester can hand over what broke
-- [ ] 32 `MV-ZOOMFIX` — a bug, from use
+- [x] 32 `MV-ZOOMFIX` — a bug, from use
 - [ ] 33 `MV-EXPLORER` — from use
 - [ ] 34 `MV-RECORD` — from use, probably Schema Sync's to build
 
