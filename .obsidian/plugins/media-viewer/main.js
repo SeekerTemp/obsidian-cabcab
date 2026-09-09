@@ -1580,6 +1580,14 @@ const INTRINSIC_FIELDS = [
   // same reason a crop is: it says where *this* file was taken from, and a
   // child inheriting it would claim a moment it was not cut at.
   "sourceTime",
+  /* Written by the Video Editor, and intrinsic here for the same reason.
+     A trim's span says where *this* file was cut from; a frame captured out of
+     that clip begins somewhere else entirely, and inheriting the clip's
+     sourceStart would have it claim a second it does not begin at. `clips` is
+     a join's recipe and belongs to the join alone. */
+  "sourceStart",
+  "sourceEnd",
+  "clips",
   "width",
   "height",
   "created",
@@ -1594,6 +1602,9 @@ const INSTANCE_FIELD_ORDER = [
   "crop",
   "transform",
   "sourceTime",
+  "sourceStart",
+  "sourceEnd",
+  "clips",
   "width",
   "height",
   "created",

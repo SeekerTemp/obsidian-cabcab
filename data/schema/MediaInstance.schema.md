@@ -14,6 +14,12 @@ fields:
       type: object
   - sourceTime:
       type: number
+  - sourceStart:
+      type: number
+  - sourceEnd:
+      type: number
+  - clips:
+      type: array
   - width:
       type: number
   - height:
@@ -60,6 +66,9 @@ its absence marks everything still untouched.
 | crop | object | - | no | yes | - |
 | transform | object | - | no | yes | - |
 | sourceTime | number | - | no | yes | - |
+| sourceStart | number | - | no | yes | - |
+| sourceEnd | number | - | no | yes | - |
+| clips | array | - | no | yes | - |
 | width | number | - | no | yes | - |
 | height | number | - | no | yes | - |
 | created | string | - | no | yes | - |
@@ -90,6 +99,11 @@ and `labels` is a free list that nothing in the plugin reads.
 
 `sourceTime` is seconds into the source video, for a captured frame: the only
 record of where that frame came from, since the filename no longer carries it.
+`sourceStart` and `sourceEnd` are the same claim for a span rather than a
+moment — a trim written by the Video Editor — and `clips` is the recipe for a
+join, one line per piece as `path start-end`, because a concatenation has more
+than one parent and `source:` holds exactly one. On a join, `source:` names the
+first piece so the chain still resolves, and `clips` says the rest of the truth.
 `useCase` says what the evidence is about, so a backlog can be built by grouping
 on it, and `shows` says in a sentence what the frame actually shows, so a reader
 does not have to open the image to know why it was kept. None of the three are
@@ -103,11 +117,13 @@ up the `source:` chain at read time, stopping at the first ancestor that
 declares it — which is the entire reason for tracking lineage: correcting a
 value on the parent corrects it for every descendant.
 
-Nine fields are intrinsic and never inherited, because they describe this file
-rather than the subject it is of: `media`, `source`, `op`, `crop`, `transform`,
-`sourceTime`, `width`, `height` and `created`. Inheriting a parent's crop would
-say this file was cut from a rectangle it was not, and inheriting its
-`sourceTime` would claim a moment it was not cut at.
+Twelve fields are intrinsic and never inherited, because they describe this
+file rather than the subject it is of: `media`, `source`, `op`, `crop`,
+`transform`, `sourceTime`, `sourceStart`, `sourceEnd`, `clips`, `width`,
+`height` and `created`. Inheriting a parent's crop would say this file was cut
+from a rectangle it was not; inheriting its `sourceTime` would claim a moment
+it was not cut at; and inheriting its `sourceStart` would claim a second it
+does not begin at.
 
 Everything else inherits — `useCase`, `shows`, `status`, `labels`, and any field you add to this
 schema or write into a record by hand. A field present but empty counts as not
