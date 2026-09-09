@@ -4,3 +4,4 @@
 .obsidian/plugins/video-editor/data.json
 .obsidian/plugins/video-editor/bin/*
 !.obsidian/plugins/video-editor/bin/README.md
+ref/
