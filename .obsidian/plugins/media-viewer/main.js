@@ -568,6 +568,46 @@ function captureSourceTime(currentTime) {
   return Math.round(value * 1000) / 1000;
 }
 
+/* Labels are a list in the note and a line of text in the pane.
+ *
+ * Comma-separated, because a label with a space in it is normal — "login
+ * flow" — and splitting on whitespace would turn one label into two. Empty
+ * entries are dropped and repeats collapse, so a trailing comma and a
+ * double-typed label both do the harmless thing. */
+function parseLabels(text) {
+  if (Array.isArray(text)) return parseLabels(text.join(","));
+  const value = String(text == null ? "" : text);
+  const seen = new Set();
+  const labels = [];
+  for (const part of value.split(",")) {
+    const label = part.trim();
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels;
+}
+
+function formatLabels(labels) {
+  if (!Array.isArray(labels)) return String(labels == null ? "" : labels);
+  return labels.filter((label) => String(label || "").trim()).join(", ");
+}
+
+/* Whether an edit to a labelling field is worth a write.
+ *
+ * Opening the panel and closing it must not rewrite the note — a write bumps
+ * the modified time, and a file that looks edited because it was looked at is
+ * exactly what "viewing writes nothing" exists to prevent. */
+function labelsChanged(before, after) {
+  const a = before || {};
+  const b = after || {};
+  if (String(a.useCase || "") !== String(b.useCase || "")) return true;
+  if (String(a.shows || "") !== String(b.shows || "")) return true;
+  return formatLabels(parseLabels(a.labels)) !== formatLabels(parseLabels(b.labels));
+}
+
 // A/D step through the list without wrapping. Wrapping from the last file back
 // to the first reads as a jump to somewhere else rather than as a step, and
 // there is no way to tell the two apart from the keyboard.
@@ -2062,6 +2102,9 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  parseLabels,
+  formatLabels,
+  labelsChanged,
   captureSourceTime,
   imageRenderingFor,
   logTimestamp,
@@ -5818,6 +5861,7 @@ class MediaViewerView extends ItemView {
 
     this.lineageChain(body, path, record, walk);
     this.lineageChildren(body, path);
+    this.lineageLabels(body, path, record);
     this.lineageFields(body, path);
   }
 
@@ -5836,6 +5880,80 @@ class MediaViewerView extends ItemView {
     for (const step of chain) {
       this.lineageLink(section, step.path, step.record ? null : "untracked");
     }
+  }
+
+  /* Labelling — MV-LABEL.
+   *
+   * Capture puts a frame in the vault and says where it came from. This is the
+   * other half: what the frame is *about*, which is the part a person knows
+   * and nothing can infer. Without it the evidence pile is a folder of
+   * screenshots that happen to have provenance.
+   *
+   * Three fields, matching the schema: useCase groups evidence, shows says
+   * what is in the picture, labels are free.
+   *
+   * The boxes hold this file's **own** values, never resolved ones. An
+   * inherited value appears as a placeholder instead, because filling the box
+   * with the parent's answer and saving would copy it down and quietly end the
+   * inheritance — the panel would have turned a resolved value into a
+   * declared one just by being looked at.
+   */
+  lineageLabels(body, path, record) {
+    const section = body.createDiv({ cls: "mv-lineage-section mv-labels" });
+    section.createDiv({ cls: "mv-lineage-label", text: "About" });
+
+    const own = record && record.frontmatter ? record.frontmatter : {};
+    // resolveAll is what the Metadata section below already reads, so the two
+    // agree by construction: a value shown there as inherited is the one
+    // offered here as a placeholder.
+    const resolved = this.plugin.resolver.resolveAll(path).fields || {};
+    const inherited = (field) => {
+      const entry = resolved[field];
+      if (!entry || !entry.inherited) return "";
+      return entry.value == null ? "" : String(entry.value);
+    };
+
+    const fields = {};
+    fields.useCase = this.labelField(section, "Use case", own.useCase, inherited("useCase"));
+    fields.shows = this.labelField(section, "Shows", own.shows, inherited("shows"));
+    fields.labels = this.labelField(
+      section,
+      "Labels",
+      formatLabels(own.labels),
+      formatLabels(parseLabels(inherited("labels")))
+    );
+
+    const actions = section.createDiv({ cls: "mv-lineage-actions" });
+    const save = actions.createEl("button", {
+      cls: "mv-lineage-action",
+      text: "Save",
+      attr: { type: "button" },
+    });
+    save.addEventListener("click", () => {
+      void this.plugin.saveLabels(path, {
+        useCase: fields.useCase.value,
+        shows: fields.shows.value,
+        labels: fields.labels.value,
+      });
+    });
+    this.labelFieldsEl = fields;
+    return section;
+  }
+
+  labelField(section, label, value, placeholder) {
+    const row = section.createDiv({ cls: "mv-label-row" });
+    row.createDiv({ cls: "mv-label-name", text: label });
+    const input = row.createEl("input", {
+      cls: "mv-label-input",
+      attr: {
+        type: "text",
+        value: value === undefined || value === null ? "" : String(value),
+        // The inherited value, shown as a hint rather than as content. Typing
+        // over it declares one here; leaving it alone keeps inheriting.
+        placeholder: placeholder ? placeholder + " (inherited)" : "",
+      },
+    });
+    return input;
   }
 
   lineageChildren(body, path) {
@@ -6642,6 +6760,44 @@ let created = null;
    * capture adds is sourceTime — the second of the video it was taken from,
    * which is the whole reason the chain is worth keeping.
    */
+  /* Write the labelling fields onto a file's own note.
+   *
+   * Only the three fields are passed: LineageStore carries every other field
+   * across, so a label edit cannot lose a crop rectangle or a source link.
+   */
+  async saveLabels(path, values) {
+    const record = this.lineage.recordFor(path);
+    if (!record) {
+      new Notice("Media Viewer: nothing has been done to this file yet — mark it as reviewed first");
+      return null;
+    }
+    const before = {
+      useCase: record.frontmatter ? record.frontmatter.useCase : "",
+      shows: record.frontmatter ? record.frontmatter.shows : "",
+      labels: record.frontmatter ? record.frontmatter.labels : [],
+    };
+    if (!labelsChanged(before, values)) {
+      // Opening the panel and pressing Save without changing anything must not
+      // bump the file's modified time.
+      new Notice("Media Viewer: nothing to change");
+      return null;
+    }
+    try {
+      const written = await this.lineage.write(path, {
+        useCase: String(values.useCase || "").trim(),
+        shows: String(values.shows || "").trim(),
+        labels: parseLabels(values.labels),
+      });
+      new Notice("Labelled " + baseNameOf(path));
+      this.refreshLineageViews();
+      return written;
+    } catch (error) {
+      reportFailure("plugin", "could not label " + path, error);
+      new Notice("Media Viewer: could not write the label");
+      return null;
+    }
+  }
+
   async afterFrameCaptured(sourcePath, path, info) {
     if (!this.settings.writeLineage) return null;
     const started = Date.now();

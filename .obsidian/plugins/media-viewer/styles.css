@@ -942,3 +942,45 @@
     flex-direction: column;
   }
 }
+
+/* Labelling — MV-LABEL.
+   Three boxes in the lineage panel, laid out as name-then-field so a narrow
+   pane can stack them without the labels becoming a second column of noise. */
+.media-viewer .mv-label-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-2-2);
+}
+
+.media-viewer .mv-label-name {
+  flex: 0 0 5.5em;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.media-viewer .mv-label-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+}
+
+/* An inherited value shows here as placeholder text. It must read as a hint
+   rather than as content, or someone will think the field is already set. */
+.media-viewer .mv-label-input::placeholder {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+@container media-viewer (max-width: 259px) {
+  .media-viewer .mv-label-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--size-2-1);
+  }
+
+  .media-viewer .mv-label-name {
+    flex: 0 0 auto;
+  }
+}

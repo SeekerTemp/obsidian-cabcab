@@ -337,4 +337,112 @@ group("breaks are shown, not just logged", () => {
   });
 });
 
+
+/* Labelling — MV-LABEL. Capture says where a frame came from; this says what
+   it is about, which is the part nothing can infer. */
+
+const labelInput = (view, name) => {
+  for (const row of view.lineageBodyEl.querySelectorAll(".mv-label-row")) {
+    if (row.querySelector(".mv-label-name").textContent === name) {
+      return row.querySelector(".mv-label-input");
+    }
+  }
+  return null;
+};
+
+group("labels as text and back", () => {
+  test("comma-separated, because a label can contain a space", () => {
+    deepEqual(core.parseLabels("login flow, bug"), ["login flow", "bug"]);
+  });
+
+  test("blanks and repeats do the harmless thing", () => {
+    deepEqual(core.parseLabels("bug, , bug ,BUG"), ["bug"]);
+    deepEqual(core.parseLabels(""), []);
+    deepEqual(core.parseLabels(null), []);
+  });
+
+  test("an array round-trips through the text form", () => {
+    equal(core.formatLabels(["a", "b"]), "a, b");
+    deepEqual(core.parseLabels(core.formatLabels(["a", "b"])), ["a", "b"]);
+  });
+
+  test("nothing changed means nothing to write", () => {
+    // Opening the panel and pressing Save must not bump the modified time.
+    equal(core.labelsChanged({ useCase: "x", labels: ["a"] }, { useCase: "x", labels: "a" }), false);
+    equal(core.labelsChanged({ useCase: "x" }, { useCase: "y" }), true);
+    equal(core.labelsChanged({ labels: ["a"] }, { labels: "a, b" }), true);
+  });
+});
+
+group("the labelling form", () => {
+  test("shows this file's own values", async () => {
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/root.png");
+    equal(labelInput(view, "Labels").value, "hero");
+  });
+
+  test("an inherited value is a hint, never content", async () => {
+    // Filling the box with the parent's answer and saving would copy it down
+    // and quietly end the inheritance — the panel would have turned a resolved
+    // value into a declared one just by being looked at.
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    const input = labelInput(view, "Labels");
+    equal(input.value, "", "the child declares none of its own");
+    ok(input.getAttribute("placeholder").indexOf("hero") !== -1, "and the inherited one shows as a hint");
+    ok(input.getAttribute("placeholder").indexOf("inherited") !== -1);
+  });
+
+  test("saving writes only the three fields, leaving the rest alone", async () => {
+    const { plugin } = await pane();
+    const written = [];
+    plugin.lineage.write = async (path, fields) => written.push({ path, fields });
+    await plugin.saveLabels("data/assets/child.png", {
+      useCase: "Rename fails on a locked file",
+      shows: "The error dialog",
+      labels: "bug, renamer",
+    });
+    equal(written.length, 1);
+    deepEqual(Object.keys(written[0].fields).sort(), ["labels", "shows", "useCase"]);
+    deepEqual(written[0].fields.labels, ["bug", "renamer"]);
+    equal(written[0].fields.useCase, "Rename fails on a locked file");
+  });
+
+  test("saving nothing new writes nothing", async () => {
+    const { plugin } = await pane();
+    let wrote = false;
+    plugin.lineage.write = async () => {
+      wrote = true;
+    };
+    await plugin.saveLabels("data/assets/root.png", { useCase: "", shows: "", labels: "hero" });
+    equal(wrote, false);
+  });
+
+  test("an untracked file is told to be marked first", async () => {
+    const { plugin } = await pane();
+    let wrote = false;
+    plugin.lineage.write = async () => {
+      wrote = true;
+    };
+    equal(await plugin.saveLabels("data/assets/loose.png", { useCase: "x" }), null);
+    equal(wrote, false);
+  });
+
+  test("a write that fails is reported and does not throw", async () => {
+    const { plugin } = await pane();
+    plugin.lineage.write = async () => {
+      throw new Error("read-only");
+    };
+    const reported = [];
+    const original = console.error;
+    console.error = (...args) => reported.push(args[0]);
+    try {
+      equal(await plugin.saveLabels("data/assets/child.png", { useCase: "x" }), null);
+    } finally {
+      console.error = original;
+    }
+    ok(reported.some((line) => String(line).indexOf("could not label") !== -1));
+  });
+});
+
 report("panel");
