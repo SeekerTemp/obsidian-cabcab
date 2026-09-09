@@ -327,4 +327,31 @@ group("the break report", () => {
   });
 });
 
+
+/* What has never been acted on — MV-OVERVIEW, reduced to the one question a
+   Base cannot answer, because these files have no note to query. */
+
+group("media nothing has been done to", () => {
+  test("everything with no note, sorted", () => {
+    const tracked = new Set(["a/one.png"]);
+    deepEqual(core.untrackedMedia(["a/two.png", "a/one.png", "a/ten.png"], tracked), [
+      "a/ten.png",
+      "a/two.png",
+    ]);
+  });
+
+  test("notes and other files are not media and are not listed", () => {
+    deepEqual(core.untrackedMedia(["a/note.md", "a/thing.txt", "a/pic.png"], new Set()), ["a/pic.png"]);
+  });
+
+  test("a fully tracked vault reports nothing", () => {
+    deepEqual(core.untrackedMedia(["a/one.png"], new Set(["a/one.png"])), []);
+  });
+
+  test("it copes with being handed nothing", () => {
+    deepEqual(core.untrackedMedia(null, null), []);
+    deepEqual(core.untrackedMedia(["a/one.png"], null), ["a/one.png"]);
+  });
+});
+
 report("repair");

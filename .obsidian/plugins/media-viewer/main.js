@@ -767,6 +767,26 @@ function measuredFrameRate(frames, elapsedMs) {
   return Math.round((count / (elapsed / 1000)) * 10) / 10;
 }
 
+/* Media the plugin has never written anything about.
+ *
+ * The one question MV-OVERVIEW asked that a Base cannot answer. A Base queries
+ * notes, and these files have no note — that is the entire point of them — so
+ * the answer is a set difference over what is already in memory rather than a
+ * query over what is on disk.
+ *
+ * Sorted, because a list that changes order between runs is a list nobody can
+ * work through. */
+function untrackedMedia(paths, tracked) {
+  const known = tracked instanceof Set ? tracked : new Set(Array.isArray(tracked) ? tracked : []);
+  const found = [];
+  for (const path of Array.isArray(paths) ? paths : []) {
+    if (!isMediaPath(path)) continue;
+    if (known.has(path)) continue;
+    found.push(path);
+  }
+  return found.sort(compareMediaPaths);
+}
+
 // A/D step through the list without wrapping. Wrapping from the last file back
 // to the first reads as a jump to somewhere else rather than as a step, and
 // there is no way to tell the two apart from the keyboard.
@@ -2261,6 +2281,7 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  untrackedMedia,
   reverseStep,
   measuredFrameRate,
   boardNodeSize,
@@ -3887,6 +3908,63 @@ class MetadataResolver {
  * gone, a `source:` typed by hand. The console gets the same list, so it
  * survives the modal being closed.
  */
+/* The untracked list.
+ *
+ * Deliberately the same shape as the break report: a list of paths, each one
+ * a jump to the file. "Reviewed" here means only that something has been
+ * written about the file — one bit, as the design says plainly — so the list
+ * is a worklist rather than a judgement.
+ */
+class UntrackedModal extends Modal {
+  constructor(app, plugin, paths) {
+    super(app);
+    this.plugin = plugin;
+    this.paths = paths || [];
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("mv-breaks");
+    contentEl.createEl("h3", {
+      text:
+        this.paths.length === 1
+          ? "1 media file has never been acted on"
+          : this.paths.length + " media files have never been acted on",
+    });
+    contentEl.createEl("p", {
+      cls: "mv-breaks-note",
+      text: "Nothing is wrong with these. A note exists only when something has been done to a file, so this is what is left rather than what is broken.",
+    });
+    const list = contentEl.createDiv({ cls: "mv-breaks-list" });
+    // Capped: a vault with thousands of untouched images would otherwise build
+    // thousands of rows to say one thing.
+    const shown = this.paths.slice(0, 200);
+    for (const path of shown) {
+      const row = list.createDiv({ cls: "mv-breaks-row" });
+      const link = row.createEl("button", {
+        cls: "mv-lineage-link",
+        text: path,
+        attr: { type: "button", title: path },
+      });
+      link.addEventListener("click", () => {
+        this.close();
+        this.plugin.revealMedia(path);
+      });
+    }
+    if (this.paths.length > shown.length) {
+      list.createDiv({
+        cls: "mv-breaks-row",
+        text: "…and " + (this.paths.length - shown.length) + " more",
+      });
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 class LineageBreakModal extends Modal {
   constructor(app, plugin, breaks) {
     super(app);
@@ -6810,6 +6888,12 @@ class MediaViewerPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "report-untracked",
+      name: "Report media never acted on",
+      callback: () => this.showUntracked(),
+    });
+
+    this.addCommand({
       id: "add-to-board",
       name: "Add to board",
       callback: () => {
@@ -7456,6 +7540,31 @@ let created = null;
       const modal = new BoardPickerModal(this.app, canvases, suggested, resolve);
       modal.open();
     });
+  }
+
+  /* Which media has never been acted on — MV-OVERVIEW, reduced.
+   *
+   * Most of what that task described is answered by the Base that Schema Sync
+   * already generates over MediaInstance: group by useCase, filter by status,
+   * find the ones whose labels are empty. Lineage breaks have had their own
+   * report since MV-REPAIR. What was left is this one question, because it is
+   * about the files that have no note to query.
+   */
+  untrackedReport() {
+    const tracked = new Set();
+    for (const media of this.lineage.byMedia.keys()) tracked.add(media);
+    const all = this.app.vault.getFiles().map((file) => file.path);
+    return untrackedMedia(all, tracked);
+  }
+
+  showUntracked() {
+    const untracked = this.untrackedReport();
+    if (!untracked.length) {
+      new Notice("Media Viewer: every media file in the vault has been acted on");
+      return [];
+    }
+    new UntrackedModal(this.app, this, untracked).open();
+    return untracked;
   }
 
   async saveLabels(path, values) {

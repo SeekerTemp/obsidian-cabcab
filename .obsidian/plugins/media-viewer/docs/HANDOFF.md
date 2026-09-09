@@ -175,7 +175,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 28 `MV-SETTINGS`
 - [x] 29 `MV-PERF` — plugin-side numbers measured and recorded; the manual pass still needs a person
 - [x] 30 `MV-README`
-- [ ] 31 `MV-OVERVIEW` (deferred)
+- [x] 31 `MV-OVERVIEW` — answered by the Base plus one report, not by a tab
 - [x] 35 `MV-CRASHLOG` — added on request, so a tester can hand over what broke
 - [x] 32 `MV-ZOOMFIX` — a bug, from use
 - [x] 33 `MV-EXPLORER` — from use
