@@ -555,6 +555,19 @@ function imageRenderingFor(zoom) {
   return value > 1 ? "pixelated" : "auto";
 }
 
+/* The position a captured frame came from, as the note records it.
+ *
+ * Seconds, to the millisecond, because that is the precision a video element
+ * reports and the precision someone needs to seek back to it. This is the only
+ * record of where a capture came from — the filename deliberately no longer
+ * carries it — so a frame whose sourceTime is wrong is evidence pointing at
+ * the wrong moment. */
+function captureSourceTime(currentTime) {
+  const value = Number(currentTime);
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.round(value * 1000) / 1000;
+}
+
 // A/D step through the list without wrapping. Wrapping from the last file back
 // to the first reads as a jump to somewhere else rather than as a step, and
 // there is no way to tell the two apart from the keyboard.
@@ -2049,6 +2062,7 @@ const core = {
   uniquePath,
   clonePathFor,
   framePathFor,
+  captureSourceTime,
   imageRenderingFor,
   logTimestamp,
   errorText,
@@ -3861,6 +3875,13 @@ class MediaViewerView extends ItemView {
     });
     this.scrubEl = scrub;
 
+    this.captureEl = this.barButton(bar, "Capture", () => {
+      void this.captureFrame();
+    });
+    this.captureEl.addClass("mv-capture");
+    this.captureEl.setAttribute("aria-label", "Capture this frame as a PNG");
+    this.captureEl.title = "Capture this frame as a PNG (C)";
+
     this.timeEl = bar.createDiv({ cls: "mv-time", text: "--:-- / --:--" });
 
     const speed = bar.createEl("select", {
@@ -4668,6 +4689,89 @@ class MediaViewerView extends ItemView {
     return true;
   }
 
+  /* Capture the frame on screen, as a PNG beside its video.
+   *
+   * The whole plugin exists for this: a walkthrough is recorded, the frames
+   * that matter are pulled out, and each one carries a note saying which video
+   * and which second it came from. A capture that cannot answer that is a
+   * screenshot, not evidence.
+   *
+   * Playback is deliberately not paused. The pointer already pauses on hover,
+   * so anyone lining up a frame has stopped it; taking control of playback on
+   * top of that would be the plugin overriding a decision the user made.
+   */
+  async captureFrame() {
+    const video = this.videoEl;
+    if (!video) {
+      new Notice("Media Viewer: open a video to capture a frame from it");
+      return null;
+    }
+    if (this.capturing) return this.capturing;
+    this.capturing = this.writeCapture(video).finally(() => {
+      this.capturing = null;
+      this.updateVideoBar();
+    });
+    this.updateVideoBar();
+    return this.capturing;
+  }
+
+  async writeCapture(video) {
+    const sourcePath = this.viewerPath;
+    const width = video.videoWidth || 0;
+    const height = video.videoHeight || 0;
+    if (!width || !height) {
+      // Before metadata there is no frame to draw, and drawing anyway yields a
+      // blank canvas that looks like a successful capture of nothing.
+      new Notice("Media Viewer: this video has not reported a frame yet");
+      return null;
+    }
+    const at = captureSourceTime(video.currentTime);
+    const started = Date.now();
+
+    let bytes;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = typeof canvas.getContext === "function" ? canvas.getContext("2d") : null;
+      if (!context) throw new Error("no 2d context for the capture");
+      context.drawImage(video, 0, 0, width, height);
+      // PNG always. A capture is a source for later work, and re-encoding it
+      // lossily on the way in would throw away detail nothing can restore.
+      const blob = await canvasToBlob(canvas, "image/png", undefined);
+      if (!blob) throw new Error("the canvas produced no image data");
+      bytes = await blob.arrayBuffer();
+    } catch (error) {
+      reportFailure("capture", "could not draw a frame of " + sourcePath, error);
+      new Notice("Media Viewer: this frame could not be captured");
+      return null;
+    }
+    this.plugin.logTiming("capture-encode", sourcePath, started, "bytes=" + bytes.byteLength);
+
+    const path = framePathFor(sourcePath, (candidate) => this.plugin.pathExists(candidate));
+    let created;
+    try {
+      created = await this.plugin.app.vault.createBinary(path, bytes);
+    } catch (error) {
+      reportFailure("capture", "could not write " + path, error);
+      new Notice("Media Viewer: could not write " + baseNameOf(path));
+      return null;
+    }
+
+    // Same reason as a save: the create event's order against the promise is
+    // not something to depend on, and insertion is idempotent by path.
+    if (created) this.index.handleCreate(created);
+    await this.plugin.afterFrameCaptured(sourcePath, path, {
+      sourceTime: at,
+      width,
+      height,
+    });
+
+    new Notice("Captured " + baseNameOf(path));
+    this.plugin.select(path);
+    return path;
+  }
+
   seekToScrub(position) {
     const video = this.videoEl;
     if (!video) return false;
@@ -4693,6 +4797,10 @@ class MediaViewerView extends ItemView {
     if (this.playEl) {
       this.playEl.setText(video && !video.paused ? "Pause" : "Play");
       this.playEl.disabled = !video;
+    }
+    if (this.captureEl) {
+      this.captureEl.disabled = !video || Boolean(this.capturing);
+      this.captureEl.setText(this.capturing ? "Capturing…" : "Capture");
     }
     if (this.stepBackEl) this.stepBackEl.disabled = !seekable;
     if (this.stepForwardEl) this.stepForwardEl.disabled = !seekable;
@@ -4948,6 +5056,10 @@ class MediaViewerView extends ItemView {
     if (key === " " || key === "spacebar") return this.togglePlayback();
     if (key === "w") return this.seekBy(VIDEO_SEEK_SECONDS);
     if (key === "s") return this.seekBy(-VIDEO_SEEK_SECONDS);
+    if (key === "c") {
+      void this.captureFrame();
+      return true;
+    }
     if (key === ",") return this.stepFrame(-1);
     if (key === ".") return this.stepFrame(1);
     // The same two physical keys with shift, which is where every video site
@@ -6022,6 +6134,19 @@ class MediaViewerPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "capture-video-frame",
+      name: "Capture the current video frame",
+      callback: () => {
+        const view = this.activeView();
+        if (!view) {
+          new Notice("Media Viewer: open the pane to capture a frame");
+          return;
+        }
+        void view.captureFrame();
+      },
+    });
+
+    this.addCommand({
       id: "copy-crash-log",
       name: "Copy crash log",
       callback: () => this.copyCrashLog(),
@@ -6224,6 +6349,16 @@ class MediaViewerPlugin extends Plugin {
       );
     }
     return rewritten;
+  }
+
+  /* The pane a command should act on. There is normally one; if a second has
+     been opened, the first is as good an answer as any and better than
+     refusing to act. */
+  activeView() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIA_VIEWER)) {
+      if (leaf.view instanceof MediaViewerView) return leaf.view;
+    }
+    return null;
   }
 
   refreshLineageViews() {
@@ -6500,6 +6635,45 @@ let created = null;
    * user's work; a note that could not be written is what **Repair lineage**
    * is for, and the pane says so rather than pretending the save failed.
    */
+  /* The note a capture leaves behind.
+   *
+   * Deliberately the same shape as an edit's note, because it is the same
+   * record type: one MediaInstance, whose op says how it came about. What a
+   * capture adds is sourceTime — the second of the video it was taken from,
+   * which is the whole reason the chain is worth keeping.
+   */
+  async afterFrameCaptured(sourcePath, path, info) {
+    if (!this.settings.writeLineage) return null;
+    const started = Date.now();
+    const details = info || {};
+    try {
+      await this.ensureRootNote(sourcePath, {});
+    } catch (error) {
+      reportFailure("plugin", "could not write the root note for " + sourcePath, error);
+      new Notice("Media Viewer: " + baseNameOf(sourcePath) + " could not be tracked");
+    }
+    try {
+      const written = await this.lineage.write(path, {
+        source: wikilinkFor(sourcePath),
+        op: "capture",
+        sourceTime: details.sourceTime,
+        width: details.width,
+        height: details.height,
+        created: isoTimestamp(new Date()),
+        status: STATUS_EDITED,
+        labels: [],
+      });
+      this.logTiming("lineage-write", path, started);
+      return written;
+    } catch (error) {
+      reportFailure("plugin", "could not write the lineage note for " + path, error);
+      new Notice(
+        "Media Viewer: " + baseNameOf(path) + " was captured but not tracked — use Repair lineage"
+      );
+      return null;
+    }
+  }
+
   async afterEditSaved(session, path, file) {
     if (!this.settings.writeLineage) return null;
     const started = Date.now();

@@ -154,7 +154,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 10 `MV-VTHUMB`
 - [x] 7a `MV-PASTE` — added after M2, out of sequence because it needed nothing from M3
 - [ ] 11 `MV-REVERSE`
-- [ ] 12 `MV-FRAME` — blocks the plugin's purpose
+- [x] 12 `MV-FRAME`
 - [x] 13 `MV-CROPMATH`
 - [x] 14 `MV-SESSION`
 - [x] 15 `MV-BUDGET`
