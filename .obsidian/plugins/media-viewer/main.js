@@ -1,4 +1,4 @@
-const { Plugin, ItemView, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder } = require("obsidian");
+const { Plugin, ItemView, Menu, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder } = require("obsidian");
 
 const VIEW_TYPE_MEDIA_VIEWER = "media-viewer-pane";
 
@@ -4075,6 +4075,15 @@ class MediaViewerView extends ItemView {
     tile.dataset.path = path;
     tile.title = path;
     tile.setAttribute("role", "option");
+    /* The grid is a view of files, so it should behave like the one Obsidian
+       already has: right-click for the file menu, drag to move. Reported from
+       use, and the other half of an argument the design already made — the old
+       app's folder tree was deleted because Obsidian's explorer is that widget
+       and better, which is only true if this grid does not pretend files here
+       are a different kind of thing. */
+    tile.draggable = true;
+    tile.addEventListener("dragstart", (event) => this.startTileDrag(event, path));
+    tile.addEventListener("contextmenu", (event) => this.showTileMenu(event, path));
 
     const frame = document.createElement("div");
     frame.className = "mv-tile-frame";
@@ -4087,6 +4096,67 @@ class MediaViewerView extends ItemView {
     tile.appendChild(caption);
 
     return tile;
+  }
+
+  /* Obsidian's own file menu, not a copy of it.
+   *
+   * Triggering "file-menu" is what makes every other plugin's items appear —
+   * Asset Renamer's rename, the core Delete and Reveal — so the grid inherits
+   * the vault's whole file vocabulary without knowing any of it. Our own items
+   * go on first, because they are the ones specific to being in this pane.
+   */
+  showTileMenu(event, path) {
+    const file = this.index.fileFor(path);
+    if (!file) return false;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    // Right-clicking something also selects it, which is what every file list
+    // does and what makes "the menu acts on what I clicked" true.
+    this.plugin.select(path);
+
+    const menu = new Menu();
+    menu.addItem((item) =>
+      item
+        .setTitle("Reveal in file explorer")
+        .setIcon("folder-open")
+        .onClick(() => this.plugin.revealInExplorer(path))
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle("Open in default app")
+        .setIcon("external-link")
+        .onClick(() => this.plugin.openInDefaultApp(path))
+    );
+    this.plugin.app.workspace.trigger("file-menu", menu, file, "media-viewer");
+    menu.showAtMouseEvent(event);
+    return true;
+  }
+
+  /* Dragging a tile out of the pane.
+   *
+   * dragManager is what makes the rest of Obsidian recognise this as a file
+   * being dragged rather than as unknown junk — drop it on a folder in the
+   * explorer and the file moves, drop it in a note and a link is written.
+   * It is undocumented, so the dataTransfer payload is set as well: without
+   * dragManager the drag still carries a path that something can use.
+   */
+  startTileDrag(event, path) {
+    const file = this.index.fileFor(path);
+    if (!file) return false;
+    const transfer = event.dataTransfer;
+    if (transfer && typeof transfer.setData === "function") {
+      transfer.setData("text/plain", path);
+      transfer.effectAllowed = "all";
+    }
+    const manager = this.plugin.app.dragManager;
+    if (!manager || typeof manager.onDragStart !== "function") return false;
+    manager.onDragStart(event, {
+      source: "media-viewer",
+      type: "file",
+      icon: "image-file",
+      title: baseNameOf(path),
+      file,
+    });
+    return true;
   }
 
   applySelection(tile, path) {
@@ -6570,6 +6640,52 @@ class MediaViewerPlugin extends Plugin {
    * but a source may not live beside its own parent — so following one has to
    * be able to change what the grid is looking at. Selection is a path, so it
    * survives that change rather than being invalidated by it. */
+  /* Show the file where it lives. The explorer is the vault's own answer to
+     "where is this", so the pane points at it rather than growing a tree of
+     its own — the same reasoning that deleted the old app's folder browser. */
+  revealInExplorer(path) {
+    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    if (!file) {
+      new Notice("Media Viewer: that file is no longer in the vault");
+      return false;
+    }
+    return Boolean(
+      guarded("revealing", path, () => {
+        const explorer = this.app.workspace.getLeavesOfType("file-explorer")[0];
+        if (!explorer) {
+          new Notice("Media Viewer: the file explorer is not open");
+          return false;
+        }
+        this.app.workspace.revealLeaf(explorer);
+        // revealInFolder is the explorer view's own method; it is what the
+        // core "Reveal file in navigation" command calls.
+        if (explorer.view && typeof explorer.view.revealInFolder === "function") {
+          explorer.view.revealInFolder(file);
+          return true;
+        }
+        return false;
+      }, false)
+    );
+  }
+
+  // Hands the file to the OS. Useful for the formats this pane will not decode
+  // and for the ones someone would rather edit elsewhere.
+  openInDefaultApp(path) {
+    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    if (!file) return false;
+    return Boolean(
+      guarded("opening", path, () => {
+        const opener = this.app.openWithDefaultApp;
+        if (typeof opener === "function") {
+          opener.call(this.app, path);
+          return true;
+        }
+        new Notice("Media Viewer: this build cannot open files outside Obsidian");
+        return false;
+      }, false)
+    );
+  }
+
   revealMedia(path) {
     if (!path) return false;
     if (!this.index.has(path)) {

@@ -188,7 +188,37 @@ class Setting {
 }
 Setting.created = [];
 
-class Menu {}
+// Enough Menu for the grid's context menu: items record what they were given
+// so a test can read the menu rather than the click that built it.
+class Menu {
+  constructor() {
+    this.items = [];
+    this.shownAt = null;
+  }
+  addItem(build) {
+    const item = {
+      setTitle(title) {
+        this.title = title;
+        return this;
+      },
+      setIcon(icon) {
+        this.icon = icon;
+        return this;
+      },
+      onClick(handler) {
+        this.click = handler;
+        return this;
+      },
+    };
+    build(item);
+    this.items.push(item);
+    return this;
+  }
+  showAtMouseEvent(event) {
+    this.shownAt = event;
+    return this;
+  }
+}
 const normalizePath = (p) => String(p).split("\\").join("/").replace(/[/]+/g, "/");
 
 module.exports = {

@@ -30,6 +30,8 @@ function fakeApp(paths) {
     },
     workspace: {
       on,
+      // What lets every other plugin add items to the grid's context menu.
+      trigger: () => {},
       getActiveFile: () => null,
       getLeavesOfType() {
         return this.leaves || [];
@@ -457,6 +459,84 @@ group("header", () => {
     ok(view.recursiveEl.hasClass("is-active"));
     plugin.setFollowActiveFile(true);
     ok(view.followEl.hasClass("is-active"));
+  });
+});
+
+
+/* The grid behaves like the file list it is — MV-EXPLORER. */
+
+group("a tile is a file, and acts like one", () => {
+  test("right-click selects it and opens a menu", async () => {
+    const { plugin, view } = await paneOver(FILES);
+    const tile = view.gridEl.children[1];
+    let prevented = false;
+    view.showTileMenu({ preventDefault: () => (prevented = true) }, tile.dataset.path);
+    equal(prevented, true);
+    equal(plugin.selectedPath, "data/assets/b.png", "the menu acts on what was clicked");
+  });
+
+  test("the menu carries this pane's own items", async () => {
+    const { view } = await paneOver(FILES);
+    const menu = view.showTileMenuFor
+      ? null
+      : (() => {
+          let built = null;
+          const original = view.plugin.app.workspace.trigger;
+          view.plugin.app.workspace.trigger = (name, m) => {
+            if (name === "file-menu") built = m;
+          };
+          view.showTileMenu({ preventDefault: () => {} }, "data/assets/a.png");
+          view.plugin.app.workspace.trigger = original;
+          return built;
+        })();
+    ok(menu, "file-menu was triggered, which is what lets other plugins add items");
+    deepEqual(
+      menu.items.map((item) => item.title),
+      ["Reveal in file explorer", "Open in default app"]
+    );
+  });
+
+  test("a tile that has left the folder opens no menu", async () => {
+    const { plugin, view } = await paneOver(FILES);
+    plugin.index.handleDelete({ path: "data/assets/a.png" });
+    equal(view.showTileMenu({ preventDefault: () => {} }, "data/assets/a.png"), false);
+  });
+
+  test("dragging a tile hands Obsidian a file, so a drop can move it", async () => {
+    const { view, app } = await paneOver(FILES);
+    const dragged = [];
+    app.dragManager = {
+      onDragStart(event, payload) {
+        dragged.push(payload);
+      },
+    };
+    const data = {};
+    const started = view.startTileDrag(
+      { dataTransfer: { setData: (type, value) => (data[type] = value) } },
+      "data/assets/b.png"
+    );
+    equal(started, true);
+    equal(dragged[0].type, "file");
+    equal(dragged[0].file.path, "data/assets/b.png");
+    equal(data["text/plain"], "data/assets/b.png", "and a path for anything that cannot read the rest");
+  });
+
+  test("without dragManager the drag still carries a path rather than throwing", async () => {
+    const { view } = await paneOver(FILES);
+    const data = {};
+    equal(
+      view.startTileDrag(
+        { dataTransfer: { setData: (type, value) => (data[type] = value) } },
+        "data/assets/b.png"
+      ),
+      false
+    );
+    equal(data["text/plain"], "data/assets/b.png");
+  });
+
+  test("every tile is draggable, so the grid reads as a file list", async () => {
+    const { view } = await paneOver(FILES);
+    ok(view.gridEl.children.every((tile) => tile.draggable === true));
   });
 });
 
