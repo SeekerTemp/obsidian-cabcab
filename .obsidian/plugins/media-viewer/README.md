@@ -15,6 +15,9 @@ and iOS restricts video-to-canvas capture.
 | **View** | Zoom, pan, fit and 100% for images; play, scrub, speed and frame-step for video |
 | **Edit** | Crop, rotate, flip and resize, on the viewer in place — no dialog, and no second copy of the viewer |
 | **Save** | A new file beside the source, in the source's own format, with the selection following it and no rescan |
+| **Capture** | The video frame on screen, written as a PNG whose note names the video and the second it came from |
+| **Label** | What a file is *about* — a use case, what it shows, free labels — written to its note |
+| **Board** | Evidence placed on an Obsidian canvas, with the provenance arrows drawn for you |
 | **Track** | A `MediaInstance` record for every file it writes, and for every file it edits from |
 | **Resolve** | Metadata inherited up the `source:` chain, so correcting a value on the parent corrects it everywhere below |
 
@@ -40,11 +43,13 @@ globally would break typing.
 | `A` / `D` | Previous / next file | Previous / next file | Previous / next file |
 | `Space` | — | Play / pause | — |
 | `,` `.` | — | Step one frame | — |
+| `C` | — | Capture this frame as a PNG | — |
+| `R` | — | Play backwards | Rotate |
 | `<` `>` | — | Slower / faster | — |
 | `0` / `F` | 100% / fit | — | — |
 | `Ctrl+V` | Paste an image into this folder | | |
 | `Enter` | — | — | Crop to the selection |
-| `[` `]` or `R` | — | — | Rotate |
+| `[` `]` | — | — | Rotate |
 | `H` / `V` | — | — | Flip |
 | `Ctrl+Z` | — | — | Undo, `Ctrl+Shift+Z` to redo |
 | `Ctrl+S` | — | — | Save |
@@ -185,6 +190,12 @@ between the two, and no code shared. The vault is the interface.
 | Mark as reviewed | Writes a bare root note for the selected file |
 | Repair lineage | Writes a note back for a file that has lost one |
 | Report lineage breaks | Lists every dangling link and every broken chain. Changes nothing |
+| Report media never acted on | Lists vault media with no note at all. Changes nothing |
+| Capture the current video frame | For when the pane does not have focus |
+| Add to board | Puts the selected file on the board last used |
+| Add to board (choose a board) | The same, asking which board first |
+| Copy crash log | Puts this session's failures on the clipboard |
+| Clear crash log | Starts the log over |
 
 ## Settings
 
@@ -196,11 +207,60 @@ between the two, and no code shared. The vault is the interface.
 | Write lineage notes | on |
 | Folder for new lineage notes | `data/media` |
 | Debug logging | off |
+| Crash log | **on** |
+
+**Crash log** is the one that stays on. It records failures — never tracing —
+to `.obsidian/plugins/media-viewer/crash.log`, so a problem can be handed over
+without being reproduced in the developer console first. **Copy crash log**
+puts the same thing on the clipboard, and works even when the file could not be
+written, which is exactly the situation worth reporting.
 
 **Debug logging** puts `ms=` timings on the developer console for scans,
 thumbnails, decodes, encodes, saves and lineage resolution. Nothing is written
 to disk: the console already filters, persists, survives the failure and is one
 keystroke away.
+
+## Capturing evidence
+
+The workflow this plugin exists for:
+
+1. **Record** a walkthrough of whatever you are investigating.
+2. **Capture** the frames that matter — `C`, or the Capture button in the
+   transport. Each one is written beside the video as
+   `<name>+frame+<timestamp>.png`, and its note records `sourceTime`: the
+   second of the video it came from. That field is the only record of it, so a
+   capture always knows where it came from.
+3. **Label** it in the lineage panel — a use case, what it shows, any labels.
+   Nothing infers this; it is the part you know.
+4. **Read it back.** The notes are ordinary records in this vault's schema
+   system, so `data/base/MediaInstance.base` groups them by use case and
+   anything speaking to the vault from outside can do the same without this
+   plugin being involved.
+
+Labels are your own values, never inherited ones. A value coming from further
+up the chain shows as a greyed hint instead, because typing over it and saving
+would copy the parent's answer down and quietly end the inheritance.
+
+## Boards
+
+A board is an **Obsidian canvas** — a normal `.canvas` file. This plugin does
+not build one and does not fill one from a folder scan: dragging 500 files onto
+a canvas is what no machine handles. It adds what you ask it to add, and draws
+the provenance arrow when the other end of the chain is already on the board.
+
+- **Add to board** from a tile's right-click menu, or the command.
+- The board is remembered, so the second and every later add is one click.
+- Adding a capture whose video is already there draws the arrow between them.
+  Adding the video *after* its captures joins them up as well.
+- Arrows arrive labelled with their provenance — `frame @ 1:32`, `crop` — and
+  are yours from that moment. Retype them, move things, group them, add sticky
+  notes: nothing already on a board is ever moved or rewritten.
+
+## Files in the grid
+
+Tiles behave like the file explorer's, because they are the same files:
+right-click gives Obsidian's own file menu — everything other plugins add to it
+included — and a tile can be dragged out onto a folder to move the file.
 
 ## When something goes wrong
 
