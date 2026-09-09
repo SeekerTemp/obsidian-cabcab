@@ -1,7 +1,7 @@
 ---
 schemaMappings: {}
 recordMappings: {}
-generatedPaths: {"data/base/Verse.base":"Verse","data/base/Realm.base":"Realm","data/base/LifeForm.base":"LifeForm","data/AssetDatabase.base.md":"*"}
+generatedPaths: {"data/base/MediaInstance.base":"MediaInstance","data/base/Verse.base":"Verse","data/base/Realm.base":"Realm","data/base/LifeForm.base":"LifeForm","data/AssetDatabase.base.md":"*"}
 ---
 
 # Schema Mappings
