@@ -61,6 +61,13 @@ Rules that hold for every task:
 | 17 | `VE-ERRORS` | Missing binary, unreadable file, failed join, cancelled job, vault not on a disk — each named and survivable | `main.js` | 16 | Every row of the table below behaves as written |
 | 18 | `VE-README` | Plugin `README.md` in the vault's documentation style | `README.md` | 17 | — |
 
+## M5 — From using it
+
+| # | Keyword | Goal | Touches | Needs | Verify |
+| --- | --- | --- | --- | --- | --- |
+| 19 | `VE-BROWSE` | **The pane could not be opened.** Its empty state told you to go and right-click a file somewhere else, which is a dead end. The empty state becomes the vault's videos: folders with counts, a search, a still per tile, double-click to edit | `main.js`, `styles.css`, `docs/layout.html` | 4 | Open the pane with nothing loaded and start editing a video without leaving it |
+| 20 | `VE-EMPTYFIX` | Three things the first screenshot showed: a stray black `<video>` box in the empty state, ffmpeg's git-describe version pushing the header apart, and a live timecode readout for a video that is not open | `main.js`, `styles.css` | 19 | Nothing in the empty pane refers to a video that is not there |
+
 ## Progress
 
 - [x] 1 `VE-SCAFFOLD`
@@ -81,6 +88,8 @@ Rules that hold for every task:
 - [x] 16 `VE-SETTINGS`
 - [x] 17 `VE-ERRORS`
 - [x] 18 `VE-README`
+- [x] 19 `VE-BROWSE` — from the first real session: the pane had no way in
+- [x] 20 `VE-EMPTYFIX` — from the same screenshot
 
 Everything above passes under `node tests/all.js` — 238 tests across seven
 suites, none of which need ffmpeg.
@@ -113,6 +122,16 @@ whether the clip starts on the frame you meant.
 
 ### Opening
 
+- [ ] The pane opens showing **the vault's videos**, with folder counts down
+      the side and a still on each tile
+- [ ] **Double-clicking a tile** starts editing it — this is the flow the pane
+      was missing entirely
+- [ ] A single click only selects; it does not open
+- [ ] Typing in the search box narrows the list, and the count says "n of m"
+- [ ] Clicking a folder narrows to it; **All videos** goes back
+- [ ] **Browse** in the header returns to the list with a video open
+- [ ] Nothing in the empty pane shows a black box, a timecode, or a version
+      string long enough to push the header apart
 - [ ] Right-click a video in the file explorer → **Open in Video Editor**
 - [ ] Right-click a video tile in the **Media Viewer grid** → the same item is
       there. This is the integration, and it is one event listener

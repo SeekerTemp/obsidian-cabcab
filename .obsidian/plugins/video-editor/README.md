@@ -42,12 +42,22 @@ between a Mac and a Windows machine wants a different pair on each.
 
 ## Opening a video
 
-Any of:
+Open the pane — the ribbon scissors icon, or **Open the video editor** in the
+command palette — and it shows **the videos in your vault**. Folders that hold
+one are listed down the side with counts, there is a search box, and every tile
+carries a still taken from the file. **Double-click a tile to start editing
+it.**
+
+That is the way in. The empty state is the browser, because a pane whose empty
+state tells you to go and use a different pane is a pane you cannot open.
+
+The other ways in still work and are quicker when you already know the file:
 
 - Right-click a video in the file explorer — or in the **Media Viewer grid**,
   which offers Obsidian's own file menu — and choose **Open in Video Editor**.
-- The ribbon scissors icon.
 - **Open the active file in the video editor** in the command palette.
+
+**Browse** in the header goes back to the list once something is open.
 
 ## The pane
 

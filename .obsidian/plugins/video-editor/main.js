@@ -1301,6 +1301,100 @@ function normaliseSettings(raw) {
   return settings;
 }
 
+/* ------------------------------------------------------------------------ *
+ * The browser.
+ *
+ * A video editor that can only be reached by right-clicking a file elsewhere
+ * is a video editor you cannot open. So the pane's empty state is not a
+ * sentence telling you to go somewhere else — it is the list of videos in the
+ * vault, and double-clicking one starts editing it.
+ *
+ * The listing is built from paths and nothing else, so it is a pure function
+ * and the folder grouping, the search and the ordering are all testable
+ * without a vault.
+ * ------------------------------------------------------------------------ */
+
+// Sorted case-insensitively, because a folder list that puts `Assets` before
+// `archive` reads as broken to everyone except a byte comparator.
+function compareFolders(a, b) {
+  const left = String(a === null || a === undefined ? "" : a).toLowerCase();
+  const right = String(b === null || b === undefined ? "" : b).toLowerCase();
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function folderLabelFor(folder) {
+  const text = normaliseSeparators(folder).replace(/[/]+$/, "");
+  return text || "(vault root)";
+}
+
+/* Every folder holding at least one video, with how many.
+ *
+ * Folders with no video in them are not offered: this is a list of places
+ * there is something to edit, not a directory tree.
+ */
+function videoFoldersOf(paths) {
+  const counts = new Map();
+  for (const path of paths || []) {
+    if (!isVideoPath(path)) continue;
+    const folder = folderOf(path);
+    counts.set(folder, (counts.get(folder) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([folder, count]) => ({ folder, count, label: folderLabelFor(folder) }))
+    .sort((a, b) => compareFolders(a.folder, b.folder));
+}
+
+/* The rows the browser shows.
+ *
+ * `folder` of null means every folder, which is the useful default in a vault
+ * where the recordings are not all in one place. A query matches the name
+ * first and the whole path second, so typing a folder name narrows to it
+ * without having to click it.
+ */
+function browserEntriesFor(paths, options) {
+  const settings = options || {};
+  const folder =
+    settings.folder === undefined || settings.folder === null
+      ? null
+      : normaliseSeparators(settings.folder).replace(/[/]+$/, "");
+  const query = String(settings.query || "").trim().toLowerCase();
+  const rows = [];
+  for (const path of paths || []) {
+    if (!isVideoPath(path)) continue;
+    const own = folderOf(path);
+    if (folder !== null && own !== folder) continue;
+    const name = baseNameOf(path);
+    if (query && name.toLowerCase().indexOf(query) === -1 && path.toLowerCase().indexOf(query) === -1) {
+      continue;
+    }
+    rows.push({ path, name, folder: own, label: folderLabelFor(own) });
+  }
+  rows.sort((a, b) => {
+    if (a.folder !== b.folder) return compareFolders(a.folder, b.folder);
+    const left = a.name.toLowerCase();
+    const right = b.name.toLowerCase();
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  return rows;
+}
+
+/* "N-126479-g08cd8df29d-20260908" becomes "N-126479".
+ *
+ * ffmpeg's own version string is a git describe, and pasted whole into a
+ * header badge it pushes everything else off the row — which is exactly what
+ * it did the first time this pane was opened for real.
+ */
+function shortVersion(text) {
+  const raw = String(text === null || text === undefined ? "" : text).trim();
+  if (!raw) return "";
+  const first = raw.split(/\s+/)[0];
+  const release = first.match(/^\d+\.\d+(\.\d+)?/);
+  if (release) return release[0];
+  const snapshot = first.match(/^[A-Za-z]+-\d+/);
+  if (snapshot) return snapshot[0];
+  return first.length > 14 ? first.slice(0, 14) + "…" : first;
+}
+
 const core = {
   VIDEO_EXTENSIONS,
   AUDIO_EXTENSIONS,
@@ -1398,6 +1492,11 @@ const core = {
   missingBinaryMessage,
   formatBytes,
   errorText,
+  compareFolders,
+  folderLabelFor,
+  videoFoldersOf,
+  browserEntriesFor,
+  shortVersion,
 
   linkTargetOf,
   wikilinkFor,
@@ -1772,6 +1871,73 @@ class Filmstrip {
       if (!url) continue;
       this.urls.push(url);
       if (typeof onStill === "function") onStill(i, url);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------ *
+ * PosterCache — one still per video, for the browser's tiles.
+ *
+ * Kept across folder switches and searches, because the expensive part is the
+ * ffmpeg seek and the answer does not change. Sequential for the same reason
+ * the filmstrip is: forty concurrent processes seeking one disk finish later
+ * than forty in a row, while making the machine unusable meanwhile.
+ * ------------------------------------------------------------------------ */
+
+// Far enough in to be past a fade from black, near enough to be cheap on a
+// file whose duration is not known yet.
+const POSTER_SECONDS = 3;
+
+class PosterCache {
+  constructor(runner, options) {
+    const settings = options || {};
+    this.runner = runner;
+    this.height = Number(settings.height) || 72;
+    // vault path -> object URL
+    this.urls = new Map();
+    this.token = 0;
+  }
+
+  urlFor(path) {
+    return this.urls.get(path) || null;
+  }
+
+  clear() {
+    this.token += 1;
+    for (const url of this.urls.values()) {
+      guarded("releasing", "poster", () => {
+        if (typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(url);
+      });
+    }
+    this.urls.clear();
+  }
+
+  /* Fill in whatever is missing, newest request wins.
+   *
+   * `absoluteOf` turns a vault path into one ffmpeg can open. `onPoster` fires
+   * per still so tiles fill in as they arrive rather than all at the end.
+   */
+  async fill(entries, absoluteOf, onPoster) {
+    this.token += 1;
+    const token = this.token;
+    for (const entry of entries || []) {
+      if (token !== this.token) return;
+      if (this.urls.has(entry.path)) {
+        if (typeof onPoster === "function") onPoster(entry.path, this.urls.get(entry.path));
+        continue;
+      }
+      const absolute = guarded("locating", entry.path, () => absoluteOf(entry.path), null);
+      if (!absolute) continue;
+      const buffer = await this.runner.still(absolute, POSTER_SECONDS, this.height);
+      if (token !== this.token) return;
+      if (!buffer) continue;
+      const url = guarded("drawing", entry.path, () => {
+        const blob = new Blob([buffer], { type: "image/jpeg" });
+        return URL.createObjectURL(blob);
+      }, null);
+      if (!url) continue;
+      this.urls.set(entry.path, url);
+      if (typeof onPoster === "function") onPoster(entry.path, url);
     }
   }
 }
@@ -2427,6 +2593,7 @@ class ExportRunner {
  * ------------------------------------------------------------------------ */
 
 const STILL_HEIGHT = 90;
+const POSTER_HEIGHT = 72;
 const RULER_TICKS = 7;
 const SEEK_STEP_SECONDS = 5;
 
@@ -2436,6 +2603,13 @@ class VideoEditorView extends ItemView {
     this.plugin = plugin;
     this.session = new TrimSession({ onChange: () => this.renderState() });
     this.filmstrip = new Filmstrip(plugin.runner, { height: STILL_HEIGHT });
+    this.posters = new PosterCache(plugin.runner, { height: POSTER_HEIGHT });
+    // Browser state: which folder is showing, what was typed, and whether the
+    // browser is what the pane is showing at all.
+    this.browsing = true;
+    this.folder = null;
+    this.query = "";
+    this.selectedPath = null;
     this.file = null;
     this.job = null;
     this.drag = null;
@@ -2461,13 +2635,17 @@ class VideoEditorView extends ItemView {
     container.addClass("video-editor");
     this.build(container);
     this.renderState();
+    this.showBrowser();
     await this.plugin.runner.check();
     this.renderBinaryState();
+    // Posters need ffmpeg, and whether there is one is only known now.
+    if (this.browsing) this.renderBrowser();
   }
 
   async onClose() {
     this.cancelJob();
     this.filmstrip.clear();
+    this.posters.clear();
     if (this.videoEl) this.videoEl.src = "";
   }
 
@@ -2477,17 +2655,18 @@ class VideoEditorView extends ItemView {
     this.headerEl = container.createDiv({ cls: "ve-header" });
     this.titleEl = this.headerEl.createDiv({ cls: "ve-title", text: "No video open" });
     this.infoEl = this.headerEl.createDiv({ cls: "ve-badge" });
+    /* Back to the list. Hidden while the list *is* what is showing, because a
+       button that returns you to where you already are is a puzzle. */
+    this.browseButton = this.headerEl.createEl("button", { cls: "ve-browse", text: "Browse" });
+    this.browseButton.addEventListener("click", () => this.showBrowser());
     this.binaryEl = this.headerEl.createDiv({ cls: "ve-badge" });
 
+    this.buildBrowser(container);
     this.bodyEl = container.createDiv({ cls: "ve-body" });
     this.stageEl = this.bodyEl.createDiv({ cls: "ve-stage" });
     this.videoWrapEl = this.stageEl.createDiv({ cls: "ve-video" });
     this.videoEl = this.videoWrapEl.createEl("video", { cls: "ve-media" });
     this.videoEl.preload = "metadata";
-    this.emptyEl = this.videoWrapEl.createDiv({
-      cls: "ve-empty",
-      text: "Open a video from the file explorer, the Media Viewer grid, or the command palette.",
-    });
 
     this.buildToolbar(this.stageEl);
     this.buildTransport(this.stageEl);
@@ -2748,7 +2927,8 @@ class VideoEditorView extends ItemView {
     this.file = file;
     this.videoEl.src = this.app.vault.getResourcePath(file);
     this.titleEl.setText(file.name);
-    this.emptyEl.style.display = "none";
+    this.selectedPath = file.path;
+    this.showEditor();
     /* ffprobe rather than the video element's own metadata: the element knows
        duration and size but not the frame rate, and frame-stepping without a
        frame rate is a guess. */
@@ -2806,6 +2986,153 @@ class VideoEditorView extends ItemView {
       cell.style.backgroundImage = "url(" + url + ")";
       cell.addClass("has-still");
     });
+  }
+
+  /* ---- the browser ----------------------------------------------------- *
+   *
+   * What the pane shows when nothing is open. Telling someone to go and
+   * right-click a file somewhere else is not an empty state, it is a dead end
+   * — so this is the list of videos in the vault, and double-clicking one
+   * starts editing it.
+   * --------------------------------------------------------------------- */
+
+  buildBrowser(container) {
+    this.browserEl = container.createDiv({ cls: "ve-browser" });
+    const head = this.browserEl.createDiv({ cls: "ve-browser-head" });
+    this.searchEl = head.createEl("input", { cls: "ve-search" });
+    this.searchEl.type = "search";
+    this.searchEl.placeholder = "Search videos";
+    this.searchEl.addEventListener("input", () => {
+      this.query = String(this.searchEl.value || "");
+      this.renderBrowser();
+    });
+    this.browserCountEl = head.createSpan({ cls: "ve-browser-count" });
+
+    const body = this.browserEl.createDiv({ cls: "ve-browser-body" });
+    this.foldersEl = body.createDiv({ cls: "ve-folders" });
+    this.tilesEl = body.createDiv({ cls: "ve-tiles" });
+  }
+
+  // Every video in the vault. A vault-wide walk is right here, unlike listing
+  // one folder: the question genuinely is "what could I edit".
+  videoPaths() {
+    const files = typeof this.app.vault.getFiles === "function" ? this.app.vault.getFiles() : [];
+    const paths = [];
+    for (const file of files) {
+      if (file && file.path && isVideoPath(file.path)) paths.push(file.path);
+    }
+    return paths;
+  }
+
+  showBrowser() {
+    this.browsing = true;
+    this.browserEl.removeClass("is-hidden");
+    this.bodyEl.addClass("is-hidden");
+    if (this.browseButton) this.browseButton.addClass("is-hidden");
+    this.renderBrowser();
+  }
+
+  showEditor() {
+    this.browsing = false;
+    this.browserEl.addClass("is-hidden");
+    this.bodyEl.removeClass("is-hidden");
+    if (this.browseButton) this.browseButton.removeClass("is-hidden");
+  }
+
+  renderBrowser() {
+    const paths = this.videoPaths();
+    const folders = videoFoldersOf(paths);
+    /* A folder that has gone away since it was picked would otherwise show an
+       empty grid with no way back, so a missing selection falls back to all. */
+    if (this.folder !== null && !folders.some((entry) => entry.folder === this.folder)) {
+      this.folder = null;
+    }
+    this.renderFolders(folders, paths.length);
+    const entries = browserEntriesFor(paths, { folder: this.folder, query: this.query });
+    this.renderTiles(entries, paths.length);
+  }
+
+  renderFolders(folders, total) {
+    this.foldersEl.empty();
+    const row = (label, count, folder) => {
+      const item = this.foldersEl.createDiv({ cls: "ve-folder" });
+      if (this.folder === folder) item.addClass("is-selected");
+      item.createSpan({ cls: "ve-folder-name", text: label });
+      item.createSpan({ cls: "ve-folder-count", text: String(count) });
+      item.addEventListener("click", () => {
+        this.folder = folder;
+        this.renderBrowser();
+      });
+      return item;
+    };
+    row("All videos", total, null);
+    for (const entry of folders) row(entry.label, entry.count, entry.folder);
+  }
+
+  renderTiles(entries, total) {
+    this.tilesEl.empty();
+    this.browserCountEl.setText(
+      entries.length === total ? entries.length + " videos" : entries.length + " of " + total
+    );
+
+    if (!entries.length) {
+      const empty = this.tilesEl.createDiv({ cls: "ve-browser-empty" });
+      empty.setText(
+        total
+          ? "Nothing matches that."
+          : "There are no videos in this vault yet. Record one, or drop an mp4 in and it will appear here."
+      );
+      return;
+    }
+
+    for (const entry of entries) {
+      const tile = this.tilesEl.createDiv({ cls: "ve-tile" });
+      tile.dataset.path = entry.path;
+      const poster = tile.createDiv({ cls: "ve-tile-poster" });
+      const url = this.posters.urlFor(entry.path);
+      if (url) {
+        poster.style.backgroundImage = "url(" + url + ")";
+        poster.addClass("has-poster");
+      }
+      tile.createDiv({ cls: "ve-tile-name", text: entry.name });
+      // The folder is only worth a line when the list spans more than one.
+      if (this.folder === null) tile.createDiv({ cls: "ve-tile-folder", text: entry.label });
+      tile.addEventListener("dblclick", () => this.openPath(entry.path));
+      tile.addEventListener("click", () => {
+        this.selectedPath = entry.path;
+        for (const other of this.tilesEl.children) other.removeClass("is-selected");
+        tile.addClass("is-selected");
+      });
+    }
+
+    // Posters are drawn after the tiles, so the grid appears immediately and
+    // fills in rather than waiting on ffmpeg.
+    if (this.plugin.runner.available === false) return;
+    this.posters.fill(entries, (path) => this.absoluteOf(path), (path, url) => {
+      const tile = this.tileFor(path);
+      if (!tile) return;
+      const poster = tile.children[0];
+      if (!poster) return;
+      poster.style.backgroundImage = "url(" + url + ")";
+      poster.addClass("has-poster");
+    });
+  }
+
+  tileFor(path) {
+    for (const tile of this.tilesEl.children) {
+      if (tile.dataset && tile.dataset.path === path) return tile;
+    }
+    return null;
+  }
+
+  async openPath(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) {
+      new Notice("That file is no longer in the vault.");
+      this.renderBrowser();
+      return;
+    }
+    await this.openFile(file);
   }
 
   /* ---- transport ------------------------------------------------------- */
@@ -2988,7 +3315,8 @@ class VideoEditorView extends ItemView {
   renderBinaryState() {
     const runner = this.plugin.runner;
     if (runner.available) {
-      this.binaryEl.setText("ffmpeg " + (runner.version || "ready"));
+      this.binaryEl.setText("ffmpeg " + (shortVersion(runner.version) || "ready"));
+      this.binaryEl.title = runner.version || "";
       this.binaryEl.addClass("is-ok");
       this.binaryEl.removeClass("is-missing");
       return;
@@ -3002,6 +3330,12 @@ class VideoEditorView extends ItemView {
   renderTimes() {
     const range = this.session.range;
     this.timesEl.empty();
+    /* With nothing open these would read 00:00:00.000 four times over, which
+       looks like a video of no length rather than no video. */
+    if (!this.session.path) {
+      this.timesEl.createSpan({ text: "No video open" });
+      return;
+    }
     const pair = (label, value) => {
       const span = this.timesEl.createSpan();
       span.createSpan({ text: label + " " });
@@ -3376,6 +3710,14 @@ class VideoEditorPlugin extends Plugin {
       },
     });
     this.addCommand({
+      id: "browse-videos",
+      name: "Browse the vault's videos",
+      callback: async () => {
+        const leaf = await this.ensureLeaf();
+        if (leaf.view instanceof VideoEditorView) leaf.view.showBrowser();
+      },
+    });
+    this.addCommand({
       id: "set-in-point",
       name: "Set the in point to the playhead",
       checkCallback: (checking) => this.withView(checking, (view) => view.session.setStart(view.currentTime())),
@@ -3501,6 +3843,7 @@ module.exports.core = core;
 module.exports.FfmpegRunner = FfmpegRunner;
 module.exports.CancelledError = CancelledError;
 module.exports.Filmstrip = Filmstrip;
+module.exports.PosterCache = PosterCache;
 module.exports.TrimSession = TrimSession;
 module.exports.LineageStore = LineageStore;
 module.exports.ExportRunner = ExportRunner;

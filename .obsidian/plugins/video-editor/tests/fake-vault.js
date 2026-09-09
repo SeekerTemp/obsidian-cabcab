@@ -56,6 +56,11 @@ function createFakeApp(options) {
       getMarkdownFiles() {
         return Array.from(files.values()).filter((file) => file.extension === "md");
       },
+      // Every file in the vault, which is what the browser walks to find out
+      // what there is to edit.
+      getFiles() {
+        return Array.from(files.values());
+      },
       getResourcePath(file) {
         return "app://fake/" + file.path;
       },

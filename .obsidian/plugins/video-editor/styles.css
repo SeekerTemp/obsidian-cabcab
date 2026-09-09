@@ -106,14 +106,6 @@
   background-color: #000;
 }
 
-.video-editor .ve-empty {
-  color: var(--text-faint);
-  font-size: var(--font-ui-small);
-  text-align: center;
-  padding: var(--size-4-4, 16px);
-  max-width: 28em;
-}
-
 /* ---- The floating action bar ------------------------------------------- */
 
 /* Over the video rather than under it: the stage keeps its height, and the
@@ -543,5 +535,184 @@
 
   .video-editor .ve-tool.is-primary .ve-tool-text {
     display: inline;
+  }
+}
+
+/* ---- The browser -------------------------------------------------------- */
+
+/* What the pane shows when nothing is open. It replaces the editor rather
+   than sitting beside it: with no video, the stage, the transport and the clip
+   list are all controls for something that does not exist. */
+.video-editor .ve-browser {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background-color: var(--background-primary);
+}
+
+.video-editor .is-hidden {
+  display: none !important;
+}
+
+.video-editor .ve-browse {
+  flex: 0 0 auto;
+  border: 1px solid var(--background-modifier-border);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-1) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.video-editor .ve-browse:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+.video-editor .ve-browser-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.video-editor .ve-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-ui-small);
+}
+
+.video-editor .ve-browser-count {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.video-editor .ve-browser-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* Folders on the left, and only folders that hold a video — this is a list of
+   places there is something to edit, not a directory tree. */
+.video-editor .ve-folders {
+  flex: 0 0 200px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+  border-right: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary);
+}
+
+.video-editor .ve-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.video-editor .ve-folder:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.video-editor .ve-folder.is-selected {
+  background-color: var(--background-modifier-active-hover, var(--background-modifier-hover));
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+}
+
+.video-editor .ve-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-folder-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.video-editor .ve-tiles {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--size-4-3);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--size-4-3);
+  align-content: start;
+}
+
+.video-editor .ve-tile {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  cursor: pointer;
+  background-color: var(--background-primary-alt);
+}
+
+.video-editor .ve-tile:hover {
+  border-color: var(--background-modifier-border-hover);
+}
+
+.video-editor .ve-tile.is-selected {
+  border-color: var(--interactive-accent);
+}
+
+.video-editor .ve-tile-poster {
+  aspect-ratio: 16 / 9;
+  background-color: var(--background-modifier-border);
+  background-size: cover;
+  background-position: center;
+}
+
+.video-editor .ve-tile-name {
+  padding: var(--size-4-1) var(--size-4-2) 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-tile-folder {
+  padding: 0 var(--size-4-2) var(--size-4-1);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-browser-empty {
+  grid-column: 1 / -1;
+  padding: var(--size-4-4, 16px);
+  color: var(--text-faint);
+  font-size: var(--font-ui-small);
+  max-width: 34em;
+}
+
+@container video-editor (max-width: 560px) {
+  .video-editor .ve-folders {
+    flex: 0 0 132px;
+  }
+
+  .video-editor .ve-tiles {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 }
