@@ -378,6 +378,9 @@
    would find it folded away. */
 .media-viewer .mv-lineage {
   flex: 0 0 auto;
+  /* Without this a long path — one unbreakable token — sets the panel's
+     minimum width, and the viewer loses whatever the path is long. */
+  min-width: 0;
   border-top: 1px solid var(--background-modifier-border);
   display: flex;
   flex-direction: column;
@@ -460,7 +463,16 @@
   gap: var(--size-4-1);
 }
 
+.media-viewer .mv-lineage-row {
+  min-width: 0;
+}
+
+/* File names here are long and have no spaces to break on. */
 .media-viewer .mv-lineage-link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: none;
   box-shadow: none;
   padding: 0;
@@ -500,7 +512,8 @@
    value nobody can check. */
 .media-viewer .mv-lineage-field {
   display: grid;
-  grid-template-columns: minmax(4em, 8em) 1fr auto;
+  grid-template-columns: minmax(4em, 8em) minmax(0, 1fr) auto;
+  min-width: 0;
   gap: var(--size-4-1);
   padding: 1px 0;
   align-items: baseline;
@@ -510,7 +523,23 @@
   color: var(--text-muted);
 }
 
+.media-viewer .mv-lineage-value.is-link {
+  color: var(--text-accent);
+  cursor: pointer;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.media-viewer .mv-lineage-value.is-link:hover {
+  text-decoration: underline;
+}
+
 .media-viewer .mv-lineage-value {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -916,6 +945,16 @@
   .media-viewer .mv-empty.is-shown {
     flex: 1 1 38%;
     min-width: 0;
+  }
+
+  /* Its own column, at a width it does not get to choose. Sized from its
+     content, one long path would take the pane over — which is exactly what
+     it did. */
+  .media-viewer .mv-lineage {
+    flex: 0 0 clamp(220px, 24%, 340px);
+    max-height: none;
+    border-top: none;
+    border-left: 1px solid var(--background-modifier-border);
   }
 }
 

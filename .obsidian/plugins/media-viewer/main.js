@@ -6646,13 +6646,46 @@ class MediaViewerView extends ItemView {
       const row = table.createDiv({ cls: "mv-lineage-field" });
       row.toggleClass("is-inherited", entry.inherited);
       row.createSpan({ cls: "mv-lineage-key", text: name });
-      row.createSpan({ cls: "mv-lineage-value", text: formatFieldValue(name, entry.value) });
+      /* A value naming a file is worth being able to open. media points at
+         this file's own note, source at the parent's media — the two jumps
+         someone reads this table to make, and previously the two it did not
+         offer. The full text is the tooltip, because the cell clips. */
+      const text = formatFieldValue(name, entry.value);
+      const target = this.fieldJumpTarget(name, entry.value, path);
+      if (target) {
+        const link = row.createEl("button", {
+          cls: "mv-lineage-value is-link",
+          text,
+          attr: { type: "button", title: text },
+        });
+        link.addEventListener("click", () => this.plugin.openPath(target));
+      } else {
+        row.createSpan({ cls: "mv-lineage-value", text, attr: { title: text } });
+      }
       const from = row.createSpan({
         cls: "mv-lineage-from",
         text: entry.inherited ? baseNameOf(entry.from) : "own",
       });
       if (entry.inherited) from.title = "Inherited from " + entry.from;
     }
+  }
+
+  /* Where a metadata row jumps to, or null for a value that is not a place.
+   *
+   * media is the record describing this file, so it opens the note. source
+   * names another media file, so it moves the pane to it — the same jump the
+   * chain above already offers, from the row someone happens to be reading. */
+  fieldJumpTarget(name, value, path) {
+    if (name === "media") {
+      const note = this.plugin.lineage.noteFileFor(path);
+      return note ? { kind: "note", path: note.path } : null;
+    }
+    if (name === "source") {
+      const target = linkTargetOf(value);
+      const resolved = target ? this.plugin.lineage.resolveLink(target, path) : null;
+      return resolved ? { kind: "media", path: resolved } : null;
+    }
+    return null;
   }
 
   // The pane can be resized while an image is open, which changes what "fit"
@@ -7231,6 +7264,25 @@ class MediaViewerPlugin extends Plugin {
   /* Show the file where it lives. The explorer is the vault's own answer to
      "where is this", so the pane points at it rather than growing a tree of
      its own — the same reasoning that deleted the old app's folder browser. */
+  /* Open whatever a panel row points at: a note in a tab, a media file in the
+     pane. Two kinds, because the two are not opened the same way and the row
+     knows which it is. */
+  openPath(target) {
+    if (!target || !target.path) return false;
+    if (target.kind === "media") return this.revealMedia(target.path);
+    const file = this.app.vault.getAbstractFileByPath(target.path);
+    if (!file) {
+      new Notice("Media Viewer: that note is no longer in the vault");
+      return false;
+    }
+    return Boolean(
+      guarded("opening", target.path, () => {
+        void this.app.workspace.getLeaf("tab").openFile(file);
+        return true;
+      }, false)
+    );
+  }
+
   revealInExplorer(path) {
     const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
     if (!file) {

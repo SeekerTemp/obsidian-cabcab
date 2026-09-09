@@ -445,4 +445,81 @@ group("the labelling form", () => {
   });
 });
 
+
+/* Jumping from the metadata table. Reported from use: the rows named files and
+   could not be opened. */
+
+const fieldValueEl = (view, name) => {
+  for (const row of view.lineageBodyEl.querySelectorAll(".mv-lineage-field")) {
+    if (row.querySelector(".mv-lineage-key").textContent === name) {
+      return row.querySelector(".mv-lineage-value");
+    }
+  }
+  return null;
+};
+
+group("metadata rows that name a file can be opened", () => {
+  test("media points at this file's own note", async () => {
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    const target = view.fieldJumpTarget("media", "[[data/assets/child.png]]", "data/assets/child.png");
+    deepEqual(target, { kind: "note", path: "data/media/child.md" });
+  });
+
+  test("source points at the parent's media, which the pane can show", async () => {
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    deepEqual(view.fieldJumpTarget("source", "[[data/assets/root.png]]", "data/assets/child.png"), {
+      kind: "media",
+      path: "data/assets/root.png",
+    });
+  });
+
+  test("a value that is not a place is not a link", async () => {
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    equal(view.fieldJumpTarget("width", 800, "data/assets/child.png"), null);
+    equal(view.fieldJumpTarget("status", "edited", "data/assets/child.png"), null);
+  });
+
+  test("a source naming a file the vault lost is not clickable", async () => {
+    // The break is already reported above the table; offering a jump to
+    // nowhere would be a second, worse way of saying it.
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    equal(view.fieldJumpTarget("source", "[[gone.png]]", "data/assets/child.png"), null);
+  });
+
+  test("the row renders as a button, and carries the full value as its tooltip", async () => {
+    // The cell clips — a wikilink is one unbreakable token — so the tooltip is
+    // where the whole value stays readable.
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    const media = fieldValueEl(view, "media");
+    ok(media.hasClass("is-link"), "media is a link");
+    equal(media.tagName, "BUTTON");
+    equal(media.getAttribute("title"), media.textContent);
+    const width = fieldValueEl(view, "width");
+    equal(width.hasClass("is-link"), false, "a number is not");
+  });
+
+  test("clicking media opens the note in a tab", async () => {
+    const { plugin, view, app } = await pane();
+    const opened = [];
+    app.workspace.getLeaf = () => ({ openFile: async (file) => opened.push(file.path) });
+    plugin.select("data/assets/child.png");
+    fieldValueEl(view, "media").fire("click");
+    deepEqual(opened, ["data/media/child.md"]);
+  });
+
+  test("clicking source moves the pane rather than opening a tab", async () => {
+    const { plugin, view } = await pane();
+    plugin.select("data/assets/child.png");
+    const source = fieldValueEl(view, "source");
+    ok(source.hasClass("is-link"));
+    source.fire("click");
+    equal(plugin.selectedPath, "data/assets/root.png");
+  });
+});
+
 report("panel");

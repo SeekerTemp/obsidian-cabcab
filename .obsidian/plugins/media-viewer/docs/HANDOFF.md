@@ -180,6 +180,7 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 32 `MV-ZOOMFIX` — a bug, from use
 - [x] 33 `MV-EXPLORER` — from use
 - [x] 36 `MV-BOARD` — evidence on an Obsidian canvas, curated never scanned
+- [x] 37 `MV-PANELFIX` — panel clipping and metadata jumps, from use
 - [ ] 34 `MV-RECORD` — from use, probably Schema Sync's to build
 
 Retired after M2, and not to be picked up again: `MV-LOG`, which was 25. The
