@@ -217,8 +217,16 @@ Put a value in a record's field and it appears in that field's value list about 
 second later — no sync needed, and it reaches the Metadata Menu dropdown with it.
 Only the list is written; the record is left exactly as you typed it.
 
-Templates are the exception, as everywhere else: `_placeholder.<Schema>.md` is
-never counted as data, so a value typed there does not join the list.
+**Templates count here.** A `_placeholder.<Schema>.md` is never validated and
+never counted as a record, but a value typed into one still joins the list: for
+some schemas the template is the only note that ever exists, and a value is a
+value wherever it was written.
+
+This is also what makes Metadata Menu's **+** button stick. It adds the value to
+the field's options *in memory only* and never saves them, so on its own the
+value would be gone by the next reload. What makes it durable is the other half:
+it also writes the value into the note, the list picks it up from there, and the
+list is then pushed back into Metadata Menu's settings — which does save.
 
 ### A value added in Metadata Menu comes back
 

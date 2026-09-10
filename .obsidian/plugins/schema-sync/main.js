@@ -3466,8 +3466,12 @@ class SchemaSyncPlugin extends Plugin {
       }
     }
     if (targets.size === 0) return;
+    // Templates included, and deliberately. "Never counted as data" governs
+    // validation and the record count; a value is a different thing. For some
+    // schemas the template is the only note that ever exists — the same reason
+    // the undeclared-property prompt fires on one — and a value typed there is
+    // as plain a statement that the value exists as one typed anywhere else.
     for (const file of this.dataFiles()) {
-      if (file.basename.startsWith(PLACEHOLDER_PREFIX)) continue;
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (!frontmatter || typeof frontmatter.implements !== "string") continue;
       for (const entry of targets.values()) {

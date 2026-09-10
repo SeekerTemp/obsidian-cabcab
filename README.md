@@ -97,7 +97,7 @@ MyVault/
 │   │   └── done/                        Sources already filed, kept as evidence
 │   ├── schema/<Name>.schema.md        Entity definitions (fields, types, relations)
 │   ├── record/<name>s/                Records implementing a schema
-│   │   ├── _placeholder.<Name>.md       Template — never validated, never counted as data
+│   │   ├── _placeholder.<Name>.md       Template — never validated, never counted as a record
 │   │   └── _placeholder<N>.<Name>.md    Real records, awaiting a proper name
 │   ├── config/
 │   │   ├── <Schema>/<field>.md        Auto-generated value list for one field
@@ -118,6 +118,12 @@ MyVault/
 | `.base` | `PascalCase` | Bases table view over a record folder |
 | `.base.md` | `PascalCase` | DBML ERD note |
 | record notes | free | A note declaring `implements: <Schema>` |
+
+A **template** (`_placeholder.<Name>.md`) is never validated and never counted as
+a record, but its values do join value lists, and a property added to it still
+raises the undeclared-property prompt. Both for the same reason: for some schemas
+the template is the only note that ever exists, so what is written there is the
+plainest statement of intent available.
 
 **The filename is the identity.** A schema is named by its file, not by its `schema:` property — the property is repaired to match on every sync. Two lookups that disagreed on this previously caused one schema's generated content to be written into another's file.
 
