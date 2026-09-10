@@ -1395,6 +1395,53 @@ function shortVersion(text) {
   return first.length > 14 ? first.slice(0, 14) + "…" : first;
 }
 
+/* A date a person reads rather than a timestamp.
+ *
+ * Month names rather than a numeric format, because 9/10/2026 means two
+ * different days depending on who is reading it, and this is a tooltip nobody
+ * should have to think about.
+ */
+function formatFileDate(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const at = new Date(ms);
+  if (Number.isNaN(at.getTime())) return "";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return at.getDate() + " " + months[at.getMonth()] + " " + at.getFullYear();
+}
+
+/* What a tile says when the cursor rests on it.
+ *
+ * Built from whatever is known at the time. The name, the folder, the size and
+ * the date need nothing but the vault, so they are there from the first paint;
+ * the duration and the shape arrive once ffprobe has been. A line with nothing
+ * on it is dropped rather than shown empty, so a file that cannot be probed
+ * still gets a useful tooltip instead of a row of separators.
+ */
+function tileTooltip(details) {
+  const found = details || {};
+  const lines = [];
+  if (found.name) lines.push(String(found.name));
+  if (found.folder) lines.push("in " + found.folder);
+
+  const shape = [];
+  const duration = Number(found.duration);
+  if (Number.isFinite(duration) && duration > 0) shape.push(formatTimecode(duration, { withHours: true }));
+  if (found.width && found.height) shape.push(found.width + "×" + found.height);
+  const fps = Number(found.fps);
+  if (Number.isFinite(fps) && fps > 0) shape.push(Math.round(fps * 100) / 100 + " fps");
+  if (shape.length) lines.push(shape.join(" · "));
+
+  const file = [];
+  const size = Number(found.sizeBytes);
+  if (Number.isFinite(size) && size > 0) file.push(formatBytes(size));
+  const created = formatFileDate(found.created);
+  if (created) file.push("created " + created);
+  if (file.length) lines.push(file.join(" · "));
+
+  return lines.join("\n");
+}
+
 const core = {
   VIDEO_EXTENSIONS,
   AUDIO_EXTENSIONS,
@@ -1497,6 +1544,8 @@ const core = {
   videoFoldersOf,
   browserEntriesFor,
   shortVersion,
+  formatFileDate,
+  tileTooltip,
 
   linkTargetOf,
   wikilinkFor,
@@ -1876,30 +1925,49 @@ class Filmstrip {
 }
 
 /* ------------------------------------------------------------------------ *
- * PosterCache — one still per video, for the browser's tiles.
+ * TileCache — what a browser tile needs, fetched once and kept.
  *
- * Kept across folder switches and searches, because the expensive part is the
- * ffmpeg seek and the answer does not change. Sequential for the same reason
- * the filmstrip is: forty concurrent processes seeking one disk finish later
- * than forty in a row, while making the machine unusable meanwhile.
+ * Two things per video: a still for the poster, and what ffprobe says about it
+ * for the duration badge and the tooltip. They are fetched in one pass because
+ * they are wanted at the same moment and thrown away at the same moment, and
+ * because ffprobe is nearly free next to the still — it reads a header where
+ * the still decodes a frame.
+ *
+ * Kept across folder switches and searches, since the expensive part is the
+ * seek and the answer does not change. Sequential for the same reason the
+ * filmstrip is: forty concurrent processes seeking one disk finish later than
+ * forty in a row, while making the machine unusable meanwhile.
  * ------------------------------------------------------------------------ */
 
 // Far enough in to be past a fade from black, near enough to be cheap on a
 // file whose duration is not known yet.
 const POSTER_SECONDS = 3;
 
-class PosterCache {
+class TileCache {
   constructor(runner, options) {
     const settings = options || {};
     this.runner = runner;
     this.height = Number(settings.height) || 72;
     // vault path -> object URL
     this.urls = new Map();
+    // vault path -> what ffprobe said, or null when it could not say
+    this.infos = new Map();
     this.token = 0;
   }
 
   urlFor(path) {
     return this.urls.get(path) || null;
+  }
+
+  infoFor(path) {
+    return this.infos.get(path) || null;
+  }
+
+  // Whether this path has been asked about, however that turned out. A file
+  // ffprobe refused is answered, and asking again every render would mean one
+  // process per unreadable file per keystroke.
+  knows(path) {
+    return this.infos.has(path);
   }
 
   clear() {
@@ -1910,24 +1978,38 @@ class PosterCache {
       });
     }
     this.urls.clear();
+    this.infos.clear();
   }
 
   /* Fill in whatever is missing, newest request wins.
    *
-   * `absoluteOf` turns a vault path into one ffmpeg can open. `onPoster` fires
-   * per still so tiles fill in as they arrive rather than all at the end.
+   * `absoluteOf` turns a vault path into one ffmpeg can open. `onDetail` fires
+   * per file as `{ url, info }` so tiles fill in as they arrive rather than
+   * all at the end — either half may be null.
    */
-  async fill(entries, absoluteOf, onPoster) {
+  async fill(entries, absoluteOf, onDetail) {
     this.token += 1;
     const token = this.token;
     for (const entry of entries || []) {
       if (token !== this.token) return;
-      if (this.urls.has(entry.path)) {
-        if (typeof onPoster === "function") onPoster(entry.path, this.urls.get(entry.path));
+
+      if (this.knows(entry.path)) {
+        if (typeof onDetail === "function") {
+          onDetail(entry.path, { url: this.urlFor(entry.path), info: this.infoFor(entry.path) });
+        }
         continue;
       }
+
       const absolute = guarded("locating", entry.path, () => absoluteOf(entry.path), null);
       if (!absolute) continue;
+
+      // Probed first: it is the cheaper of the two and it is what the tooltip
+      // and the duration badge need, so a slow still does not hold them up.
+      const info = await this.runner.probe(absolute);
+      if (token !== this.token) return;
+      this.infos.set(entry.path, info || null);
+      if (typeof onDetail === "function") onDetail(entry.path, { url: null, info: info || null });
+
       const buffer = await this.runner.still(absolute, POSTER_SECONDS, this.height);
       if (token !== this.token) return;
       if (!buffer) continue;
@@ -1937,7 +2019,7 @@ class PosterCache {
       }, null);
       if (!url) continue;
       this.urls.set(entry.path, url);
-      if (typeof onPoster === "function") onPoster(entry.path, url);
+      if (typeof onDetail === "function") onDetail(entry.path, { url, info: info || null });
     }
   }
 }
@@ -2603,7 +2685,7 @@ class VideoEditorView extends ItemView {
     this.plugin = plugin;
     this.session = new TrimSession({ onChange: () => this.renderState() });
     this.filmstrip = new Filmstrip(plugin.runner, { height: STILL_HEIGHT });
-    this.posters = new PosterCache(plugin.runner, { height: POSTER_HEIGHT });
+    this.tileCache = new TileCache(plugin.runner, { height: POSTER_HEIGHT });
     // Browser state: which folder is showing, what was typed, and whether the
     // browser is what the pane is showing at all.
     this.browsing = true;
@@ -2645,7 +2727,7 @@ class VideoEditorView extends ItemView {
   async onClose() {
     this.cancelJob();
     this.filmstrip.clear();
-    this.posters.clear();
+    this.tileCache.clear();
     if (this.videoEl) this.videoEl.src = "";
   }
 
@@ -3069,6 +3151,39 @@ class VideoEditorView extends ItemView {
     for (const entry of folders) row(entry.label, entry.count, entry.folder);
   }
 
+  /* What the vault alone knows about a file: its name, where it sits, how big
+     it is and when it was made. None of that needs ffmpeg, so it is on the
+     tooltip from the first paint rather than after a probe. */
+  vaultDetailsFor(entry) {
+    const file = this.app.vault.getAbstractFileByPath(entry.path);
+    const stat = file && file.stat ? file.stat : null;
+    return {
+      name: entry.name,
+      folder: entry.label,
+      sizeBytes: stat ? stat.size : null,
+      created: stat ? stat.ctime : null,
+    };
+  }
+
+  // The tooltip and the duration badge, from whatever is known now.
+  applyTileDetail(tile, entry) {
+    const info = this.tileCache.infoFor(entry.path);
+    tile.title = tileTooltip(
+      Object.assign(this.vaultDetailsFor(entry), {
+        duration: info ? info.duration : null,
+        width: info ? info.width : null,
+        height: info ? info.height : null,
+        fps: info ? info.fps : null,
+      })
+    );
+    const badge = tile.durationEl;
+    if (!badge) return;
+    const duration = info && Number.isFinite(Number(info.duration)) ? Number(info.duration) : 0;
+    // Blank rather than "00:00" while it is unknown: a zero-length video is a
+    // different claim from a video nobody has measured yet.
+    badge.setText(duration > 0 ? formatTimecode(duration) : "");
+  }
+
   renderTiles(entries, total) {
     this.tilesEl.empty();
     this.browserCountEl.setText(
@@ -3089,7 +3204,8 @@ class VideoEditorView extends ItemView {
       const tile = this.tilesEl.createDiv({ cls: "ve-tile" });
       tile.dataset.path = entry.path;
       const poster = tile.createDiv({ cls: "ve-tile-poster" });
-      const url = this.posters.urlFor(entry.path);
+      tile.durationEl = poster.createSpan({ cls: "ve-tile-duration" });
+      const url = this.tileCache.urlFor(entry.path);
       if (url) {
         poster.style.backgroundImage = "url(" + url + ")";
         poster.addClass("has-poster");
@@ -3097,6 +3213,8 @@ class VideoEditorView extends ItemView {
       tile.createDiv({ cls: "ve-tile-name", text: entry.name });
       // The folder is only worth a line when the list spans more than one.
       if (this.folder === null) tile.createDiv({ cls: "ve-tile-folder", text: entry.label });
+      this.applyTileDetail(tile, entry);
+
       tile.addEventListener("dblclick", () => this.openPath(entry.path));
       tile.addEventListener("click", () => {
         this.selectedPath = entry.path;
@@ -3105,16 +3223,22 @@ class VideoEditorView extends ItemView {
       });
     }
 
-    // Posters are drawn after the tiles, so the grid appears immediately and
-    // fills in rather than waiting on ffmpeg.
+    /* Posters and probes are fetched after the tiles are drawn, so the grid
+       appears immediately and fills in. Without ffmpeg there is nothing to
+       fetch, and the tooltips still carry name, folder, size and date. */
     if (this.plugin.runner.available === false) return;
-    this.posters.fill(entries, (path) => this.absoluteOf(path), (path, url) => {
+    this.tileCache.fill(entries, (path) => this.absoluteOf(path), (path) => {
       const tile = this.tileFor(path);
       if (!tile) return;
+      const entry = entries.find((row) => row.path === path);
+      if (!entry) return;
+      const url = this.tileCache.urlFor(path);
       const poster = tile.children[0];
-      if (!poster) return;
-      poster.style.backgroundImage = "url(" + url + ")";
-      poster.addClass("has-poster");
+      if (url && poster) {
+        poster.style.backgroundImage = "url(" + url + ")";
+        poster.addClass("has-poster");
+      }
+      this.applyTileDetail(tile, entry);
     });
   }
 
@@ -3843,7 +3967,7 @@ module.exports.core = core;
 module.exports.FfmpegRunner = FfmpegRunner;
 module.exports.CancelledError = CancelledError;
 module.exports.Filmstrip = Filmstrip;
-module.exports.PosterCache = PosterCache;
+module.exports.TileCache = TileCache;
 module.exports.TrimSession = TrimSession;
 module.exports.LineageStore = LineageStore;
 module.exports.ExportRunner = ExportRunner;

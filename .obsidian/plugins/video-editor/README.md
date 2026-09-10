@@ -52,8 +52,14 @@ between a Mac and a Windows machine wants a different pair on each.
 Open the pane — the ribbon scissors icon, or **Open the video editor** in the
 command palette — and it shows **the videos in your vault**. Folders that hold
 one are listed down the side with counts, there is a search box, and every tile
-carries a still taken from the file. **Double-click a tile to start editing
-it.**
+carries a still taken from the file with its **duration** in the corner.
+**Double-click a tile to start editing it.**
+
+Hovering a tile gives the rest: name, folder, duration, dimensions, frame rate,
+size and the date it was created. The name, size and date come from the vault
+and are there immediately; the duration and shape arrive once ffprobe has
+answered, which is why a probe runs alongside the still rather than on hover —
+a tooltip you have to summon twice is not a tooltip.
 
 That is the way in. The empty state is the browser, because a pane whose empty
 state tells you to go and use a different pane is a pane you cannot open.

@@ -4,6 +4,10 @@
      new pane is demoed as .html first and only the layout is carried across.
      Nothing here is wired up; every control is a static shape.
 
+     Hovering a tile shows name, duration, dimensions, size and date created;
+     the duration is also on the poster, because that is the one fact you scan
+     a grid of clips for.
+
      Two things this is here to settle:
        1. Where the floating action bar sits, and what it holds.
        2. What the timeline looks like for a 60-minute file, where a filmstrip
@@ -228,7 +232,10 @@
   .ve-tile { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); overflow: hidden; cursor: pointer;
              background: var(--background-primary-alt); }
   .ve-tile.is-selected { border-color: var(--interactive-accent); }
-  .ve-tile-poster { aspect-ratio: 16/9; background: linear-gradient(160deg,#3a4a6a,#26304a); }
+  .ve-tile-poster { position: relative; aspect-ratio: 16/9; background: linear-gradient(160deg,#3a4a6a,#26304a); }
+  .ve-tile-duration { position: absolute; right: var(--size-4-1); bottom: var(--size-4-1); padding: 0 var(--size-4-1);
+                      border-radius: 2px; background: rgba(0,0,0,.72); color: #fff; font-size: 11px;
+                      font-variant-numeric: tabular-nums; line-height: 1.5; }
   .ve-tile:nth-child(even) .ve-tile-poster { background: linear-gradient(160deg,#4a3a5a,#2f2440); }
   .ve-tile:nth-child(3n) .ve-tile-poster { background: linear-gradient(160deg,#3a5a4a,#243a30); }
   .ve-tile-name { padding: var(--size-4-1) var(--size-4-2) 0; font-size: var(--font-ui-smaller); overflow: hidden;
@@ -263,12 +270,12 @@
         <div class="ve-folder"><span>recordings/2026</span><span class="ve-folder-count">2</span></div>
       </div>
       <div class="ve-tiles">
-        <div class="ve-tile is-selected"><div class="ve-tile-poster"></div><div class="ve-tile-name">walkthrough-checkout.mp4</div><div class="ve-tile-folder">assets</div></div>
-        <div class="ve-tile"><div class="ve-tile-poster"></div><div class="ve-tile-name">walkthrough-login.mkv</div><div class="ve-tile-folder">assets</div></div>
-        <div class="ve-tile"><div class="ve-tile-poster"></div><div class="ve-tile-name">demo.mov</div><div class="ve-tile-folder">recordings/2026</div></div>
-        <div class="ve-tile"><div class="ve-tile-poster"></div><div class="ve-tile-name">retro.mp4</div><div class="ve-tile-folder">recordings/2026</div></div>
-        <div class="ve-tile"><div class="ve-tile-poster"></div><div class="ve-tile-name">old-take.mp4</div><div class="ve-tile-folder">Archive</div></div>
-        <div class="ve-tile"><div class="ve-tile-poster"></div><div class="ve-tile-name">top-level.mp4</div><div class="ve-tile-folder">(vault root)</div></div>
+        <div class="ve-tile is-selected"><div class="ve-tile-poster"><span class="ve-tile-duration">58:12</span></div><div class="ve-tile-name">walkthrough-checkout.mp4</div><div class="ve-tile-folder">assets</div></div>
+        <div class="ve-tile"><div class="ve-tile-poster"><span class="ve-tile-duration">12:04</span></div><div class="ve-tile-name">walkthrough-login.mkv</div><div class="ve-tile-folder">assets</div></div>
+        <div class="ve-tile"><div class="ve-tile-poster"><span class="ve-tile-duration">03:41</span></div><div class="ve-tile-name">demo.mov</div><div class="ve-tile-folder">recordings/2026</div></div>
+        <div class="ve-tile"><div class="ve-tile-poster"><span class="ve-tile-duration">27:19</span></div><div class="ve-tile-name">retro.mp4</div><div class="ve-tile-folder">recordings/2026</div></div>
+        <div class="ve-tile"><div class="ve-tile-poster"><span class="ve-tile-duration">01:02:55</span></div><div class="ve-tile-name">old-take.mp4</div><div class="ve-tile-folder">Archive</div></div>
+        <div class="ve-tile"><div class="ve-tile-poster"><span class="ve-tile-duration">00:44</span></div><div class="ve-tile-name">top-level.mp4</div><div class="ve-tile-folder">(vault root)</div></div>
       </div>
     </div>
   </div>

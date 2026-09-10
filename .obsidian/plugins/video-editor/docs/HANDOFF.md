@@ -67,6 +67,7 @@ Rules that hold for every task:
 | --- | --- | --- | --- | --- | --- |
 | 19 | `VE-BROWSE` | **The pane could not be opened.** Its empty state told you to go and right-click a file somewhere else, which is a dead end. The empty state becomes the vault's videos: folders with counts, a search, a still per tile, double-click to edit | `main.js`, `styles.css`, `docs/layout.html` | 4 | Open the pane with nothing loaded and start editing a video without leaving it |
 | 20 | `VE-EMPTYFIX` | Three things the first screenshot showed: a stray black `<video>` box in the empty state, ffmpeg's git-describe version pushing the header apart, and a live timecode readout for a video that is not open | `main.js`, `styles.css` | 19 | Nothing in the empty pane refers to a video that is not there |
+| 21 | `VE-TILEINFO` | Hovering a tile shows name, folder, duration, shape, size and date created; the duration also sits on the poster. `PosterCache` becomes `TileCache` and probes alongside the still, since ffprobe reads a header where the still decodes a frame | `main.js`, `styles.css`, `docs/layout.html` | 19 | Hover a tile and read its duration and creation date without opening it |
 
 ## Progress
 
@@ -90,6 +91,7 @@ Rules that hold for every task:
 - [x] 18 `VE-README`
 - [x] 19 `VE-BROWSE` — from the first real session: the pane had no way in
 - [x] 20 `VE-EMPTYFIX` — from the same screenshot
+- [x] 21 `VE-TILEINFO` — from the vault README's feedback list
 
 Everything above passes under `node tests/all.js` — 238 tests across seven
 suites, none of which need ffmpeg.
@@ -130,6 +132,10 @@ whether the clip starts on the frame you meant.
 - [ ] **Double-clicking a tile** starts editing it — this is the flow the pane
       was missing entirely
 - [ ] A single click only selects; it does not open
+- [ ] Every tile shows its **duration** in the corner of the poster
+- [ ] **Hovering a tile** shows its name, duration, dimensions, size and the
+      date it was created
+- [ ] A file ffprobe cannot read still gets a tooltip with name, size and date
 - [ ] Typing in the search box narrows the list, and the count says "n of m"
 - [ ] Clicking a folder narrows to it; **All videos** goes back
 - [ ] **Browse** in the header returns to the list with a video open

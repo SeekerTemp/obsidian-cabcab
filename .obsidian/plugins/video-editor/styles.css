@@ -716,3 +716,30 @@
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 }
+
+/* The duration, on the poster, the way every video list does it. It is the one
+   fact you scan a grid of clips for, and a tooltip you have to wait for is not
+   scanning. */
+.video-editor .ve-tile-poster {
+  position: relative;
+}
+
+.video-editor .ve-tile-duration {
+  position: absolute;
+  right: var(--size-4-1);
+  bottom: var(--size-4-1);
+  padding: 0 var(--size-4-1);
+  border-radius: 2px;
+  background-color: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+/* Nothing measured yet, nothing shown — an empty black chip reads as a broken
+   file rather than a pending one. */
+.video-editor .ve-tile-duration:empty {
+  display: none;
+}
