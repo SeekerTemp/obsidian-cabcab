@@ -293,7 +293,9 @@ syncEntityFieldsForSchema() back-fill records with missing bound fields, and
                             cast value-list fields to [[links]]
 ensurePlaceholders()        back-fill the _placeholder template
 importLists()               create records from data/config/*.csv
-syncConfigLists()           regenerate data/config/<Plural>.config.md, unioned
+syncConfigLists()           regenerate data/config/<Schema>/<field>.md, unioned
+                            from records, hand-added rows and Metadata Menu.
+                            Also runs ~1s after any record is edited
 syncBaseViews()             create data/base/<Name>.base if missing; otherwise
                             reconcile only its <field>Image formulas
 syncErd()                   write data/AssetDatabase.base.md as a DBML fence

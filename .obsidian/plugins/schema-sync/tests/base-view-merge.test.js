@@ -229,9 +229,26 @@ test("a list field casts element by element", () => {
   assert.strictEqual(castToLinks(["[[a]]", "[[b]]"]), undefined);
 });
 
-test("a value that is not a string is not cast", () => {
-  assert.strictEqual(castToLinks(7), undefined);
-  assert.strictEqual(castToLinks(null), undefined);
+// YAML reads a bare 6 as a number, so a list of 1..6 arrives typed. Guarding on
+// string alone left those values uncast in the record and uncollected into the
+// list — the one shape this whole feature was built for.
+test("a number is a value, and is cast like any other", () => {
+  assert.strictEqual(castToLinks(6), "[[6]]");
+  assert.strictEqual(castToLinks(0), "[[0]]");
+  assert.strictEqual(castToLinks(3.5), "[[3.5]]");
+  assert.strictEqual(plainValue(6), "6");
+});
+
+test("an array of numbers casts element by element", () => {
+  assert.deepStrictEqual(castToLinks([1, 2]), ["[[1]]", "[[2]]"]);
+  assert.deepStrictEqual(castToLinks(["a", 7]), ["[[a]]", "[[7]]"]);
+});
+
+test("what is not a value is left alone", () => {
+  for (const value of [true, false, null, undefined, {}, NaN]) {
+    assert.strictEqual(castToLinks(value), undefined, `cast ${String(value)}`);
+    assert.strictEqual(plainValue(value), "", `plain ${String(value)}`);
+  }
 });
 
 // The round trip that has to hold. The option is shown plain, sync casts it to a

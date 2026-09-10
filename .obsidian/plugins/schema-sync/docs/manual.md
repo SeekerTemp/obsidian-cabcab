@@ -198,7 +198,11 @@ them.
 
 Nothing in Metadata Menu bridges those two forms, which is why the cast happens
 here rather than there. It runs on the next sync, so a value typed by hand is
-plain until then.
+plain until then — the note you are editing is never rewritten under the cursor.
+
+A value is a string **or a number**. YAML reads a bare `6` as a number, and a
+value list of `1`–`6` is exactly that, so those count everywhere a value does. A
+boolean or an object does not: neither is something to name a thing after.
 
 The list itself stays plain — every reader strips the brackets — so a value cannot
 gain a second layer however many times it goes round. An empty field stays empty:
@@ -206,6 +210,15 @@ gain a second layer however many times it goes round. An empty field stays empty
 
 Unbound fields, attachments and foreign keys are not cast. An attachment already
 holds a link, and a foreign key has no list of its own.
+
+### A value typed into a record joins its list
+
+Put a value in a record's field and it appears in that field's value list about a
+second later — no sync needed, and it reaches the Metadata Menu dropdown with it.
+Only the list is written; the record is left exactly as you typed it.
+
+Templates are the exception, as everywhere else: `_placeholder.<Schema>.md` is
+never counted as data, so a value typed there does not join the list.
 
 ### A value added in Metadata Menu comes back
 

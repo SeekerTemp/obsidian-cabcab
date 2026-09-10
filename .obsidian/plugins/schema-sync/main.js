@@ -54,8 +54,17 @@ function valuesListOptions(values) {
 // brackets. It is *stored* as a link, so the record points at the note that value
 // is — or becomes, the moment ⤓ implements the list. Nothing in Metadata Menu
 // bridges those, so sync casts the value on the way into a record instead.
+// A value list value is a string or a number, and nothing else. YAML reads a
+// bare 6 as a number, so a list of 1..6 arrives here typed — which is exactly the
+// case a string-only guard silently dropped, on both the way in and the way out.
+// A boolean or an object is not a value to name a thing after.
+function isScalarValue(value) {
+  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
+}
+
 function plainValue(value) {
-  const text = String(value ?? "").trim();
+  if (!isScalarValue(value)) return "";
+  const text = String(value).trim();
   const link = text.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|([^\]]+))?\]\]$/);
   return link ? (link[2] || link[1]).trim() : text;
 }
@@ -71,10 +80,10 @@ function linkedValue(value) {
 // "[[]]" is not a link.
 function castToLinks(stored) {
   if (Array.isArray(stored)) {
-    const cast = stored.map((entry) => (typeof entry === "string" ? linkedValue(entry) : entry));
+    const cast = stored.map((entry) => (isScalarValue(entry) ? linkedValue(entry) : entry));
     return cast.some((entry, index) => entry !== stored[index]) ? cast : undefined;
   }
-  if (typeof stored !== "string") return undefined;
+  if (!isScalarValue(stored)) return undefined;
   const cast = linkedValue(stored);
   return cast === stored ? undefined : cast;
 }
@@ -1879,7 +1888,11 @@ class SchemaSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile && (file.path.startsWith(`${ASSET_CONFIG_FOLDER}/`) || file.path.startsWith(`${CONFIG_FOLDER}/`) || file.path.startsWith(`${ROOT_CONFIG_FOLDER}/`)) && file.path !== SCHEMA_MAPPING_FILE && file.path !== LEGACY_MAPPING_FILE) {
         void this.checkImplementationColumns(file);
+        return;
       }
+      // A value typed into a record is a value its list should offer, so the
+      // list follows without waiting for a sync.
+      if (file instanceof TFile && this.isRecordFile(file)) this.scheduleConfigListSync();
     }));
     this.registerEvent(this.app.vault.on("create", (file) => {
       if (this.isSchemaFile(file)) return this.scheduleSchemaReload();
@@ -3290,12 +3303,25 @@ class SchemaSyncPlugin extends Plugin {
     new AssetRenamerModal(this, file).open();
   }
 
+  // Lists only, never the record. modify fires while you are still typing, and
+  // rewriting the frontmatter of the note under the cursor is the same mistake
+  // as rewriting an open schema note — so the [[cast]] waits for a sync, and
+  // only the value list follows immediately.
+  scheduleConfigListSync() {
+    if (this.configListTimeout) clearTimeout(this.configListTimeout);
+    this.configListTimeout = setTimeout(() => {
+      this.configListTimeout = null;
+      void this.syncConfigLists();
+    }, 1500);
+  }
+
   onunload() {
     for (const timeout of this.pending.values()) clearTimeout(timeout);
     this.pending.clear();
     if (this.schemaValidationTimeout) clearTimeout(this.schemaValidationTimeout);
     if (this.schemaReloadTimeout) clearTimeout(this.schemaReloadTimeout);
     if (this.schemaPreviewTimeout) clearTimeout(this.schemaPreviewTimeout);
+    if (this.configListTimeout) clearTimeout(this.configListTimeout);
   }
 
   scheduleSchemaValidation() {
@@ -3448,7 +3474,9 @@ class SchemaSyncPlugin extends Plugin {
         if (entry.schemaName !== frontmatter.implements) continue;
         const raw = frontmatter[entry.fieldName];
         for (const value of Array.isArray(raw) ? raw : [raw]) {
-          const text = typeof value === "string" ? value.trim().replace(/^\[\[|\]\]$/g, "").trim() : "";
+          // plainValue, not a bare bracket strip: a number reaches the list too,
+          // and an aliased link contributes what it displays.
+          const text = plainValue(value);
           if (text) entry.values.add(text);
         }
       }
