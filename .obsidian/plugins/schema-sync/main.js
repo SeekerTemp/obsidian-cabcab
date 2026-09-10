@@ -34,14 +34,21 @@ const METADATA_MENU_TYPES = [
 const METADATA_MENU_LIST_TYPES = new Set(["Select", "Multi", "Cycle"]);
 
 // A Metadata Menu ValuesList: keys are the option's position as a string, values
-// are the options themselves. Verbatim — the old standalone plugin wrapped each
-// one in [[brackets]] because its sources listed note names, but a schema value
-// list holds plain values. parseConfigValues strips any brackets on the way in
-// and a record stores what it strips, so wrapping them again made every option a
-// broken link and would have written "[[1]]" into a field whose list says "1".
+// are the options themselves.
+//
+// Each option is a [[link]] to the value, so choosing one writes a link into the
+// record and the graph draws the edge — a value list's rows are notes, or become
+// notes the moment ⤓ implements them. parseConfigValues strips the brackets on
+// the way in and syncConfigLists strips them again when it collects values back
+// off records, so the list itself stays plain either way and the round trip does
+// not drift.
 function valuesListOptions(values) {
   const valuesList = {};
-  (values || []).forEach((value, index) => { valuesList[String(index)] = String(value); });
+  (values || []).forEach((value, index) => {
+    const text = String(value).trim();
+    // Already a link in the source list: kept as it is rather than nested.
+    valuesList[String(index)] = /^\[\[.*\]\]$/.test(text) ? text : `[[${text}]]`;
+  });
   return { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" };
 }
 

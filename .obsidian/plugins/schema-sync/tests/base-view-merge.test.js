@@ -190,10 +190,14 @@ test("CRLF line endings are preserved", () => {
 
 // --- Metadata Menu options ---------------------------------------------------
 
-test("options are the list's values verbatim, not wikilinks", () => {
+test("each option is a link to its value", () => {
   const { valuesList, sourceType } = valuesListOptions(["1", "2", "Nomadic clans"]);
   assert.strictEqual(sourceType, "ValuesList");
-  assert.deepStrictEqual(valuesList, { 0: "1", 1: "2", 2: "Nomadic clans" });
+  assert.deepStrictEqual(valuesList, { 0: "[[1]]", 1: "[[2]]", 2: "[[Nomadic clans]]" });
+});
+
+test("a value that is already a link is not nested inside another", () => {
+  assert.deepStrictEqual(valuesListOptions(["[[Nomadic clans]]"]).valuesList, { 0: "[[Nomadic clans]]" });
 });
 
 test("an empty list makes an empty options set rather than throwing", () => {
@@ -201,10 +205,10 @@ test("an empty list makes an empty options set rather than throwing", () => {
   assert.deepStrictEqual(valuesListOptions(undefined).valuesList, {});
 });
 
-// The round trip that matters: what a value list holds is what a record stores,
-// so it has to be what Metadata Menu offers. Wrapping the options in brackets
-// broke this — the dropdown wrote "[[1]]" into a field whose list says "1".
-test("a value survives the list, the parser and the options unchanged", () => {
+// The round trip that has to hold: the option carries brackets so the record
+// gets a link, and both readers strip them again, so the list itself never
+// gains a second layer however many times it is regenerated.
+test("a linked option strips back to the value the list holds", () => {
   const note = [
     "---",
     "configFor: [LifeForm.trait]",
@@ -218,7 +222,11 @@ test("a value survives the list, the parser and the options unchanged", () => {
   ].join("\n");
   const values = parseConfigValues(note);
   assert.deepStrictEqual(values, ["1", "Nomadic clans"]);
-  assert.deepStrictEqual(Object.values(valuesListOptions(values).valuesList), values);
+  const options = Object.values(valuesListOptions(values).valuesList);
+  assert.deepStrictEqual(options, ["[[1]]", "[[Nomadic clans]]"]);
+  // What syncConfigLists does to a record's value when it rebuilds the list.
+  const stripped = options.map((option) => option.trim().replace(/^\[\[|\]\]$/g, "").trim());
+  assert.deepStrictEqual(stripped, values);
 });
 
 // --- runner ------------------------------------------------------------------

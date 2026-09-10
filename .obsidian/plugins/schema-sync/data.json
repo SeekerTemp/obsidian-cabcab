@@ -11,6 +11,9 @@
   "configFolder": "assets/config",
   "configBasePath": "assets/config/config.base",
   "categoryLinkPrefix": "",
+  "metadataMenuAutoBound": {
+    "LifeForm.trait": true
+  },
   "metadataMenuMappingEnabled": false,
   "metadataMenuMappingPrompted": true
 }

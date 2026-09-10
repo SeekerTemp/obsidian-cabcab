@@ -185,12 +185,20 @@ anyone else. A preset is this plugin's if its id starts with `schema-sync-`.
 Metadata Menu does not have yet, leaving every existing preset alone. Use it for
 lists that predate this, or after clearing something out.
 
-### Options are the values, verbatim
+### Options are links to the values
 
-A `Select` offers exactly what the value list holds — `1`, or `Nomadic clans` —
-not `[[1]]`. That matters because a record stores the plain value, so a bracketed
-option would write something the list does not contain, and Obsidian would render
-each one as a broken link.
+A `Select` offers `[[1]]` and `[[Nomadic clans]]`, not the bare text. Choosing one
+writes a link into the record, so the graph draws the edge between a record and
+the value it carries — and a value list's rows either are notes already or become
+notes the moment ⤓ implements them.
+
+The list itself stays plain. Both readers strip the brackets: the parser that
+turns the table into options, and the sync that collects values back off records
+to rebuild the table. So a value cannot gain a second layer of brackets however
+many times it goes round.
+
+A row that is already written as a link keeps its own form rather than being
+nested inside another.
 
 ## Settings
 
