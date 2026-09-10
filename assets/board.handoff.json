@@ -1,0 +1,186 @@
+{
+  "protocol": "media-handoff/1",
+  "generatedAt": "2026-09-10T06:48:57Z",
+  "board": "assets/board.canvas",
+  "vaultBase": "D:\\1_doc\\MyVault_imagePlugins\\obsidian-cabcab",
+  "totalSeconds": 47.875,
+  "shots": [
+    {
+      "node": "mv6qimnsy4mttruglm",
+      "order": 1,
+      "kind": "image",
+      "file": "assets/cover.jpg",
+      "absolute": "D:\\1_doc\\MyVault_imagePlugins\\obsidian-cabcab\\assets\\cover.jpg",
+      "exists": true,
+      "source": "assets/cover.jpg",
+      "start": null,
+      "end": null,
+      "sourceTime": null,
+      "duration": null,
+      "hold": 3,
+      "captions": [
+        "What the dog doin"
+      ],
+      "leadsTo": [
+        "4fe7ddbdb2ad6d3a",
+        "mv92wdvzd8mttrurm3"
+      ],
+      "evidence": {
+        "useCase": null,
+        "shows": null,
+        "status": null,
+        "labels": []
+      }
+    },
+    {
+      "node": "mv92wdvzd8mttrurm3",
+      "order": 2,
+      "kind": "image",
+      "file": "assets/cover+clone+260908164346.jpg",
+      "absolute": "D:\\1_doc\\MyVault_imagePlugins\\obsidian-cabcab\\assets\\cover+clone+260908164346.jpg",
+      "exists": true,
+      "source": "assets/cover+clone+260908164346.jpg",
+      "start": null,
+      "end": null,
+      "sourceTime": null,
+      "duration": null,
+      "hold": 3,
+      "captions": [
+        "Dog hands"
+      ],
+      "leadsTo": [
+        "4fe7ddbdb2ad6d3a"
+      ],
+      "evidence": {
+        "useCase": null,
+        "shows": null,
+        "status": "reviewed",
+        "labels": []
+      }
+    },
+    {
+      "node": "4fe7ddbdb2ad6d3a",
+      "order": 3,
+      "kind": "video",
+      "file": "assets/2025-12-23 16-56-17.mp4",
+      "absolute": "D:\\1_doc\\MyVault_imagePlugins\\obsidian-cabcab\\assets\\2025-12-23 16-56-17.mp4",
+      "exists": true,
+      "source": "assets/2025-12-23 16-56-17.mp4",
+      "start": null,
+      "end": null,
+      "sourceTime": null,
+      "duration": 35.875,
+      "hold": null,
+      "captions": [
+        "The dog tryin to import a Board plan to visualize plan. So later on dog can use media handoff envidence to Claude to  automate generate content",
+        "Yes the mere touch of this hand improve the envidence's credit, seem legit"
+      ],
+      "leadsTo": [
+        "00a26e4faa320d5c",
+        "f42890b887ec737d"
+      ],
+      "evidence": {
+        "useCase": null,
+        "shows": null,
+        "status": "reviewed",
+        "labels": []
+      }
+    },
+    {
+      "node": "00a26e4faa320d5c",
+      "order": 4,
+      "kind": "image",
+      "file": "assets/2025-12-23 16-56-17+frame+260909141800.png",
+      "absolute": "D:\\1_doc\\MyVault_imagePlugins\\obsidian-cabcab\\assets\\2025-12-23 16-56-17+frame+260909141800.png",
+      "exists": true,
+      "source": "assets/2025-12-23 16-56-17.mp4",
+      "start": null,
+      "end": null,
+      "sourceTime": 23.319,
+      "duration": null,
+      "hold": 3,
+      "captions": [
+        "UI end game 1"
+      ],
+      "leadsTo": [],
+      "evidence": {
+        "useCase": null,
+        "shows": null,
+        "status": "edited",
+        "labels": []
+      }
+    },
+    {
+      "node": "f42890b887ec737d",
+      "order": 5,
+      "kind": "image",
+      "file": "assets/2025-12-23 16-56-17+frame+260909141800.png",
+      "absolute": "D:\\1_doc\\MyVault_imagePlugins\\obsidian-cabcab\\assets\\2025-12-23 16-56-17+frame+260909141800.png",
+      "exists": true,
+      "source": "assets/2025-12-23 16-56-17.mp4",
+      "start": null,
+      "end": null,
+      "sourceTime": 23.319,
+      "duration": null,
+      "hold": 3,
+      "captions": [
+        "UI end game 2"
+      ],
+      "leadsTo": [],
+      "evidence": {
+        "useCase": null,
+        "shows": null,
+        "status": "edited",
+        "labels": []
+      }
+    }
+  ],
+  "context": [
+    {
+      "node": "aadce491d4f54892",
+      "kind": "note",
+      "file": "data/media/2025-12-23 16-56-17.md",
+      "describes": "assets/2025-12-23 16-56-17.mp4",
+      "text": null,
+      "captions": [],
+      "leadsTo": [
+        "mv6qimnsy4mttruglm"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "aadce491d4f54892",
+      "to": "mv6qimnsy4mttruglm",
+      "label": "What the dog doin"
+    },
+    {
+      "from": "mv6qimnsy4mttruglm",
+      "to": "4fe7ddbdb2ad6d3a",
+      "label": "The dog tryin to import a Board plan to visualize plan. So later on dog can use media handoff envidence to Claude to  automate generate content"
+    },
+    {
+      "from": "mv92wdvzd8mttrurm3",
+      "to": "4fe7ddbdb2ad6d3a",
+      "label": "Yes the mere touch of this hand improve the envidence's credit, seem legit"
+    },
+    {
+      "from": "mv6qimnsy4mttruglm",
+      "to": "mv92wdvzd8mttrurm3",
+      "label": "Dog hands"
+    },
+    {
+      "from": "4fe7ddbdb2ad6d3a",
+      "to": "00a26e4faa320d5c",
+      "label": "UI end game 1"
+    },
+    {
+      "from": "4fe7ddbdb2ad6d3a",
+      "to": "f42890b887ec737d",
+      "label": "UI end game 2"
+    }
+  ],
+  "problems": [
+    "assets/cover.jpg has no MediaInstance record, so nothing says where it came from"
+  ]
+}
