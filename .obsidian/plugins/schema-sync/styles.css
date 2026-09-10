@@ -67,15 +67,22 @@
 .schema-sync-inherits { margin: 18px 0 12px; padding: 12px; border-radius: 6px; background: #e9e5dc; color: #88857b; font: 10px var(--font-monospace); }.schema-sync-inherits b { color: #55564f; }.schema-sync-properties { border-top: 1px solid #ded9cf; }.schema-sync-property { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #ded9cf; }.schema-sync-property b, .schema-sync-property small { display: block; }.schema-sync-property b { font-size: 11px; }.schema-sync-property small { margin-top: 3px; color: #aaa69c; font: 9px var(--font-monospace); }.schema-sync-property code { color: #77756d; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.schema-sync-empty { color: #96938a; font-size: 12px; }
 /* Two columns first, then one. The definition editor needs ~510px for its nine
    controls, so it takes the full row as soon as three columns stop fitting. */
+/* Two columns: Registry beside Definition on the first row, Relation spanning
+   the second. Definition used to be the panel pushed below, which put the
+   record list between a schema and its own field editor. */
 @container schemasync (max-width: 1150px) {
   .schema-sync-grid { grid-template-columns: minmax(160px, .8fr) minmax(240px, 1.2fr); }
-  .schema-sync-grid > section:nth-child(2) { grid-column: 1 / -1; order: 3; }
+  .schema-sync-grid > section:nth-child(2) { order: 2; }
+  .schema-sync-grid > section:nth-child(3) { grid-column: 1 / -1; order: 3; }
 }
 @container schemasync (max-width: 780px) {
   .schema-sync-grid { grid-template-columns: 1fr; }
-  .schema-sync-grid > section, .schema-sync-grid > section:nth-child(2) { grid-column: auto; min-height: auto; }
+  .schema-sync-grid > section, .schema-sync-grid > section:nth-child(2), .schema-sync-grid > section:nth-child(3) { grid-column: auto; order: 0; min-height: auto; }
   .schema-sync-view { padding: 0 10px 10px; }
-  .schema-sync-field-editor, .schema-sync-list, .schema-sync-entities { max-height: none; }
+  /* The record list keeps its own scroller at every width. A schema with a
+     hundred records otherwise pushes the whole dashboard into one long page
+     and there is no way back to the panels above it. */
+  .schema-sync-field-editor, .schema-sync-list { max-height: none; }
 }
 /* Below this the nine-column row cannot fit, so it wraps to a labelled block
    instead of forcing a horizontal scrollbar. */
@@ -138,6 +145,15 @@
 .schema-sync-orphans .schema-sync-choice small { grid-column: 2; }
 .asset-renamer-modal {
 	max-width: 760px;
+}
+
+/* Every control except the action row. Capped so a schema with ten value lists
+   scrolls rather than running off the bottom of the modal. */
+.asset-renamer-body {
+	max-height: 58vh;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding-right: 8px;
 }
 
 .asset-renamer-modal h3 {

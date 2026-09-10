@@ -96,6 +96,20 @@ way back in — which is what stops a deleted field resurrecting itself.
 So **delete a field in `fields:`, or with × in 02 / Definition — never by
 deleting its table row.**
 
+## Base views are yours after the first sync
+
+A `.base` is created when it is missing and then left alone. Reorder the columns,
+rename the view, add a filter or a formula of your own — none of it is thrown
+away, and a field you add to the schema shows up anyway because Bases reads a
+record's properties itself.
+
+The one thing sync still maintains is the `<field>Image` formula for each
+attachment field, since only the schema knows which fields hold media. A formula
+it creates gets a column; delete that column afterwards and it stays deleted.
+
+To start over on a view, delete the `.base` file and sync — it will be rebuilt
+from the schema.
+
 ## Where you can write in generated files
 
 Generated files are rebuilt wholesale, so three places are protected:
@@ -134,6 +148,22 @@ value list's `configFor`, or from its path.
 Commands: **Open asset renamer for active note**, **Configure asset renamer
 sources**, **Bulk rename category dependencies**, **Bulk reload attachment names
 from metadata**.
+
+### Metadata Menu
+
+With **Metadata Menu mapping** on, the renamer offers each of the record's
+value-list fields to Metadata Menu as a `Select` field whose options are that
+field's own list. It asks **once per field**, when the renamer first opens on a
+record that uses it, and remembers your answer either way.
+
+A preset Metadata Menu already holds is never rewritten — not by this plugin and
+not on any later sync. That is the change from the old behaviour, which
+re-registered every list on each sync and wiped field types set by hand.
+
+**Configure asset renamer sources** carries two extra buttons: **Register every
+value list now**, which adds anything Metadata Menu is missing without touching
+what it has, and **Forget registered fields**, which clears the record of what
+has been offered so you are asked again.
 
 ## Settings
 

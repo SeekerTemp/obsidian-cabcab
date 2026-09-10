@@ -16,7 +16,7 @@ here.
 | `data/schema/<Name>.schema.md` | **You** — the `fields:` frontmatter and the prose between the title and the Field Reference. Never the table itself. |
 | `data/record/<folder>/<Name>.md` | **You** — frontmatter and body, freely. Sync only ever *adds* missing keys; it never rewrites a record. |
 | `data/config/<Schema>/<field>.md` | **Generated.** Only the `Notes` column of a row, and the region below the notes marker, are yours. |
-| `data/base/<Name>.base` | **Generated.** Bases YAML. Never edit. |
+| `data/base/<Name>.base` | **Generated once, then owned by the user.** Sync creates it if it is missing and afterwards maintains only the `<field>Image` formulas. Never create one by hand and never overwrite one — a view reordered or filtered by hand is not yours to discard. |
 | `data/AssetDatabase.base.md` | **Generated.** The DBML ERD fence. Never edit. |
 | `data/config/schema-mappings.md` | **Plugin bookkeeping.** Never edit. |
 
@@ -170,6 +170,8 @@ becomes an orphan, cleared with **Clean orphaned config notes**.
 ## 8. Do not
 
 - Write into `data/config/`, `data/base/`, or `data/AssetDatabase.base.md`.
+- Regenerate an existing `.base`. Bases reads new record properties itself, so a
+  field you add needs nothing done to the view.
 - Write a Field Reference table row.
 - Delete anything from `data/raw/`.
 - `git add -f` files under `data/` on `main` or `feature/*`.

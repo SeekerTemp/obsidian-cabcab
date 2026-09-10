@@ -22,9 +22,11 @@ design record is [`README.md`](README.md).
 These are the rules that cause damage when broken. Everything else is in the
 contract.
 
-1. **Never hand-write a generated file.** `data/config/**`, `data/base/*.base`,
+1. **Never hand-write a generated file.** `data/config/**`,
    `data/AssetDatabase.base.md`, and the `## Field Reference` table inside any
    `.schema.md`. Sync rebuilds them wholesale and your edit is gone.
+   `data/base/*.base` is the exception: it is written once and then belongs to
+   whoever edits it, so never create one by hand and never overwrite one.
 2. **Prose in a generated file goes below `<!-- schema-sync:notes -->`.** That
    region, and the `Notes` column of a value-list row, are the only writable
    parts of a generated file.

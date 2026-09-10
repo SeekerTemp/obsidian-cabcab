@@ -54,8 +54,17 @@ occupied target is reported rather than merged: merging two notes would silently
 discard one side's hand-written Notes column.
 
 **9. Attachments render as images in base views.** Each bound `attachment` field
-emits an `image(<field>.path)` formula and the view shows that in place of the
+emits an `image(<field>)` formula and the view shows that in place of the
 raw path column.
+
+**11. A `.base` is written once and then belongs to you.** Regenerating it every
+sync threw away any view that had been reordered, renamed or filtered by hand,
+and there was no reason to: Bases reads a record's properties itself, so a field
+added to the schema appears in the view without help. Sync now creates the file
+if it is missing and afterwards maintains exactly one thing inside it — the
+`<field>Image` formulas, because only the schema knows which fields are
+attachments. A formula it creates earns a column; a column you delete afterwards
+stays deleted. Everything else in the file is left byte-for-byte alone.
 
 **4 and 10. Asset Renamer is built in.** The sibling plugin is merged into Schema
 Sync and disabled; its folder is left in place so it can be re-enabled if needed.
@@ -284,7 +293,8 @@ syncEntityFieldsForSchema() back-fill records with missing bound fields
 ensurePlaceholders()        back-fill the _placeholder template
 importLists()               create records from data/config/*.csv
 syncConfigLists()           regenerate data/config/<Plural>.config.md, unioned
-syncBaseViews()             write data/base/<Name>.base as Bases YAML
+syncBaseViews()             create data/base/<Name>.base if missing; otherwise
+                            reconcile only its <field>Image formulas
 syncErd()                   write data/AssetDatabase.base.md as a DBML fence
 cleanupGeneratedPaths()     delete only paths recorded as generated
 syncSchemaDocs()            repair schema identity, heading, Field Reference
@@ -315,10 +325,10 @@ Cleanup only ever touches paths the plugin recorded as generated, so hand-author
 
 | Plugin | Relationship |
 | --- | --- |
-| **Bases** (core) | Consumes `data/base/*.base`. These must be Bases YAML — writing DBML there is what caused "unable to parse file". |
+| **Bases** (core) | Consumes `data/base/*.base`. These must be Bases YAML — writing DBML there is what caused "unable to parse file". Each file is created once and then yours; only the attachment formulas are kept in sync. |
 | **DBML Visualizer** | Renders the fence in `data/AssetDatabase.base.md`. |
 | **Asset Renamer** | Merged in. Its own ribbon icon and commands; builds names from the record's own schema's value lists. The standalone plugin is disabled but left on disk. |
-| **Metadata Menu** | Optionally registers `Select` preset fields from the value lists. |
+| **Metadata Menu** | Registers a value list as a `Select` preset field, once per field, offered when the asset renamer first opens on a record that uses it. A preset it already holds is never rewritten. |
 
 ## Development
 
