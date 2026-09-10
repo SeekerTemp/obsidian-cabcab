@@ -259,8 +259,12 @@ captured out of it.
 
 Arrange the evidence on an Obsidian canvas, label the arrows with what each
 connection means, then **Write a media handoff from this board** — in the
-command palette, or on the canvas's own right-click menu. It writes
-`<board>.handoff.json` beside the board.
+command palette, or on the canvas's own right-click menu.
+
+It writes two files beside the board and opens the second:
+`<board>.handoff.json` for the machine, and `<board>.handoff.md` for you.
+The note exists because Obsidian's explorer does not list `.json` files, so
+the JSON alone is invisible from inside the app that wrote it.
 
 That file is a **media-handoff/1** document: an ordered shot list where every
 shot says which file it is, which recording it descends from, and which second

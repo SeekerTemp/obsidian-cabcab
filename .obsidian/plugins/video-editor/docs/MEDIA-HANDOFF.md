@@ -135,8 +135,24 @@ probe the `absolute` paths itself rather than trust a null to mean zero.
 
 ## Writing one
 
-In Obsidian: **Write a media handoff from a board** in the command palette. It
-writes `<board>.handoff.json` beside the canvas.
+In Obsidian: **Write a media handoff from this board** in the command palette,
+or **Write a media handoff** on the canvas's own right-click menu.
+
+It writes **two files** beside the board, and opens the second:
+
+| File | For |
+| --- | --- |
+| `<board>.handoff.json` | the machine — this format, what an MCP reads |
+| `<board>.handoff.md` | the person — the same plan as a table of wikilinks |
+
+The note exists because **Obsidian's file explorer lists only the file types it
+knows**, and `.json` is not among them. Writing only the JSON put a correct
+file in the vault that nobody could see from inside the app that wrote it,
+which is indistinguishable from the feature not running — and that is exactly
+how it was first reported.
+
+The note is generated and rewritten on every run. Nothing reads it back; edit
+the board, not the note.
 
 Everything above the "End of core" banner in `main.js` builds this, so it is
 also reachable without the plugin:

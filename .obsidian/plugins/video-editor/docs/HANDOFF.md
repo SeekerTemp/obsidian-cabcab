@@ -190,7 +190,9 @@ whether the clip starts on the frame you meant.
 ### The media handoff
 
 - [ ] Right-click `assets/board.canvas` → **Write a media handoff**
-- [ ] `assets/board.handoff.json` appears beside it
+- [ ] `assets/board.handoff.md` opens by itself, as a table of wikilinks
+- [ ] `assets/board.handoff.json` is beside it on disk. Obsidian will not list
+      it — it lists no `.json` — which is why the note exists at all
 - [ ] The shots are in the order the arrows imply, not the order the canvas
       file happens to list them
 - [ ] The captured frames name the video and the second they came from

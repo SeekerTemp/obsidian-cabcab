@@ -1785,6 +1785,100 @@ function boardHandoff(canvasText, options) {
   };
 }
 
+/* The same plan, as a note you can actually open.
+ *
+ * Obsidian's file explorer lists only the types it knows — markdown, canvas,
+ * images, audio, video, pdf — so a `.json` written into the vault is invisible
+ * from inside the app that wrote it. The first person to use this went looking
+ * for the file and concluded the feature had not run.
+ *
+ * So the JSON stays the artifact an MCP reads, and this is the one a person
+ * opens to check it. Files are wikilinks, so the plan is navigable rather than
+ * merely readable.
+ */
+function handoffMarkdown(handoff, options) {
+  const plan = handoff || {};
+  const settings = options || {};
+  const shots = Array.isArray(plan.shots) ? plan.shots : [];
+  const lines = [];
+
+  lines.push("---");
+  lines.push("generated: " + (plan.generatedAt || ""));
+  lines.push("board: " + yamlScalar(plan.board || ""));
+  lines.push("protocol: " + yamlScalar(plan.protocol || HANDOFF_PROTOCOL));
+  lines.push("shots: " + shots.length);
+  lines.push("---");
+  lines.push("");
+  lines.push("# " + (plan.board ? stemOf(plan.board) : "Media handoff"));
+  lines.push("");
+  lines.push(
+    "Generated from " + (plan.board ? wikilinkFor(plan.board) : "a board") + ". **Do not edit** — " +
+      "rewritten every time the handoff is written. The machine-readable half is " +
+      (settings.jsonPath ? "`" + settings.jsonPath + "`" : "the `.handoff.json` beside it") +
+      ", which is what an MCP reads; Obsidian does not list it because it does not list `.json`."
+  );
+  lines.push("");
+  lines.push(
+    shots.length + " shot" + (shots.length === 1 ? "" : "s") + ", about " +
+      formatTimecode(plan.totalSeconds || 0) + " in total."
+  );
+  lines.push("");
+
+  if (shots.length) {
+    lines.push("| # | What | From | Where in it | Length | Says |");
+    lines.push("| --- | --- | --- | --- | --- | --- |");
+    for (const shot of shots) {
+      const where =
+        shot.sourceTime !== null && shot.sourceTime !== undefined
+          ? formatTimecode(shot.sourceTime, { millis: true })
+          : shot.start !== null && shot.start !== undefined
+          ? formatTimecode(shot.start, { millis: true }) + "–" + formatTimecode(shot.end, { millis: true })
+          : "all of it";
+      const length =
+        shot.duration !== null && shot.duration !== undefined
+          ? formatTimecode(shot.duration)
+          : shot.hold
+          ? "hold " + shot.hold + "s"
+          : "?";
+      const from = shot.source && shot.source !== shot.file ? wikilinkFor(shot.source) : "—";
+      // Pipes would end the cell early, and a caption is free text.
+      const says = (shot.captions || []).join(" / ").split("|").join("\\|");
+      lines.push(
+        "| " + shot.order + " | " + wikilinkFor(shot.file) + " | " + from + " | " + where +
+          " | " + length + " | " + says + " |"
+      );
+    }
+    lines.push("");
+  }
+
+  const context = Array.isArray(plan.context) ? plan.context : [];
+  if (context.length) {
+    lines.push("## Context");
+    lines.push("");
+    for (const entry of context) {
+      const what = entry.file ? wikilinkFor(entry.file) : (entry.text || "").split("\n")[0];
+      const about = entry.describes ? " — about " + wikilinkFor(entry.describes) : "";
+      lines.push("- " + what + about);
+    }
+    lines.push("");
+  }
+
+  const problems = Array.isArray(plan.problems) ? plan.problems : [];
+  if (problems.length) {
+    lines.push("## Worth a look");
+    lines.push("");
+    for (const problem of problems) lines.push("- " + problem);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+// The readable half, beside the machine-readable one.
+function handoffNotePathFor(boardPath) {
+  return joinPath(folderOf(boardPath), stemOf(boardPath) + ".handoff.md");
+}
+
 // Where the handoff is written: beside the board, named after it. A convention
 // only — nothing reads it back.
 function handoffPathFor(boardPath) {
@@ -1910,6 +2004,8 @@ const core = {
   originOf,
   boardHandoff,
   handoffPathFor,
+  handoffMarkdown,
+  handoffNotePathFor,
 
   linkTargetOf,
   wikilinkFor,
@@ -1942,6 +2038,20 @@ const core = {
 function reportFailure(scope, message, error) {
   const detail = error ? " \u2014 " + errorText(error) : "";
   console.error("Video Editor: " + scope + ": " + message + detail, error || "");
+}
+
+/* The asynchronous twin of guarded().
+ *
+ * guarded() catches synchronously, so an async callback rejects after its try
+ * block has already returned — the failure arrives as an unhandled rejection
+ * instead of a reported one. Anything awaited needs this. */
+async function guardedAsync(scope, subject, action, fallback) {
+  try {
+    return await action();
+  } catch (error) {
+    reportFailure(scope, String(subject), error);
+    return fallback;
+  }
 }
 
 function guarded(scope, subject, action, fallback) {
@@ -4354,22 +4464,38 @@ class VideoEditorPlugin extends Plugin {
       durations,
     });
 
+    /* Two files, on purpose. The JSON is the artifact an MCP reads; the note
+       is the one a person can open, because Obsidian lists only the file types
+       it knows and .json is not among them. Writing only the JSON meant the
+       first real use of this ended with "no file found". */
     const path = handoffPathFor(boardFile.path);
-    const body = JSON.stringify(handoff, null, 2) + "\n";
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing) await this.app.vault.modify(existing, body);
-    else await this.app.vault.create(path, body);
+    await this.writeVaultFile(path, JSON.stringify(handoff, null, 2) + "\n");
+
+    const notePath = handoffNotePathFor(boardFile.path);
+    await this.writeVaultFile(notePath, handoffMarkdown(handoff, { jsonPath: path }));
 
     const shots = handoff.shots.length;
     const trouble = handoff.problems.length;
     new Notice(
-      "Wrote " + baseNameOf(path) + " — " + shots + " shot" + (shots === 1 ? "" : "s") +
-        (trouble ? ", " + trouble + " to look at" : "")
+      shots + " shot" + (shots === 1 ? "" : "s") + " written to " + notePath +
+        (trouble ? " — " + trouble + " to look at" : "") +
+        "\nMachine-readable: " + path
     );
-    if (trouble) {
-      console.warn("Video Editor: media handoff problems", handoff.problems);
+    if (trouble) console.warn("Video Editor: media handoff problems", handoff.problems);
+
+    // Opening it is the difference between a file that exists and one you can
+    // find, and this is the moment someone is looking for it.
+    const note = this.app.vault.getAbstractFileByPath(notePath);
+    if (note instanceof TFile) {
+      await guardedAsync("opening", notePath, () => this.app.workspace.getLeaf(true).openFile(note));
     }
     return handoff;
+  }
+
+  async writeVaultFile(path, body) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing) return this.app.vault.modify(existing, body);
+    return this.app.vault.create(path, body);
   }
 
   activeBoard() {
