@@ -255,6 +255,24 @@ Three rules this shares with Media Viewer, and they are the ones easy to break:
 down the chain, so a clip labelled once carries that label to every frame
 captured out of it.
 
+## Handing the plan to something else
+
+Arrange the evidence on an Obsidian canvas, label the arrows with what each
+connection means, then **Write a media handoff from this board** — in the
+command palette, or on the canvas's own right-click menu. It writes
+`<board>.handoff.json` beside the board.
+
+That file is a **media-handoff/1** document: an ordered shot list where every
+shot says which file it is, which recording it descends from, and which second
+of it. The order comes from the arrows, the captions come from their labels,
+and the provenance comes from the `MediaInstance` records — so an MCP driving
+CapCut, a script driving ffmpeg, or a model asked to write narration can all
+explain their own output rather than talking over footage nothing can place.
+
+The format is specified in [docs/MEDIA-HANDOFF.md](docs/MEDIA-HANDOFF.md), and
+`core.boardHandoff()` builds it, so it is reachable without the plugin or
+Obsidian.
+
 ## Layout of the code
 
 No build step, no npm, no `package.json` — `main.js` is what Obsidian loads.

@@ -1021,6 +1021,12 @@ const DEFAULT_NOTE_FOLDER = "data/media";
 // here and edited there loses the prose below one of them.
 const NOTES_MARKER = "<!-- media-viewer:notes -->";
 
+/* How far up a `source:` chain to walk before giving up. A record is a note a
+   person can edit, so a chain can be made to loop or to run away; both are
+   guarded rather than trusted. */
+const CHAIN_HOP_LIMIT = 32;
+
+const OP_CAPTURE = "capture";
 const OP_TRIM = "trim";
 const OP_CUT = "cut";
 const OP_AUDIO = "audio";
@@ -1442,6 +1448,350 @@ function tileTooltip(details) {
   return lines.join("\n");
 }
 
+/* ------------------------------------------------------------------------ *
+ * media-handoff/1 — a board turned into a plan something else can act on.
+ *
+ * The canvas is where a person arranges the evidence and says what it means;
+ * this is that arrangement in a form an MCP, a script or a model can consume.
+ * The whole point is that the plan and the provenance travel together, so a
+ * consumer can explain its own output rather than narrating over footage
+ * nothing can place.
+ *
+ * Pure, and takes the canvas as text plus two lookups. That is what lets it be
+ * called without the plugin, without Obsidian, and without a vault — see
+ * docs/MEDIA-HANDOFF.md.
+ * ------------------------------------------------------------------------ */
+
+const HANDOFF_PROTOCOL = "media-handoff/1";
+
+// How long a still is shown when nothing says otherwise. Long enough to read a
+// frame of UI, short enough that a board of twenty is not ten minutes.
+const HOLD_SECONDS = 3;
+
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"];
+
+function isImagePath(path) {
+  return IMAGE_EXTENSIONS.includes(extensionOf(path));
+}
+
+// What kind of shot a file makes, or null when it is not footage at all.
+function shotKindFor(path) {
+  if (isVideoPath(path)) return "video";
+  if (isAudioPath(path)) return "audio";
+  if (isImagePath(path)) return "image";
+  return null;
+}
+
+/* An Obsidian canvas, read defensively.
+ *
+ * Returns null rather than throwing on anything unreadable: a board is a file
+ * a person edits by hand and by app, and "that is not a canvas" is a normal
+ * thing to have to say.
+ */
+function parseCanvas(text) {
+  let data = null;
+  try {
+    data = JSON.parse(String(text || ""));
+  } catch (error) {
+    return null;
+  }
+  // An array parses as an object, so it would otherwise come back as a canvas
+  // with nothing in it rather than as "that is not a canvas".
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const nodes = [];
+  for (const node of Array.isArray(data.nodes) ? data.nodes : []) {
+    if (!node || !node.id) continue;
+    nodes.push({
+      id: String(node.id),
+      type: String(node.type || ""),
+      file: node.file ? normaliseSeparators(node.file) : null,
+      text: node.text === undefined || node.text === null ? null : String(node.text),
+      x: Number.isFinite(Number(node.x)) ? Number(node.x) : 0,
+      y: Number.isFinite(Number(node.y)) ? Number(node.y) : 0,
+    });
+  }
+  const edges = [];
+  const known = new Set(nodes.map((node) => node.id));
+  for (const edge of Array.isArray(data.edges) ? data.edges : []) {
+    if (!edge || !edge.fromNode || !edge.toNode) continue;
+    // An edge to a node that is not there would make the ordering depend on a
+    // node nobody can see.
+    if (!known.has(String(edge.fromNode)) || !known.has(String(edge.toNode))) continue;
+    edges.push({
+      id: edge.id ? String(edge.id) : null,
+      from: String(edge.fromNode),
+      to: String(edge.toNode),
+      label: edge.label === undefined || edge.label === null ? null : String(edge.label),
+    });
+  }
+  return { nodes, edges };
+}
+
+/* Reading order on a board: down first, then across.
+ *
+ * The tie-break for everything else, and the whole answer for nodes no arrow
+ * touches. Id last so the result never depends on the order the file happened
+ * to list them in.
+ */
+function compareNodePositions(a, b) {
+  if (a.y !== b.y) return a.y - b.y;
+  if (a.x !== b.x) return a.x - b.x;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/* The order the shots go in.
+ *
+ * A canvas is a graph and a video is a list, so the arrows win: a node never
+ * appears before one that points at it. Where the arrows say nothing, reading
+ * order decides, which is what makes two runs over the same board agree.
+ *
+ * Returns `{ order, cycle }`. A cycle is reported rather than thrown — it is a
+ * mistake in the drawing, and refusing to emit a plan is not a useful answer
+ * to it. Its members come out in reading order, which is the best available
+ * guess once the arrows have contradicted themselves.
+ */
+function boardOrder(nodes, edges) {
+  const list = Array.isArray(nodes) ? nodes.slice() : [];
+  const byId = new Map(list.map((node) => [node.id, node]));
+  const waitingOn = new Map(list.map((node) => [node.id, 0]));
+  const pointsAt = new Map(list.map((node) => [node.id, []]));
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    pointsAt.get(edge.from).push(edge.to);
+    waitingOn.set(edge.to, waitingOn.get(edge.to) + 1);
+  }
+
+  const ready = list.filter((node) => waitingOn.get(node.id) === 0).sort(compareNodePositions);
+  const order = [];
+  while (ready.length) {
+    const node = ready.shift();
+    order.push(node.id);
+    for (const next of pointsAt.get(node.id)) {
+      const left = waitingOn.get(next) - 1;
+      waitingOn.set(next, left);
+      if (left !== 0) continue;
+      // Inserted in position order rather than pushed, so the sequence does
+      // not depend on which branch happened to finish first.
+      const ahead = byId.get(next);
+      let at = 0;
+      while (at < ready.length && compareNodePositions(ready[at], ahead) < 0) at += 1;
+      ready.splice(at, 0, ahead);
+    }
+  }
+
+  const stuck = list.filter((node) => !order.includes(node.id)).sort(compareNodePositions);
+  for (const node of stuck) order.push(node.id);
+  return { order, cycle: stuck.map((node) => node.id) };
+}
+
+/* What a file is about, resolved up the `source:` chain.
+ *
+ * The whole reason for the lineage: labelling a recording once labels every
+ * frame cut out of it. Stops at the first ancestor that declares a field, and
+ * is capped and cycle-guarded because a record is a note a person can edit.
+ */
+function resolveEvidence(mediaPath, lookup, limit) {
+  const found = { useCase: null, shows: null, status: null, labels: [] };
+  if (typeof lookup !== "function") return found;
+  const cap = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : CHAIN_HOP_LIMIT;
+  const seen = new Set();
+  let at = mediaPath;
+  let hops = 0;
+  while (at && !seen.has(at) && hops < cap) {
+    seen.add(at);
+    hops += 1;
+    const record = lookup(at);
+    if (!record) break;
+    if (!found.useCase && record.useCase) found.useCase = record.useCase;
+    if (!found.shows && record.shows) found.shows = record.shows;
+    if (!found.status && record.status) found.status = record.status;
+    if (!found.labels.length && Array.isArray(record.labels) && record.labels.length) {
+      found.labels = record.labels.slice();
+    }
+    at = record.sourcePath || record.sourceLink || null;
+  }
+  return found;
+}
+
+/* The recording a file descends from, and where in it.
+ *
+ * A file whose record names no source is its own origin.
+ *
+ * The care here is about **blanks that look like values**. Schema Sync fills a
+ * record's bound fields out with empty ones, so a root note that was never
+ * trimmed still carries `sourceStart: 0` and `sourceEnd: 0`. Read literally
+ * that is a zero-length clip rather than a whole file, and anything acting on
+ * this would render nothing at all. It was a real record in this vault that
+ * caught it, not a fixture.
+ *
+ * So a span counts only when it is one — `end` strictly after `start` — and a
+ * moment counts only when the record says it was cut at one, which is what
+ * `op` is for. A genuine capture at 0.000s survives because its op says
+ * `capture`; a blanked root does not, because its op is empty.
+ */
+function originOf(mediaPath, lookup, limit) {
+  const origin = { source: mediaPath, start: null, end: null, sourceTime: null, tracked: false };
+  if (typeof lookup !== "function") return origin;
+  const record = lookup(mediaPath);
+  if (!record) return origin;
+  origin.tracked = true;
+
+  const start = Number(record.sourceStart);
+  const end = Number(record.sourceEnd);
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    origin.start = start;
+    origin.end = end;
+  }
+
+  const at = Number(record.sourceTime);
+  const op = record.op ? String(record.op).trim() : "";
+  if (Number.isFinite(at) && (at > 0 || op === OP_CAPTURE)) origin.sourceTime = at;
+
+  const parent = record.sourcePath || record.sourceLink || null;
+  if (parent) origin.source = parent;
+  return origin;
+}
+
+/* The whole handoff.
+ *
+ * `options.lookup(vaultPath)` returns a MediaInstance record or null;
+ * `options.absoluteOf(vaultPath)` turns a vault path into a real one;
+ * `options.exists(vaultPath)` says whether the vault still holds it. All three
+ * are optional — without them you still get an ordered shot list, which is the
+ * half that comes from the board alone.
+ */
+function boardHandoff(canvasText, options) {
+  const settings = options || {};
+  const canvas = typeof canvasText === "string" ? parseCanvas(canvasText) : canvasText;
+  const problems = [];
+  if (!canvas || !Array.isArray(canvas.nodes)) {
+    return {
+      protocol: HANDOFF_PROTOCOL,
+      generatedAt: isoTimestamp(settings.date),
+      board: settings.board || null,
+      vaultBase: settings.vaultBase || null,
+      totalSeconds: 0,
+      shots: [],
+      context: [],
+      edges: [],
+      problems: ["that file could not be read as a canvas"],
+    };
+  }
+
+  const lookup = typeof settings.lookup === "function" ? settings.lookup : null;
+  const absoluteOf = typeof settings.absoluteOf === "function" ? settings.absoluteOf : null;
+  const exists = typeof settings.exists === "function" ? settings.exists : null;
+  const noteLookup = typeof settings.noteLookup === "function" ? settings.noteLookup : null;
+  const hold = Number.isFinite(Number(settings.hold)) && Number(settings.hold) > 0
+    ? Number(settings.hold)
+    : HOLD_SECONDS;
+  const durations = settings.durations instanceof Map ? settings.durations : new Map();
+
+  const byId = new Map(canvas.nodes.map((node) => [node.id, node]));
+  const { order, cycle } = boardOrder(canvas.nodes, canvas.edges);
+  const rank = new Map(order.map((id, index) => [id, index]));
+  if (cycle.length) {
+    problems.push(
+      "the arrows form a loop through " + cycle.length + " nodes, so those are in board order instead"
+    );
+  }
+
+  /* Arrow labels become captions, ordered by where their sources sit in the
+     sequence — so two arrows arriving read in the order the board tells them. */
+  const arriving = new Map();
+  const leaving = new Map();
+  for (const edge of canvas.edges) {
+    if (!arriving.has(edge.to)) arriving.set(edge.to, []);
+    arriving.get(edge.to).push(edge);
+    if (!leaving.has(edge.from)) leaving.set(edge.from, []);
+    leaving.get(edge.from).push(edge.to);
+  }
+
+  const shots = [];
+  const context = [];
+  let totalSeconds = 0;
+
+  for (const id of order) {
+    const node = byId.get(id);
+    if (!node) continue;
+
+    const captions = (arriving.get(id) || [])
+      .slice()
+      .sort((a, b) => (rank.get(a.from) || 0) - (rank.get(b.from) || 0))
+      .map((edge) => edge.label)
+      .filter((label) => label && label.trim());
+
+    // A text node, or a note. Not footage, and not dropped either.
+    const kind = node.file ? shotKindFor(node.file) : null;
+    if (!kind) {
+      /* Looked up by note path, not media path: this node *is* the record, so
+         asking "which note is about this file" would answer nothing. */
+      const record = node.file && noteLookup ? noteLookup(node.file) : null;
+      context.push({
+        node: id,
+        kind: node.file ? "note" : "text",
+        file: node.file || null,
+        describes: record && record.mediaPath ? record.mediaPath : null,
+        text: node.text,
+        captions,
+        leadsTo: leaving.get(id) || [],
+      });
+      continue;
+    }
+
+    const origin = originOf(node.file, lookup, settings.chainLimit);
+    if (!origin.tracked) {
+      problems.push(node.file + " has no MediaInstance record, so nothing says where it came from");
+    }
+    if (exists && !exists(node.file)) {
+      problems.push(node.file + " is on the board but not in the vault");
+    }
+
+    const still = kind === "image";
+    const known = durations.has(node.file) ? Number(durations.get(node.file)) : null;
+    const span = origin.start !== null && origin.end !== null ? origin.end - origin.start : null;
+    const duration = still ? null : span !== null ? span : Number.isFinite(known) ? known : null;
+    totalSeconds += still ? hold : duration || 0;
+
+    shots.push({
+      node: id,
+      order: shots.length + 1,
+      kind,
+      file: node.file,
+      absolute: absoluteOf ? absoluteOf(node.file) : null,
+      exists: exists ? Boolean(exists(node.file)) : null,
+      source: origin.source,
+      start: origin.start,
+      end: origin.end,
+      sourceTime: origin.sourceTime,
+      duration,
+      hold: still ? hold : null,
+      captions,
+      leadsTo: leaving.get(id) || [],
+      evidence: resolveEvidence(node.file, lookup, settings.chainLimit),
+    });
+  }
+
+  return {
+    protocol: HANDOFF_PROTOCOL,
+    generatedAt: isoTimestamp(settings.date),
+    board: settings.board || null,
+    vaultBase: settings.vaultBase || null,
+    totalSeconds: Math.round(totalSeconds * 1000) / 1000,
+    shots,
+    context,
+    edges: canvas.edges.map((edge) => ({ from: edge.from, to: edge.to, label: edge.label })),
+    problems,
+  };
+}
+
+// Where the handoff is written: beside the board, named after it. A convention
+// only — nothing reads it back.
+function handoffPathFor(boardPath) {
+  const folder = folderOf(boardPath);
+  return joinPath(folder, stemOf(boardPath) + ".handoff.json");
+}
+
 const core = {
   VIDEO_EXTENSIONS,
   AUDIO_EXTENSIONS,
@@ -1459,6 +1809,7 @@ const core = {
   NOTES_MARKER,
   DEFAULT_NOTE_FOLDER,
   DEFAULT_SETTINGS,
+  OP_CAPTURE,
   OP_TRIM,
   OP_CUT,
   OP_AUDIO,
@@ -1546,6 +1897,19 @@ const core = {
   shortVersion,
   formatFileDate,
   tileTooltip,
+  HANDOFF_PROTOCOL,
+  HOLD_SECONDS,
+  IMAGE_EXTENSIONS,
+  CHAIN_HOP_LIMIT,
+  isImagePath,
+  shotKindFor,
+  parseCanvas,
+  compareNodePositions,
+  boardOrder,
+  resolveEvidence,
+  originOf,
+  boardHandoff,
+  handoffPathFor,
 
   linkTargetOf,
   wikilinkFor,
@@ -2278,6 +2642,16 @@ class LineageStore {
   recordFor(mediaPath) {
     const notePath = this.byMedia.get(mediaPath);
     return notePath ? this.records.get(notePath) || null : null;
+  }
+
+  /* The other direction: a note's own record.
+   *
+   * Needed because a board can carry the *note* as a node — which is what a
+   * person does when the record is the thing they want to point at — and then
+   * the question is "what is this note about", not "which note is about
+   * this file". */
+  recordAt(notePath) {
+    return this.records.get(notePath) || null;
   }
 
   /* Write a record for one file, creating the note or updating it.
@@ -3806,6 +4180,15 @@ class VideoEditorPlugin extends Plugin {
      * knowing the other exists. */
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, target) => {
+        if (target instanceof TFile && extensionOf(target.path) === "canvas") {
+          menu.addItem((item) =>
+            item
+              .setTitle("Write a media handoff")
+              .setIcon("file-json")
+              .onClick(() => this.writeHandoff(target))
+          );
+          return;
+        }
         if (!(target instanceof TFile) || !isVideoPath(target.path)) return;
         menu.addItem((item) =>
           item
@@ -3877,6 +4260,16 @@ class VideoEditorPlugin extends Plugin {
       checkCallback: (checking) => this.withView(checking, (view) => view.runAudio()),
     });
     this.addCommand({
+      id: "write-media-handoff",
+      name: "Write a media handoff from this board",
+      checkCallback: (checking) => {
+        const board = this.activeBoard();
+        if (!board) return false;
+        if (!checking) this.writeHandoff(board);
+        return true;
+      },
+    });
+    this.addCommand({
       id: "cancel-job",
       name: "Cancel the running job",
       checkCallback: (checking) => {
@@ -3911,6 +4304,77 @@ class VideoEditorPlugin extends Plugin {
   onunload() {
     // An hour-long encode does not get to outlive the plugin that started it.
     if (this.runner) this.runner.killAll();
+  }
+
+  /* Write a media-handoff/1 file beside a board.
+   *
+   * The canvas says what to show and in what order; the MediaInstance records
+   * say where each file came from and which second of it. This joins them, so
+   * whatever consumes the result can explain its own output rather than
+   * narrating over footage nothing can place. See docs/MEDIA-HANDOFF.md.
+   */
+  async writeHandoff(boardFile) {
+    if (!boardFile) return null;
+    const text = await this.app.vault.read(boardFile);
+    const canvas = parseCanvas(text);
+    if (!canvas) {
+      new Notice(boardFile.name + " could not be read as a canvas.");
+      return null;
+    }
+
+    /* Durations come from ffprobe, and only for the videos that need one: a
+       clip with a recorded span already knows its length, and a still is held
+       rather than played. Skipped entirely without ffmpeg, which leaves
+       `duration` null — documented as best-effort rather than as zero. */
+    const durations = new Map();
+    if (await this.runner.check()) {
+      for (const node of canvas.nodes) {
+        if (!node.file || !isVideoPath(node.file)) continue;
+        if (durations.has(node.file)) continue;
+        if (!this.app.vault.getAbstractFileByPath(node.file)) continue;
+        let probed = null;
+        try {
+          probed = await this.runner.probe(this.exporter.absolute(node.file));
+        } catch (error) {
+          // A board can name a file ffmpeg will not open. That is a line in
+          // `problems`, not a reason to abandon the rest of the plan.
+          reportFailure("probing", node.file, error);
+        }
+        if (probed && Number.isFinite(probed.duration)) durations.set(node.file, probed.duration);
+      }
+    }
+
+    const handoff = boardHandoff(canvas, {
+      board: boardFile.path,
+      vaultBase: this.exporter.basePath(),
+      lookup: (path) => this.store.recordFor(path),
+      noteLookup: (path) => this.store.recordAt(path),
+      absoluteOf: (path) => guarded("locating", path, () => this.exporter.absolute(path), null),
+      exists: (path) => Boolean(this.app.vault.getAbstractFileByPath(path)),
+      durations,
+    });
+
+    const path = handoffPathFor(boardFile.path);
+    const body = JSON.stringify(handoff, null, 2) + "\n";
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing) await this.app.vault.modify(existing, body);
+    else await this.app.vault.create(path, body);
+
+    const shots = handoff.shots.length;
+    const trouble = handoff.problems.length;
+    new Notice(
+      "Wrote " + baseNameOf(path) + " — " + shots + " shot" + (shots === 1 ? "" : "s") +
+        (trouble ? ", " + trouble + " to look at" : "")
+    );
+    if (trouble) {
+      console.warn("Video Editor: media handoff problems", handoff.problems);
+    }
+    return handoff;
+  }
+
+  activeBoard() {
+    const file = this.app.workspace.getActiveFile();
+    return file && extensionOf(file.path) === "canvas" ? file : null;
   }
 
   withView(checking, action) {

@@ -69,6 +69,12 @@ Rules that hold for every task:
 | 20 | `VE-EMPTYFIX` | Three things the first screenshot showed: a stray black `<video>` box in the empty state, ffmpeg's git-describe version pushing the header apart, and a live timecode readout for a video that is not open | `main.js`, `styles.css` | 19 | Nothing in the empty pane refers to a video that is not there |
 | 21 | `VE-TILEINFO` | Hovering a tile shows name, folder, duration, shape, size and date created; the duration also sits on the poster. `PosterCache` becomes `TileCache` and probes alongside the still, since ffprobe reads a header where the still decodes a frame | `main.js`, `styles.css`, `docs/layout.html` | 19 | Hover a tile and read its duration and creation date without opening it |
 
+## M6 — Out of the vault
+
+| # | Keyword | Goal | Touches | Needs | Verify |
+| --- | --- | --- | --- | --- | --- |
+| 22 | `VE-HANDOFF` | **media-handoff/1**: a canvas plus the lineage records become an ordered shot list something else can act on. Order from the arrows, captions from their labels, provenance from the records. Written beside the board as `<board>.handoff.json` | `main.js`, `docs/MEDIA-HANDOFF.md` | 14 | Write one from `assets/board.canvas` and every shot names its recording and its second |
+
 ## Progress
 
 - [x] 1 `VE-SCAFFOLD`
@@ -92,6 +98,7 @@ Rules that hold for every task:
 - [x] 19 `VE-BROWSE` — from the first real session: the pane had no way in
 - [x] 20 `VE-EMPTYFIX` — from the same screenshot
 - [x] 21 `VE-TILEINFO` — from the vault README's feedback list
+- [x] 22 `VE-HANDOFF` — the bridge to an MCP; format in docs/MEDIA-HANDOFF.md
 
 Everything above passes under `node tests/all.js` — 238 tests across seven
 suites, none of which need ffmpeg.
@@ -179,6 +186,17 @@ whether the clip starts on the frame you meant.
 - [ ] Export clips from **two different recordings** with stream copy. If it
       fails, the message should name Re-encode as the fix — then switch and
       confirm it works
+
+### The media handoff
+
+- [ ] Right-click `assets/board.canvas` → **Write a media handoff**
+- [ ] `assets/board.handoff.json` appears beside it
+- [ ] The shots are in the order the arrows imply, not the order the canvas
+      file happens to list them
+- [ ] The captured frames name the video and the second they came from
+- [ ] The video is **not** reported as a zero-length clip — Schema Sync fills
+      records with `sourceStart: 0`, and reading that literally was a real bug
+- [ ] `problems` names anything on the board with no record behind it
 
 ### Records
 
