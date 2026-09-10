@@ -168,6 +168,24 @@
 	margin: 7px 0;
 }
 
+/* A value-list row carries a third column: the field's type in Metadata Menu. */
+.asset-renamer-row.has-meta {
+	grid-template-columns: 150px minmax(0, 1fr) 132px;
+}
+
+.asset-renamer-meta-type {
+	font-size: 0.85em;
+}
+
+@media (max-width: 620px) {
+	.asset-renamer-row.has-meta {
+		grid-template-columns: 150px minmax(0, 1fr);
+	}
+	.asset-renamer-meta-type {
+		grid-column: 2;
+	}
+}
+
 .asset-renamer-row > span {
 	color: var(--text-muted);
 	font-size: 0.9em;

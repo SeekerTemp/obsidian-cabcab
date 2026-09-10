@@ -15,12 +15,36 @@ const DEFAULT_SETTINGS = {
   configFolder: "assets/config",
   configBasePath: "assets/config/config.base",
   categoryLinkPrefix: "",
-  metadataMenuMappingEnabled: false,
-  metadataMenuMappingPrompted: false,
-  // "<Schema>.<field>" -> true for every field already offered to Metadata Menu,
-  // answered either way. Registering is a one-time act: re-running it on each
-  // sync overwrote field types people had set by hand.
-  metadataMenuBoundFields: {},
+};
+
+// Metadata Menu's own field types, from its src/fields/Fields.ts, in its order.
+// Listed here rather than read off the plugin so the dropdown still renders when
+// Metadata Menu is not installed to be asked.
+const METADATA_MENU_TYPES = [
+  "Input", "Number", "Select", "Cycle", "Boolean", "Date", "DateTime", "Time",
+  "Multi", "File", "MultiFile", "Media", "MultiMedia", "Canvas", "CanvasGroup",
+  "CanvasGroupLink", "Formula", "Lookup", "JSON", "YAML", "Object", "ObjectList",
+];
+// The three Metadata Menu backs with a ValuesList. Only these can be filled from
+// a field's value list; the rest carry options it configures itself.
+const METADATA_MENU_LIST_TYPES = new Set(["Select", "Multi", "Cycle"]);
+
+// Metadata Menu computes these in getDefaultOptions(), which its bundle keeps to
+// itself, so the ones this control can write faithfully are copied here. A type
+// absent from the table gets empty options and has to be finished in Metadata
+// Menu — guessing at a shape this plugin cannot see is how a field ends up
+// half-configured and silently broken.
+const METADATA_MENU_DATE_OPTIONS = { dateShiftInterval: "1 day", dateFormat: "YYYY-MM-DD", defaultInsertAsLink: false, linkPath: "" };
+const METADATA_MENU_DEFAULT_OPTIONS = {
+  Input: {},
+  Number: {},
+  Boolean: {},
+  File: {},
+  MultiFile: {},
+  Formula: {},
+  Date: METADATA_MENU_DATE_OPTIONS,
+  DateTime: { ...METADATA_MENU_DATE_OPTIONS, dateFormat: "YYYY-MM-DD HH:mm" },
+  Time: { ...METADATA_MENU_DATE_OPTIONS, dateFormat: "HH:mm", dateShiftInterval: "1 hour" },
 };
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "svg"]);
@@ -894,118 +918,95 @@ class MetadataMenuMapping {
     return this.plugin.app.plugins?.enabledPlugins?.has("metadata-menu") && Boolean(this.plugin.app.plugins.getPlugin("metadata-menu"));
   }
 
-  async promptIfNeeded() {
-    if (!this.isAvailable() || this.plugin.settings.metadataMenuMappingPrompted) return;
-    this.plugin.settings.metadataMenuMappingPrompted = true;
-    await this.plugin.saveSettings();
-    const answer = await new Promise((resolve) => new ConfirmDeleteModal(
-      this.plugin.app,
-      "Metadata Menu detected",
-      "Register Schema Sync's value lists as Metadata Menu Select fields, so its dropdowns offer the same options? Each field is registered once, when you first open the asset renamer on a record that uses it.",
-      "Register fields",
-      resolve,
-    ).open());
-    this.plugin.settings.metadataMenuMappingEnabled = answer.confirmed;
-    await this.plugin.saveSettings();
-  }
-
-  // The key a field is remembered under. Per schema, because two schemas can
-  // declare the same field name over different value lists.
-  bindingKey(schemaName, property) {
-    return `${schemaName || "*"}.${property}`;
-  }
-
-  isBound(schemaName, property) {
-    return this.plugin.settings.metadataMenuBoundFields?.[this.bindingKey(schemaName, property)] === true;
-  }
-
-  async presetFor(file) {
-    const values = await this.plugin.loadConfigValues(file);
-    if (!values.length) return null;
-    const valuesList = {};
-    values.forEach((value, index) => { valuesList[String(index)] = `[[${value}]]`; });
-    return {
-      name: this.plugin.getSourcePropertyName(file),
-      type: "Select",
-      id: `schema-sync-${file.basename.toLowerCase()}`,
-      path: "",
-      options: { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" },
-    };
-  }
-
-  // Asked once per field, when the asset renamer first opens on a record that
-  // uses it. Registering on every sync is what made Metadata Menu forget the
-  // field types people had set by hand — a preset already in its settings is
-  // now never rewritten, whoever authored it.
-  async offerForRecord(noteFile) {
-    if (!this.plugin.settings.metadataMenuMappingEnabled || !this.isAvailable() || !noteFile) return;
-    const schemaName = this.plugin.schemaNameFor(noteFile);
+  plugin_() {
     const metadataMenu = this.plugin.app.plugins.getPlugin("metadata-menu");
-    if (!Array.isArray(metadataMenu?.presetFields)) return;
-    const existing = new Set(metadataMenu.presetFields.map((field) => field.name));
-    const pending = [];
-    for (const file of this.plugin.getConfigSourceFiles(noteFile)) {
-      const property = this.plugin.getSourcePropertyName(file);
-      if (this.isBound(schemaName, property)) continue;
-      // Already in Metadata Menu, by whatever hand: remember it as done and
-      // leave the definition alone.
-      if (existing.has(property)) {
-        await this.rememberBound(schemaName, property);
-        continue;
-      }
-      const preset = await this.presetFor(file);
-      if (preset) pending.push({ property, preset });
-    }
-    if (!pending.length) return;
-    const names = pending.map((entry) => entry.property).join(", ");
-    const answer = await new Promise((resolve) => new ConfirmDeleteModal(
-      this.plugin.app,
-      "Register fields with Metadata Menu",
-      `Add ${pending.length} field${pending.length === 1 ? "" : "s"} from ${schemaName || noteFile.basename} to Metadata Menu as Select fields, each offering its own value list? Fields: ${names}. Asked once per field, and nothing already in Metadata Menu is changed.`,
-      "Register",
-      resolve,
-    ).open());
-    // Declining is remembered too, or the same question returns every time the
-    // renamer opens on this record.
-    for (const entry of pending) await this.rememberBound(schemaName, entry.property);
-    if (!answer.confirmed) return;
-    metadataMenu.presetFields.push(...pending.map((entry) => entry.preset));
-    await metadataMenu.saveSettings();
-    new Notice(`Registered ${pending.length} field(s) with Metadata Menu.`);
+    return Array.isArray(metadataMenu?.presetFields) ? metadataMenu : null;
   }
 
-  async rememberBound(schemaName, property) {
-    if (!this.plugin.settings.metadataMenuBoundFields) this.plugin.settings.metadataMenuBoundFields = {};
-    this.plugin.settings.metadataMenuBoundFields[this.bindingKey(schemaName, property)] = true;
-    await this.plugin.saveSettings();
+  // The preset Metadata Menu holds for a property, or null. Matched by name,
+  // because that is what Metadata Menu itself keys a frontmatter property on.
+  presetFor(property) {
+    return this.plugin_()?.presetFields.find((field) => field.name === property) ?? null;
+  }
+
+  typeFor(property) {
+    return this.presetFor(property)?.type ?? "";
+  }
+
+  // Select, Multi and Cycle are the three types Metadata Menu backs with a
+  // ValuesList, so those are the ones a value list has anything to say about.
+  // Every other type gets empty options and is configured in Metadata Menu.
+  optionsFor(type, values) {
+    if (METADATA_MENU_LIST_TYPES.has(type)) {
+      const valuesList = {};
+      values.forEach((value, index) => { valuesList[String(index)] = `[[${value}]]`; });
+      return { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" };
+    }
+    return { ...(METADATA_MENU_DEFAULT_OPTIONS[type] ?? {}) };
+  }
+
+  // True when this plugin cannot fill in that type's options and Metadata Menu
+  // has to finish the job.
+  needsSetupIn(type) {
+    return !METADATA_MENU_LIST_TYPES.has(type) && !METADATA_MENU_DEFAULT_OPTIONS[type];
+  }
+
+  // Writing here is always something the user just asked for by picking a type,
+  // so unlike a sync it may replace a preset that is already there. The id of an
+  // existing preset is kept: Metadata Menu references it from file classes.
+  async setType(property, type, values, sourceBasename) {
+    const metadataMenu = this.plugin_();
+    if (!metadataMenu) return false;
+    const existing = this.presetFor(property);
+    if (!type) {
+      if (!existing) return false;
+      metadataMenu.presetFields = metadataMenu.presetFields.filter((field) => field !== existing);
+      await metadataMenu.saveSettings();
+      new Notice(`Removed ${property} from Metadata Menu.`);
+      return true;
+    }
+    const preset = {
+      name: property,
+      type,
+      id: existing?.id || `schema-sync-${String(sourceBasename || property).toLowerCase()}`,
+      path: existing?.path ?? "",
+      options: this.optionsFor(type, values),
+    };
+    if (existing) Object.assign(existing, preset);
+    else metadataMenu.presetFields.push(preset);
+    await metadataMenu.saveSettings();
+    new Notice(this.needsSetupIn(type)
+      ? `${property} is now a ${type} field. Finish setting it up in Metadata Menu → Preset Fields.`
+      : `${property} is now a ${type} field in Metadata Menu.`, this.needsSetupIn(type) ? 8000 : undefined);
+    return true;
   }
 
   // Settings-tab only, and additive: a preset Metadata Menu already holds is
-  // left as it is.
-  async sync() {
-    if (!this.plugin.settings.metadataMenuMappingEnabled || !this.isAvailable()) return;
-    const metadataMenu = this.plugin.app.plugins.getPlugin("metadata-menu");
-    if (!Array.isArray(metadataMenu?.presetFields)) return;
+  // left exactly as it is. Everything else becomes a Select over its own list.
+  async registerMissing() {
+    const metadataMenu = this.plugin_();
+    if (!metadataMenu) return;
     const existing = new Set(metadataMenu.presetFields.map((field) => field.name));
     const added = [];
     for (const file of this.plugin.getConfigSourceFiles()) {
       const property = this.plugin.getSourcePropertyName(file);
       if (existing.has(property)) continue;
-      const preset = await this.presetFor(file);
-      if (!preset) continue;
+      const values = await this.plugin.loadConfigValues(file);
+      if (!values.length) continue;
       existing.add(property);
-      added.push(preset);
+      added.push({
+        name: property,
+        type: "Select",
+        id: `schema-sync-${file.basename.toLowerCase()}`,
+        path: "",
+        options: this.optionsFor("Select", values),
+      });
     }
     if (added.length) {
       metadataMenu.presetFields.push(...added);
       await metadataMenu.saveSettings();
     }
     new Notice(added.length ? `Registered ${added.length} value list(s) with Metadata Menu.` : "Metadata Menu already has every value list.");
-  }
-
-  async forgetBindings() {
-    this.plugin.settings.metadataMenuBoundFields = {};
-    await this.plugin.saveSettings();
   }
 }
 
@@ -1056,7 +1057,6 @@ class AssetRenamerModal extends Modal {
     this.createFilenameControls(body);
     await this.createSourceControls(body);
     this.createActions(root);
-    await this.plugin.metadataMenuMapping.offerForRecord(this.noteFile);
   }
 
   createTargetControls(root) {
@@ -1123,12 +1123,20 @@ class AssetRenamerModal extends Modal {
       });
       return;
     }
+    const metadataMenuAvailable = this.plugin.metadataMenuMapping.isAvailable();
+    if (metadataMenuAvailable) {
+      root.createEl("p", {
+        cls: "asset-renamer-summary",
+        text: "The third column is each field's type in Metadata Menu's Preset Fields. Select, Multi and Cycle take their options from that field's own value list.",
+      });
+    }
     for (const [index, file] of files.entries()) {
       const property = this.plugin.getSourcePropertyName(file);
-      const select = this.addSelectRow(root, property);
+      const { row, select } = this.addSelectRowEl(root, property);
       select.add(new Option("Select value...", ""));
       const values = await this.loadValues(file);
       for (const value of values) select.add(new Option(value, value));
+      if (metadataMenuAvailable) this.addMetadataMenuControl(row, property, file, values);
       const currentValue = this.getBoundSourceValue(property, values, index);
       const matchingOption = [...select.options].find((option) => this.plugin.normalizeToken(option.value) === this.plugin.normalizeToken(currentValue));
       if (matchingOption) select.value = matchingOption.value;
@@ -1158,9 +1166,45 @@ class AssetRenamerModal extends Modal {
   }
 
   addSelectRow(root, label) {
+    return this.addSelectRowEl(root, label).select;
+  }
+
+  addSelectRowEl(root, label) {
     const row = root.createDiv({ cls: "asset-renamer-row" });
     row.createSpan({ text: label });
-    return row.createEl("select");
+    return { row, select: row.createEl("select") };
+  }
+
+  // The third column of a value-list row: what this property is in Metadata
+  // Menu. Reads the current preset, and writing one is a deliberate act, so it
+  // may replace what is there — unlike a sync, which never touches a preset.
+  addMetadataMenuControl(row, property, file, values) {
+    row.addClass("has-meta");
+    const select = row.createEl("select", { cls: "asset-renamer-meta-type" });
+    select.title = `Set what ${property} is in Metadata Menu's Preset Fields. Select, Multi and Cycle are filled from this field's value list.`;
+    select.add(new Option("— not in Metadata Menu —", ""));
+    for (const type of METADATA_MENU_TYPES) select.add(new Option(type, type));
+    const current = this.plugin.metadataMenuMapping.typeFor(property);
+    select.value = METADATA_MENU_TYPES.includes(current) ? current : "";
+    select.addEventListener("change", async () => {
+      const chosen = select.value;
+      const previous = this.plugin.metadataMenuMapping.typeFor(property);
+      if (!chosen && previous) {
+        const answer = await new Promise((resolve) => new ConfirmDeleteModal(
+          this.app,
+          "Remove from Metadata Menu",
+          `Delete the ${previous} preset for ${property} from Metadata Menu? Its options are lost; the property stays on every note.`,
+          "Remove",
+          resolve,
+        ).open());
+        if (!answer.confirmed) {
+          select.value = previous;
+          return;
+        }
+      }
+      await this.plugin.metadataMenuMapping.setType(property, chosen, values, file.basename);
+    });
+    return select;
   }
 
   async loadValues(file) {
@@ -1316,15 +1360,12 @@ class AssetConfigModal extends Modal {
       await this.plugin.saveSettings();
     }));
     const available = this.plugin.metadataMenuMapping.isAvailable();
-    new Setting(contentEl).setName("Metadata Menu mapping").setDesc(available ? "Offer each value-list field to Metadata Menu as a Select field, once, when the asset renamer first opens on a record that uses it. A preset Metadata Menu already holds is never rewritten." : "Metadata Menu is not enabled, so mapping is disabled.").addToggle((toggle) => toggle.setValue(this.plugin.settings.metadataMenuMappingEnabled === true).setDisabled(!available).onChange(async (value) => {
-      this.plugin.settings.metadataMenuMappingEnabled = value;
-      await this.plugin.saveSettings();
-    }));
-    new Setting(contentEl).setName("Register every value list now").setDesc("Adds any value list Metadata Menu does not already have. Additive — existing presets are left alone.").addButton((button) => button.setButtonText("Register").setDisabled(!available).onClick(() => void this.plugin.metadataMenuMapping.sync()));
-    new Setting(contentEl).setName("Forget registered fields").setDesc(`Clears the record of which fields have been offered, so they are asked about again. Currently ${Object.keys(this.plugin.settings.metadataMenuBoundFields || {}).length} remembered.`).addButton((button) => button.setButtonText("Forget all").onClick(async () => {
-      await this.plugin.metadataMenuMapping.forgetBindings();
-      this.onOpen();
-    }));
+    new Setting(contentEl)
+      .setName("Metadata Menu")
+      .setDesc(available
+        ? "Each value-list row in the renamer carries the field's Metadata Menu type. This button fills in anything Metadata Menu is missing, as a Select over that field's own list. Additive — a preset it already holds is left alone."
+        : "Metadata Menu is not enabled, so there is nothing to register with.")
+      .addButton((button) => button.setButtonText("Register missing fields").setDisabled(!available).onClick(() => void this.plugin.metadataMenuMapping.registerMissing()));
     new Setting(contentEl).setName("Generate config.base").setDesc("Create or update both Bases views.").addButton((button) => button.setButtonText("Generate").setCta().onClick(async () => {
       await this.plugin.generateConfigBase();
       this.close();
@@ -1825,7 +1866,6 @@ class SchemaSyncPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       void this.initializeDatabase();
-      void this.metadataMenuMapping.promptIfNeeded();
     });
   }
 

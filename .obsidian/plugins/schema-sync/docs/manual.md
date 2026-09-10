@@ -149,21 +149,30 @@ Commands: **Open asset renamer for active note**, **Configure asset renamer
 sources**, **Bulk rename category dependencies**, **Bulk reload attachment names
 from metadata**.
 
-### Metadata Menu
+### Setting a field's Metadata Menu type
 
-With **Metadata Menu mapping** on, the renamer offers each of the record's
-value-list fields to Metadata Menu as a `Select` field whose options are that
-field's own list. It asks **once per field**, when the renamer first opens on a
-record that uses it, and remembers your answer either way.
+When Metadata Menu is installed, every value-list row in the renamer's filename
+builder carries a **third column**: what that property is in Metadata Menu's
+*Preset Fields*. It shows the current type, or *not in Metadata Menu*.
 
-A preset Metadata Menu already holds is never rewritten — not by this plugin and
-not on any later sync. That is the change from the old behaviour, which
-re-registered every list on each sync and wiped field types set by hand.
+Pick a type and it is written straight into Metadata Menu's settings:
 
-**Configure asset renamer sources** carries two extra buttons: **Register every
-value list now**, which adds anything Metadata Menu is missing without touching
-what it has, and **Forget registered fields**, which clears the record of what
-has been offered so you are asked again.
+| Type | What this plugin writes |
+| --- | --- |
+| `Select`, `Multi`, `Cycle` | A `ValuesList` holding that field's own value list, so the dropdown offers exactly the values the schema knows about. |
+| `Input`, `Number`, `Boolean`, `File`, `MultiFile`, `Formula` | The field, with the empty options those types start from. |
+| `Date`, `DateTime`, `Time` | The field, with Metadata Menu's own date defaults (`YYYY-MM-DD`, `YYYY-MM-DD HH:mm`, `HH:mm`). |
+| everything else | The field with empty options, and a notice telling you to finish it in Metadata Menu. Those types carry settings this plugin cannot see, and half-filling them would break the field quietly. |
+
+Choosing *not in Metadata Menu* deletes the preset, and asks first.
+
+**This is the one place that may overwrite a preset**, because you asked for it
+by picking a type. Nothing else does: sync never touches Metadata Menu, and
+**Configure asset renamer sources → Register missing fields** only fills in lists
+Metadata Menu does not have yet, leaving every existing preset alone.
+
+Re-picking the same type refreshes a `Select`'s options from the current value
+list, which is how you push new values into an existing dropdown.
 
 ## Settings
 

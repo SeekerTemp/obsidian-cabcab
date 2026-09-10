@@ -328,7 +328,7 @@ Cleanup only ever touches paths the plugin recorded as generated, so hand-author
 | **Bases** (core) | Consumes `data/base/*.base`. These must be Bases YAML — writing DBML there is what caused "unable to parse file". Each file is created once and then yours; only the attachment formulas are kept in sync. |
 | **DBML Visualizer** | Renders the fence in `data/AssetDatabase.base.md`. |
 | **Asset Renamer** | Merged in. Its own ribbon icon and commands; builds names from the record's own schema's value lists. The standalone plugin is disabled but left on disk. |
-| **Metadata Menu** | Registers a value list as a `Select` preset field, once per field, offered when the asset renamer first opens on a record that uses it. A preset it already holds is never rewritten. |
+| **Metadata Menu** | Each value-list row in the asset renamer carries that property's Metadata Menu type as a third column. Picking a type writes the preset; `Select`, `Multi` and `Cycle` are filled from the field's own value list. Nothing else in the plugin touches its settings. |
 
 ## Development
 
