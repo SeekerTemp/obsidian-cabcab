@@ -197,8 +197,8 @@ value list's rows either are notes already or become notes the moment ⤓ implem
 them.
 
 Nothing in Metadata Menu bridges those two forms, which is why the cast happens
-here rather than there. It runs on the next sync, so a value typed by hand is
-plain until then — the note you are editing is never rewritten under the cursor.
+here rather than there. It runs about a second after you stop typing, on the
+record you just edited — and again across every record on a full sync.
 
 A value is a string **or a number**. YAML reads a bare `6` as a number, and a
 value list of `1`–`6` is exactly that, so those count everywhere a value does. A
@@ -213,9 +213,12 @@ holds a link, and a foreign key has no list of its own.
 
 ### A value typed into a record joins its list
 
-Put a value in a record's field and it appears in that field's value list about a
-second later — no sync needed, and it reaches the Metadata Menu dropdown with it.
-Only the list is written; the record is left exactly as you typed it.
+Put a value in a record's field and, about a second later, two things happen: it
+appears in that field's value list — reaching the Metadata Menu dropdown with it
+— and the value in the record is cast to `[[value]]`.
+
+Only the record you just edited is cast, not every record of its schema. A full
+sync does the sweep.
 
 **Templates count here.** A `_placeholder.<Schema>.md` is never validated and
 never counted as a record, but a value typed into one still joins the list: for

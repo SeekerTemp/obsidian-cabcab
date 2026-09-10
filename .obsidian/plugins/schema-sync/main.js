@@ -1848,6 +1848,7 @@ class SchemaSyncPlugin extends Plugin {
   // Schema notes edited while focused. Their sync is held until focus leaves the
   // file, so typing is never interrupted by a vault-wide rewrite.
   pendingSchemaEdits = new Set();
+  pendingCasts = new Set();
   schemaPreviewTimeout = null;
 
   async loadSettings() {
@@ -1892,7 +1893,7 @@ class SchemaSyncPlugin extends Plugin {
       }
       // A value typed into a record is a value its list should offer, so the
       // list follows without waiting for a sync.
-      if (file instanceof TFile && this.isRecordFile(file)) this.scheduleConfigListSync();
+      if (file instanceof TFile && this.isRecordFile(file)) this.scheduleConfigListSync(file);
     }));
     this.registerEvent(this.app.vault.on("create", (file) => {
       if (this.isSchemaFile(file)) return this.scheduleSchemaReload();
@@ -3303,16 +3304,46 @@ class SchemaSyncPlugin extends Plugin {
     new AssetRenamerModal(this, file).open();
   }
 
-  // Lists only, never the record. modify fires while you are still typing, and
-  // rewriting the frontmatter of the note under the cursor is the same mistake
-  // as rewriting an open schema note — so the [[cast]] waits for a sync, and
-  // only the value list follows immediately.
-  scheduleConfigListSync() {
+  // A value typed into a record joins its list, and the value itself is cast to
+  // a link. Debounced, because modify fires while you are still typing.
+  //
+  // Only the record that changed is cast, not every record of its schema: this
+  // runs on every keystroke-ish save, and a sweep of the whole vault does not
+  // belong there.
+  scheduleConfigListSync(file) {
+    if (file) this.pendingCasts.add(file.path);
     if (this.configListTimeout) clearTimeout(this.configListTimeout);
-    this.configListTimeout = setTimeout(() => {
+    this.configListTimeout = setTimeout(async () => {
       this.configListTimeout = null;
-      void this.syncConfigLists();
+      const paths = [...this.pendingCasts];
+      this.pendingCasts.clear();
+      await this.syncConfigLists();
+      for (const path of paths) {
+        const target = this.app.vault.getAbstractFileByPath(path);
+        if (target instanceof TFile) await this.castRecordValues(target);
+      }
     }, 1500);
+  }
+
+  // Casting writes, writing fires modify, and modify schedules another cast — so
+  // the decision is made against the cache first and the file is only opened when
+  // something actually has to change. Without that the loop never settles.
+  async castRecordValues(file) {
+    const schemaName = this.schemaNameFor(file);
+    const fields = schemaName ? this.schemas.get(schemaName) : null;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!fields || !frontmatter) return;
+    const castable = Object.entries(fields).filter(([fieldName, definition]) => isBound(definition)
+      && fieldName in frontmatter
+      && Boolean(configPathFor(schemaName, fieldName, definition)));
+    if (!castable.some(([fieldName]) => castToLinks(frontmatter[fieldName]) !== undefined)) return;
+    await this.app.fileManager.processFrontMatter(file, (current) => {
+      for (const [fieldName] of castable) {
+        if (!(fieldName in current)) continue;
+        const cast = castToLinks(current[fieldName]);
+        if (cast !== undefined) current[fieldName] = cast;
+      }
+    });
   }
 
   onunload() {
