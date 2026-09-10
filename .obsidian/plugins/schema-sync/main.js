@@ -15,6 +15,10 @@ const DEFAULT_SETTINGS = {
   configFolder: "assets/config",
   configBasePath: "assets/config/config.base",
   categoryLinkPrefix: "",
+  // "<Schema>.<field>" -> true once its value list has been offered to Metadata
+  // Menu. Auto-binding happens once; without this, a preset deleted on purpose
+  // would come back on the next sync.
+  metadataMenuAutoBound: {},
 };
 
 // Metadata Menu's own field types, from its src/fields/Fields.ts, in its order.
@@ -28,6 +32,18 @@ const METADATA_MENU_TYPES = [
 // The three Metadata Menu backs with a ValuesList. Only these can be filled from
 // a field's value list; the rest carry options it configures itself.
 const METADATA_MENU_LIST_TYPES = new Set(["Select", "Multi", "Cycle"]);
+
+// A Metadata Menu ValuesList: keys are the option's position as a string, values
+// are the options themselves. Verbatim — the old standalone plugin wrapped each
+// one in [[brackets]] because its sources listed note names, but a schema value
+// list holds plain values. parseConfigValues strips any brackets on the way in
+// and a record stores what it strips, so wrapping them again made every option a
+// broken link and would have written "[[1]]" into a field whose list says "1".
+function valuesListOptions(values) {
+  const valuesList = {};
+  (values || []).forEach((value, index) => { valuesList[String(index)] = String(value); });
+  return { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" };
+}
 
 // Metadata Menu computes these in getDefaultOptions(), which its bundle keeps to
 // itself, so the ones this control can write faithfully are copied here. A type
@@ -937,11 +953,7 @@ class MetadataMenuMapping {
   // ValuesList, so those are the ones a value list has anything to say about.
   // Every other type gets empty options and is configured in Metadata Menu.
   optionsFor(type, values) {
-    if (METADATA_MENU_LIST_TYPES.has(type)) {
-      const valuesList = {};
-      values.forEach((value, index) => { valuesList[String(index)] = `[[${value}]]`; });
-      return { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" };
-    }
+    if (METADATA_MENU_LIST_TYPES.has(type)) return valuesListOptions(values);
     return { ...(METADATA_MENU_DEFAULT_OPTIONS[type] ?? {}) };
   }
 
@@ -979,6 +991,55 @@ class MetadataMenuMapping {
       ? `${property} is now a ${type} field. Finish setting it up in Metadata Menu → Preset Fields.`
       : `${property} is now a ${type} field in Metadata Menu.`, this.needsSetupIn(type) ? 8000 : undefined);
     return true;
+  }
+
+  // Called after value lists are written, with one entry per list. Two narrow
+  // jobs and nothing else.
+  //
+  // A field is bound to Select **once** — the first time its list is generated
+  // with anything in it. After that the key is remembered, so removing the
+  // preset in Metadata Menu, or with the renamer's third column, sticks: sync
+  // must never resurrect something deleted on purpose.
+  //
+  // A preset this plugin created keeps its options in step with the list, so a
+  // value added to the table reaches the dropdown. Only its options: the type is
+  // whatever was last chosen, and a preset written by anyone else is untouched.
+  async onListsGenerated(lists) {
+    const metadataMenu = this.plugin_();
+    if (!metadataMenu) return;
+    const seen = this.plugin.settings.metadataMenuAutoBound || (this.plugin.settings.metadataMenuAutoBound = {});
+    let changed = false;
+    let remembered = false;
+    for (const list of lists) {
+      const key = `${list.schemaName}.${list.fieldName}`;
+      const existing = this.presetFor(list.property);
+      if (!existing) {
+        if (seen[key] || !list.values.length) continue;
+        metadataMenu.presetFields.push({
+          name: list.property,
+          type: "Select",
+          id: `schema-sync-${list.property.toLowerCase()}`,
+          path: "",
+          options: this.optionsFor("Select", list.values),
+        });
+        seen[key] = true;
+        changed = true;
+        remembered = true;
+        continue;
+      }
+      if (!seen[key]) {
+        seen[key] = true;
+        remembered = true;
+      }
+      if (!String(existing.id || "").startsWith("schema-sync-")) continue;
+      if (!METADATA_MENU_LIST_TYPES.has(existing.type)) continue;
+      const options = this.optionsFor(existing.type, list.values);
+      if (JSON.stringify(existing.options?.valuesList ?? {}) === JSON.stringify(options.valuesList)) continue;
+      existing.options = { ...existing.options, ...options };
+      changed = true;
+    }
+    if (remembered) await this.plugin.saveSettings();
+    if (changed) await metadataMenu.saveSettings();
   }
 
   // Settings-tab only, and additive: a preset Metadata Menu already holds is
@@ -3334,12 +3395,18 @@ class SchemaSyncPlugin extends Plugin {
         }
       }
     }
+    const written = [];
     for (const [path, entry] of targets) {
       await this.ensureFolder(`${CONFIG_FOLDER}/${entry.schemaName}`);
       const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
       const existingRaw = existing instanceof TFile ? await this.app.vault.read(existing) : "";
-      await this.writeFile(normalizePath(path), renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values], existingRaw));
+      const text = renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values], existingRaw);
+      await this.writeFile(normalizePath(path), text);
+      // The note's own rows, not entry.values: renderConfigNote unions in rows
+      // added by hand, and those are options too.
+      written.push({ schemaName: entry.schemaName, fieldName: entry.fieldName, property: entry.fieldName, values: parseConfigValues(text) });
     }
+    await this.metadataMenuMapping.onListsGenerated(written);
   }
 
   // Notes written by an older version sit flat in data/config/. Move each into
@@ -3635,6 +3702,7 @@ module.exports.generators = {
   renderRecordFrontmatter,
   renderBaseYaml,
   mergeBaseYaml,
+  valuesListOptions,
   managedImageFormulas,
   foreignFormulas,
   parseConfigValues,

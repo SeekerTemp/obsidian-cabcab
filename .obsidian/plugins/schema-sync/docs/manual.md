@@ -166,13 +166,31 @@ Pick a type and it is written straight into Metadata Menu's settings:
 
 Choosing *not in Metadata Menu* deletes the preset, and asks first.
 
-**This is the one place that may overwrite a preset**, because you asked for it
-by picking a type. Nothing else does: sync never touches Metadata Menu, and
-**Configure asset renamer sources → Register missing fields** only fills in lists
-Metadata Menu does not have yet, leaving every existing preset alone.
+**This is the one place that may change a preset's type**, because you asked for
+it by picking one. Nothing else does.
 
-Re-picking the same type refreshes a `Select`'s options from the current value
-list, which is how you push new values into an existing dropdown.
+### What sync does on its own
+
+A field is registered as a `Select` **once** — the first time its value list is
+generated with anything in it. That is the whole of the automatic behaviour, and
+it is remembered, so deleting the preset afterwards sticks: sync will not put
+back something you removed on purpose.
+
+After that, sync keeps the **options** of a preset it created in step with the
+value list, so a value added to the table reaches the dropdown without you doing
+anything. Only the options — never the type, and never a preset written by
+anyone else. A preset is this plugin's if its id starts with `schema-sync-`.
+
+**Configure asset renamer sources → Register missing fields** fills in any list
+Metadata Menu does not have yet, leaving every existing preset alone. Use it for
+lists that predate this, or after clearing something out.
+
+### Options are the values, verbatim
+
+A `Select` offers exactly what the value list holds — `1`, or `Nomadic clans` —
+not `[[1]]`. That matters because a record stores the plain value, so a bracketed
+option would write something the list does not contain, and Obsidian would render
+each one as a broken link.
 
 ## Settings
 

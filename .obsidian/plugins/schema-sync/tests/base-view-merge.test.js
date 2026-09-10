@@ -1,7 +1,11 @@
 // Run with:  node .obsidian/plugins/schema-sync/tests/base-view-merge.test.js
 //
-// A .base is created once and then belongs to the user. These cover the one
-// thing sync still owns inside it: the <field>Image formulas.
+// What sync writes into files it does not own outright.
+//
+// A .base is created once and then belongs to the user, so these cover the one
+// thing sync still maintains inside it: the <field>Image formulas. The last
+// section covers the other such handover — the options this plugin hands to
+// Metadata Menu, which have to match what a record actually stores.
 
 const Module = require("module");
 const assert = require("assert");
@@ -19,7 +23,7 @@ Module._load = function (request, parent, isMain) {
 };
 
 const { generators } = require(require("path").join(__dirname, "..", "main.js"));
-const { mergeBaseYaml, managedImageFormulas, renderBaseYaml } = generators;
+const { mergeBaseYaml, managedImageFormulas, renderBaseYaml, valuesListOptions, parseConfigValues } = generators;
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -182,6 +186,39 @@ test("CRLF line endings are preserved", () => {
   const merged = mergeBaseYaml(raw, { cover: attachment, portrait: attachment });
   assert.ok(merged.includes("\r\n"));
   assert.ok(!/[^\r]\n/.test(merged));
+});
+
+// --- Metadata Menu options ---------------------------------------------------
+
+test("options are the list's values verbatim, not wikilinks", () => {
+  const { valuesList, sourceType } = valuesListOptions(["1", "2", "Nomadic clans"]);
+  assert.strictEqual(sourceType, "ValuesList");
+  assert.deepStrictEqual(valuesList, { 0: "1", 1: "2", 2: "Nomadic clans" });
+});
+
+test("an empty list makes an empty options set rather than throwing", () => {
+  assert.deepStrictEqual(valuesListOptions([]).valuesList, {});
+  assert.deepStrictEqual(valuesListOptions(undefined).valuesList, {});
+});
+
+// The round trip that matters: what a value list holds is what a record stores,
+// so it has to be what Metadata Menu offers. Wrapping the options in brackets
+// broke this — the dropdown wrote "[[1]]" into a field whose list says "1".
+test("a value survives the list, the parser and the options unchanged", () => {
+  const note = [
+    "---",
+    "configFor: [LifeForm.trait]",
+    "---",
+    "",
+    "| trait | Notes |",
+    "| --- | --- |",
+    "| 1 |  |",
+    "| Nomadic clans |  |",
+    "",
+  ].join("\n");
+  const values = parseConfigValues(note);
+  assert.deepStrictEqual(values, ["1", "Nomadic clans"]);
+  assert.deepStrictEqual(Object.values(valuesListOptions(values).valuesList), values);
 });
 
 // --- runner ------------------------------------------------------------------
