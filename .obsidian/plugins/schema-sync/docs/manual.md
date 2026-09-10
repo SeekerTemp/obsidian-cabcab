@@ -211,6 +211,31 @@ gain a second layer however many times it goes round. An empty field stays empty
 Unbound fields, attachments and foreign keys are not cast. An attachment already
 holds a link, and a foreign key has no list of its own.
 
+### Enter values through Metadata Menu, not the property box
+
+Two editors reach the same property, and they behave differently:
+
+| Where | What you get |
+| --- | --- |
+| The field's icon in the properties panel | Metadata Menu's `Select` — only that field's value list |
+| The raw property text box | Obsidian's own link picker |
+
+Because the stored value is a `[[link]]`, putting the cursor in that text box puts
+it inside `[[ ]]`, and Obsidian opens its link autocomplete. That picker
+fuzzy-matches **every note and every unresolved link in the vault**, so entering
+`new` will also offer things like `summonerwarlocknecromancer-fantasy` and
+`db_zoneReward` — `summo·ne·w·arlock` and `db_zo·neW·ard` both contain the
+letters. They come from `config/categories.md` and `doc/MAP.md`, and have nothing
+to do with the field.
+
+That picker is core Obsidian. It is triggered by the bracket syntax itself, which
+is the same thing that earns the graph edge, and there is no API to scope it to a
+folder or suppress it. So it is not a bug and not fixable from here — use the
+field's icon for constrained entry.
+
+Values are unresolved links until the notes exist. **⤓** on the field's row in
+02 / Definition creates one record per value, after which they resolve.
+
 ### A value typed into a record joins its list
 
 Put a value in a record's field and, about a second later, two things happen: it

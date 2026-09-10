@@ -377,6 +377,11 @@ git config core.hooksPath .githooks
 
 ## Known gaps
 
+- A value-list field stores a `[[link]]`, so putting the cursor in its raw property
+  box opens Obsidian's own link picker, which fuzzy-matches the whole vault and
+  offers notes unrelated to the field. That picker is core Obsidian, triggered by
+  the bracket syntax that earns the graph edge, and there is no API to scope it.
+  Enter values through Metadata Menu's field icon instead.
 - The bare basenames config notes use — `data/config/Realm/Realm.md` is `[[Realm]]` — compete with every other note in the vault. Generated links are always path-qualified, so they are safe; a hand-typed `[[Realm]]` may not be.
 - A value list whose field was merely **unbound** is kept, so unbinding stays reversible. Only a deleted field or schema makes one an orphan.
 - `isRecordFile()` still treats `config/entity.md` as a record for backwards compatibility, though nothing generates it any more.
