@@ -185,20 +185,37 @@ anyone else. A preset is this plugin's if its id starts with `schema-sync-`.
 Metadata Menu does not have yet, leaving every existing preset alone. Use it for
 lists that predate this, or after clearing something out.
 
-### Options are links to the values
+### Shown plain, stored as a link
 
-A `Select` offers `[[1]]` and `[[Nomadic clans]]`, not the bare text. Choosing one
-writes a link into the record, so the graph draws the edge between a record and
-the value it carries — and a value list's rows either are notes already or become
-notes the moment ⤓ implements them.
+The menu offers `1` and `Nomadic clans` — not `[[1]]`, which turns a dropdown into
+a list of brackets.
 
-The list itself stays plain. Both readers strip the brackets: the parser that
-turns the table into options, and the sync that collects values back off records
-to rebuild the table. So a value cannot gain a second layer of brackets however
-many times it goes round.
+What lands in the record is the link. Sync casts a value-list field to `[[value]]`
+whatever wrote it: the dropdown, the ⤓ button, or your own typing. That is what
+makes the graph draw an edge between a record and the value it carries, because a
+value list's rows either are notes already or become notes the moment ⤓ implements
+them.
 
-A row that is already written as a link keeps its own form rather than being
-nested inside another.
+Nothing in Metadata Menu bridges those two forms, which is why the cast happens
+here rather than there. It runs on the next sync, so a value typed by hand is
+plain until then.
+
+The list itself stays plain — every reader strips the brackets — so a value cannot
+gain a second layer however many times it goes round. An empty field stays empty:
+`[[]]` is not a link.
+
+Unbound fields, attachments and foreign keys are not cast. An attachment already
+holds a link, and a foreign key has no list of its own.
+
+### A value added in Metadata Menu comes back
+
+Typing a new value into a Metadata Menu dropdown adds it to *Metadata Menu's*
+settings and to no note at all. Sync reads those values back before it rewrites a
+list, so a value added that way lands in `data/config/<Schema>/<field>.md` like
+any other — and is not lost when the options are pushed out again.
+
+This only applies to a preset this plugin created. One you wrote yourself is read
+from and written to by nobody.
 
 ## Settings
 

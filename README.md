@@ -289,7 +289,8 @@ The command **Toggle schema safety for the active note** pins a note as never-re
 
 ```
 loadSchemas()               read data/schema/*.schema.md, keyed by filename
-syncEntityFieldsForSchema() back-fill records with missing bound fields
+syncEntityFieldsForSchema() back-fill records with missing bound fields, and
+                            cast value-list fields to [[links]]
 ensurePlaceholders()        back-fill the _placeholder template
 importLists()               create records from data/config/*.csv
 syncConfigLists()           regenerate data/config/<Plural>.config.md, unioned
@@ -328,7 +329,7 @@ Cleanup only ever touches paths the plugin recorded as generated, so hand-author
 | **Bases** (core) | Consumes `data/base/*.base`. These must be Bases YAML — writing DBML there is what caused "unable to parse file". Each file is created once and then yours; only the attachment formulas are kept in sync. |
 | **DBML Visualizer** | Renders the fence in `data/AssetDatabase.base.md`. |
 | **Asset Renamer** | Merged in. Its own ribbon icon and commands; builds names from the record's own schema's value lists. The standalone plugin is disabled but left on disk. |
-| **Metadata Menu** | A field is registered as a `Select` once, when its value list is first generated with values in it; sync then keeps that preset's options in step with the list. The renamer's third column sets any field's type by hand. Options are `[[links]]` to the list's values, so a chosen value draws a graph edge; the list itself stays plain, because both readers strip the brackets. |
+| **Metadata Menu** | A field is registered as a `Select` once, when its value list is first generated with values in it; sync then keeps that preset's options in step with the list. The renamer's third column sets any field's type by hand. Options are shown plain; sync casts the chosen value to `[[value]]` in the record, so it draws a graph edge. Values typed into one of its dropdowns are read back into the value list. |
 
 ## Development
 

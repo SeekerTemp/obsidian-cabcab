@@ -3,9 +3,9 @@
 // What sync writes into files it does not own outright.
 //
 // A .base is created once and then belongs to the user, so these cover the one
-// thing sync still maintains inside it: the <field>Image formulas. The last
-// section covers the other such handover — the options this plugin hands to
-// Metadata Menu, which have to match what a record actually stores.
+// thing sync still maintains inside it: the <field>Image formulas. The later
+// sections cover the other such handover — the options handed to Metadata Menu,
+// which are shown plain, and the cast that stores the chosen one as a link.
 
 const Module = require("module");
 const assert = require("assert");
@@ -23,7 +23,7 @@ Module._load = function (request, parent, isMain) {
 };
 
 const { generators } = require(require("path").join(__dirname, "..", "main.js"));
-const { mergeBaseYaml, managedImageFormulas, renderBaseYaml, valuesListOptions, parseConfigValues } = generators;
+const { mergeBaseYaml, managedImageFormulas, renderBaseYaml, valuesListOptions, parseConfigValues, plainValue, linkedValue, castToLinks } = generators;
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -190,14 +190,10 @@ test("CRLF line endings are preserved", () => {
 
 // --- Metadata Menu options ---------------------------------------------------
 
-test("each option is a link to its value", () => {
-  const { valuesList, sourceType } = valuesListOptions(["1", "2", "Nomadic clans"]);
+test("options are shown plain, so the menu is not a list of brackets", () => {
+  const { valuesList, sourceType } = valuesListOptions(["1", "[[2]]", "Nomadic clans"]);
   assert.strictEqual(sourceType, "ValuesList");
-  assert.deepStrictEqual(valuesList, { 0: "[[1]]", 1: "[[2]]", 2: "[[Nomadic clans]]" });
-});
-
-test("a value that is already a link is not nested inside another", () => {
-  assert.deepStrictEqual(valuesListOptions(["[[Nomadic clans]]"]).valuesList, { 0: "[[Nomadic clans]]" });
+  assert.deepStrictEqual(valuesList, { 0: "1", 1: "2", 2: "Nomadic clans" });
 });
 
 test("an empty list makes an empty options set rather than throwing", () => {
@@ -205,10 +201,43 @@ test("an empty list makes an empty options set rather than throwing", () => {
   assert.deepStrictEqual(valuesListOptions(undefined).valuesList, {});
 });
 
-// The round trip that has to hold: the option carries brackets so the record
-// gets a link, and both readers strip them again, so the list itself never
-// gains a second layer however many times it is regenerated.
-test("a linked option strips back to the value the list holds", () => {
+test("an alias reads as the value it displays", () => {
+  assert.strictEqual(plainValue("[[LifeForm/trait|trait]]"), "trait");
+  assert.strictEqual(plainValue("[[Nomadic clans]]"), "Nomadic clans");
+  assert.strictEqual(plainValue("  plain  "), "plain");
+});
+
+// --- casting a stored value to a link ----------------------------------------
+
+test("a plain value becomes a link", () => {
+  assert.strictEqual(castToLinks("1"), "[[1]]");
+  assert.strictEqual(castToLinks("Nomadic clans"), "[[Nomadic clans]]");
+});
+
+test("a value that is already a link is left alone, not nested", () => {
+  assert.strictEqual(castToLinks("[[1]]"), undefined);
+  assert.strictEqual(linkedValue("[[1]]"), "[[1]]");
+});
+
+test("an empty value stays empty, because [[]] is not a link", () => {
+  assert.strictEqual(castToLinks(""), undefined);
+  assert.strictEqual(linkedValue(""), "");
+});
+
+test("a list field casts element by element", () => {
+  assert.deepStrictEqual(castToLinks(["a", "[[b]]"]), ["[[a]]", "[[b]]"]);
+  assert.strictEqual(castToLinks(["[[a]]", "[[b]]"]), undefined);
+});
+
+test("a value that is not a string is not cast", () => {
+  assert.strictEqual(castToLinks(7), undefined);
+  assert.strictEqual(castToLinks(null), undefined);
+});
+
+// The round trip that has to hold. The option is shown plain, sync casts it to a
+// link in the record, and every reader strips it back, so the list itself never
+// gains a layer however often it goes round.
+test("a value survives menu, record and regeneration unchanged", () => {
   const note = [
     "---",
     "configFor: [LifeForm.trait]",
@@ -222,11 +251,13 @@ test("a linked option strips back to the value the list holds", () => {
   ].join("\n");
   const values = parseConfigValues(note);
   assert.deepStrictEqual(values, ["1", "Nomadic clans"]);
-  const options = Object.values(valuesListOptions(values).valuesList);
-  assert.deepStrictEqual(options, ["[[1]]", "[[Nomadic clans]]"]);
-  // What syncConfigLists does to a record's value when it rebuilds the list.
-  const stripped = options.map((option) => option.trim().replace(/^\[\[|\]\]$/g, "").trim());
-  assert.deepStrictEqual(stripped, values);
+  const shown = Object.values(valuesListOptions(values).valuesList);
+  assert.deepStrictEqual(shown, values);
+  const stored = shown.map((option) => linkedValue(option));
+  assert.deepStrictEqual(stored, ["[[1]]", "[[Nomadic clans]]"]);
+  // What syncConfigLists does with a record's value when it rebuilds the list.
+  const collected = stored.map((value) => value.trim().replace(/^\[\[|\]\]$/g, "").trim());
+  assert.deepStrictEqual(collected, values);
 });
 
 // --- runner ------------------------------------------------------------------

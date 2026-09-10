@@ -44,12 +44,39 @@ const METADATA_MENU_LIST_TYPES = new Set(["Select", "Multi", "Cycle"]);
 // not drift.
 function valuesListOptions(values) {
   const valuesList = {};
-  (values || []).forEach((value, index) => {
-    const text = String(value).trim();
-    // Already a link in the source list: kept as it is rather than nested.
-    valuesList[String(index)] = /^\[\[.*\]\]$/.test(text) ? text : `[[${text}]]`;
-  });
+  (values || []).forEach((value, index) => { valuesList[String(index)] = plainValue(value); });
   return { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" };
+}
+
+// The two halves of how a value list value travels.
+//
+// It is *shown* plain, because a menu listing "[[1]]" six times is a menu of
+// brackets. It is *stored* as a link, so the record points at the note that value
+// is — or becomes, the moment ⤓ implements the list. Nothing in Metadata Menu
+// bridges those, so sync casts the value on the way into a record instead.
+function plainValue(value) {
+  const text = String(value ?? "").trim();
+  const link = text.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|([^\]]+))?\]\]$/);
+  return link ? (link[2] || link[1]).trim() : text;
+}
+
+function linkedValue(value) {
+  const text = plainValue(value);
+  return text ? `[[${text}]]` : "";
+}
+
+// The linked form of a stored value, or undefined when it already says that, so
+// a caller can leave the note alone. Arrays are cast element by element; an empty
+// value stays empty, because "" is how an unfilled column is written and
+// "[[]]" is not a link.
+function castToLinks(stored) {
+  if (Array.isArray(stored)) {
+    const cast = stored.map((entry) => (typeof entry === "string" ? linkedValue(entry) : entry));
+    return cast.some((entry, index) => entry !== stored[index]) ? cast : undefined;
+  }
+  if (typeof stored !== "string") return undefined;
+  const cast = linkedValue(stored);
+  return cast === stored ? undefined : cast;
 }
 
 // Metadata Menu computes these in getDefaultOptions(), which its bundle keeps to
@@ -998,6 +1025,17 @@ class MetadataMenuMapping {
       ? `${property} is now a ${type} field. Finish setting it up in Metadata Menu → Preset Fields.`
       : `${property} is now a ${type} field in Metadata Menu.`, this.needsSetupIn(type) ? 8000 : undefined);
     return true;
+  }
+
+  // Values held by a preset this plugin created, plain. Metadata Menu can add an
+  // option to its own settings without touching any note — typing a new value
+  // into the dropdown does exactly that — so those values would otherwise live
+  // only in its config and vanish the next time sync rewrote the options.
+  valuesFrom(property) {
+    const preset = this.presetFor(property);
+    if (!preset || !String(preset.id || "").startsWith("schema-sync-")) return [];
+    if (!METADATA_MENU_LIST_TYPES.has(preset.type)) return [];
+    return Object.values(preset.options?.valuesList ?? {}).map(plainValue).filter(Boolean);
   }
 
   // Called after value lists are written, with one entry per list. Two narrow
@@ -3318,14 +3356,27 @@ class SchemaSyncPlugin extends Plugin {
   }
 
   async syncEntityFieldsForSchema(schemaName, fields) {
-    const entities = this.dataFiles().filter((file) => !file.basename.startsWith(PLACEHOLDER_PREFIX));
-    for (const file of entities) {
+    for (const file of this.dataFiles()) {
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (frontmatter?.implements !== schemaName) continue;
+      // A template is not data — ensurePlaceholders owns its keys, and its values
+      // are never collected into a value list. It is still cast, so a value typed
+      // into the template reads the same as one typed into a record.
+      const isTemplate = file.basename.startsWith(PLACEHOLDER_PREFIX);
       await this.app.fileManager.processFrontMatter(file, (current) => {
         for (const [fieldName, definition] of Object.entries(fields)) {
-          if (!isBound(definition) || fieldName in current) continue;
-          current[fieldName] = definition.hasDefault ? definition.defaultValue : emptyValue(definition.type);
+          if (!isBound(definition)) continue;
+          if (!(fieldName in current)) {
+            if (isTemplate) continue;
+            current[fieldName] = definition.hasDefault ? definition.defaultValue : emptyValue(definition.type);
+            continue;
+          }
+          // A field with a value list stores links, whatever wrote the value —
+          // the ⤓ button, a Metadata Menu dropdown showing plain options, or a
+          // hand-typed name. Casting here is the only place the two forms meet.
+          if (!configPathFor(schemaName, fieldName, definition)) continue;
+          const cast = castToLinks(current[fieldName]);
+          if (cast !== undefined) current[fieldName] = cast;
         }
       });
     }
@@ -3407,7 +3458,11 @@ class SchemaSyncPlugin extends Plugin {
       await this.ensureFolder(`${CONFIG_FOLDER}/${entry.schemaName}`);
       const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
       const existingRaw = existing instanceof TFile ? await this.app.vault.read(existing) : "";
-      const text = renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values], existingRaw);
+      // A value typed into a Metadata Menu dropdown is added to its settings and
+      // nowhere else, so it is read back here before the note is rewritten —
+      // otherwise pushing the options out again would erase it.
+      const fromMenu = this.metadataMenuMapping.valuesFrom(entry.fieldName);
+      const text = renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values, ...fromMenu], existingRaw);
       await this.writeFile(normalizePath(path), text);
       // The note's own rows, not entry.values: renderConfigNote unions in rows
       // added by hand, and those are options too.
@@ -3710,6 +3765,9 @@ module.exports.generators = {
   renderBaseYaml,
   mergeBaseYaml,
   valuesListOptions,
+  plainValue,
+  linkedValue,
+  castToLinks,
   managedImageFormulas,
   foreignFormulas,
   parseConfigValues,
