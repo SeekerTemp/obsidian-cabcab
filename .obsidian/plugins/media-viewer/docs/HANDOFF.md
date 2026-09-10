@@ -181,6 +181,10 @@ Not part of the first build. The data it needs already exists after M4.
 - [x] 33 `MV-EXPLORER` — from use
 - [x] 36 `MV-BOARD` — evidence on an Obsidian canvas, curated never scanned
 - [x] 37 `MV-PANELFIX` — panel clipping and metadata jumps, from use
+- [x] 38 `MV-SHARPTOGGLE` — MV-ZOOMFIX picked sharp and called it done; a
+      screenshot of a photo at 547% came back described as distorted. Both
+      readings are right about their own content, so the viewer bar now carries
+      the switch and smooth is the default
 - [ ] 34 `MV-RECORD` — from use, probably Schema Sync's to build
 
 Retired after M2, and not to be picked up again: `MV-LOG`, which was 25. The

@@ -1056,3 +1056,10 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+
+/* Sharp or smooth above 100%. Active reads as "on" the way the filter toggles
+   in the header do, because it is the same kind of switch. */
+.media-viewer .mv-sharp-toggle.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}

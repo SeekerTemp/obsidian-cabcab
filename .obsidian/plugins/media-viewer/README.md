@@ -55,6 +55,19 @@ globally would break typing.
 | `Ctrl+S` | — | — | Save |
 | `Escape` | — | — | Clear the selection, then leave edit mode |
 
+### Sharp or smooth above 100%
+
+A browser blends an upscaled bitmap by default. For a photograph that is right;
+for a screen recording it is wrong, because you zoomed in to count pixels and
+blending hides the thing you were counting.
+
+So the viewer bar carries a **Smooth / Sharp** switch beside **Fit** and
+**100%**, and it is remembered. Smooth is the default — hard squares on a
+photograph read as a damaged image, whereas someone who wants pixel-exact
+inspection will go looking for the control. Below 100% it is always smooth:
+nearest-neighbour downscaling drops whole rows of pixels, and no reading of
+"sharp" wants that.
+
 ## Editing
 
 **Edit** opens a session on the displayed image. Cropping happens on the viewer
@@ -159,9 +172,15 @@ the `source:` chain at read time and stopping at the first ancestor that
 declares it — which is the whole reason for tracking lineage: correcting a value
 on the parent corrects it for every descendant.
 
-Nine fields never inherit, because they describe the file rather than its
-subject: `media`, `source`, `op`, `crop`, `transform`, `sourceTime`, `width`,
-`height`, `created`.
+Twelve fields never inherit, because they describe the file rather than its
+subject: `media`, `source`, `op`, `crop`, `transform`, `sourceTime`,
+`sourceStart`, `sourceEnd`, `clips`, `width`, `height`, `created`.
+
+The last three are written by **Video Editor**, the sibling plugin that cuts
+video into the same records. They are intrinsic for the same reason a crop
+rectangle is: a frame captured out of a trimmed clip begins somewhere else
+entirely, and inheriting the clip's `sourceStart` would have it claim a second
+it does not begin at.
 
 Resolved values are shown in the lineage panel and never written to disk. The
 cost, accepted deliberately: a child note read on its own — by Dataview, by
@@ -283,6 +302,10 @@ Plain JavaScript, no build step, matching Schema Sync and every other plugin
 here. Everything is in `main.js`, which opens with a `core` block of pure
 functions — geometry, transform maths, note rendering, chain resolution —
 exported as `module.exports.core`.
+
+**`tests/` is git-ignored and not in the repository.** What has to work on
+another machine is the plugin, and Obsidian loads `main.js` and nothing else.
+On a machine that has them:
 
 ```
 node tests/all.js     # every suite, each in its own process

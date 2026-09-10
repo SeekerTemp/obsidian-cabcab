@@ -60,6 +60,15 @@ const DEFAULT_SETTINGS = {
   // else. There is no log file: Electron's console already filters, persists
   // and survives the failure, which is what the old app's crash log was for.
   debugLogging: false,
+  /* How an image is drawn above 100%: sharp squares, or blended.
+   *
+   * Off, so the default is smooth. The reverse was tried first and produced a
+   * bug report — hard squares on a photograph read as a damaged image, while
+   * someone who wants pixel-exact inspection of a screenshot goes looking for
+   * the control. The switch is in the viewer bar rather than only here,
+   * because a screenshot and a photograph want opposite answers and both turn
+   * up in the same folder. */
+  sharpZoom: false,
   // What a JPEG or WebP output is encoded at. PNG ignores it: passing a
   // quality for a lossless format is a number that looks meaningful and is
   // not.
@@ -573,10 +582,26 @@ function trimLogText(text, maxBytes) {
  * neighbour there would alias hard edges into noise. So the mode follows the
  * zoom rather than being a setting: at 1:1 nothing is resampled and it makes
  * no difference either way. */
-function imageRenderingFor(zoom) {
+/* How an upscaled bitmap is drawn, and it is a preference rather than a fact.
+ *
+ * Above 100% a browser smooths by default. For the screen recordings this pane
+ * exists to inspect that is wrong — you are counting pixels, and a blur hides
+ * the thing you zoomed in to see. For a photograph it is right, and hard
+ * squares read as the image being damaged.
+ *
+ * The first version of this picked sharp and called it done, which produced a
+ * bug report with a screenshot of a dog at 547% attached. So both are offered,
+ * the viewer bar carries the switch, and smooth is the default: someone who
+ * wants pixel-exact inspection goes looking for the control, whereas someone
+ * surprised by blocky photos concludes the pane is broken.
+ *
+ * Below 100% it is always smooth. Nearest-neighbour downscaling drops whole
+ * rows of pixels and there is no reading of "sharp" that wants that.
+ */
+function imageRenderingFor(zoom, sharp) {
   const value = Number(zoom);
   if (!Number.isFinite(value)) return "auto";
-  return value > 1 ? "pixelated" : "auto";
+  return value > 1 && sharp ? "pixelated" : "auto";
 }
 
 /* The position a captured frame came from, as the note records it.
@@ -4321,6 +4346,13 @@ class MediaViewerView extends ItemView {
     this.fullEl = this.barButton(bar, "100%", () => this.zoomToActualSize());
     this.fullEl.addClass("mv-zoom-control");
 
+    /* Sharp or smooth above 100%. In the bar rather than in settings because
+       it is a per-image decision — a screenshot and a photograph want
+       opposite answers, and both turn up in the same folder. */
+    this.sharpEl = this.barButton(bar, "", () => this.toggleSharpZoom());
+    this.sharpEl.addClass("mv-zoom-control");
+    this.sharpEl.addClass("mv-sharp-toggle");
+
     // One button, two states. Editing is a mode the pane is in rather than a
     // window it opens — the old app's crop dialog was a second copy of the
     // viewer, and this is the whole point of not having one.
@@ -5514,7 +5546,7 @@ class MediaViewerView extends ItemView {
       this.imageEl.style.transform = "translate(" + this.panX + "px, " + this.panY + "px)";
       // Set here rather than in the stylesheet, because it depends on the
       // zoom and the zoom lives in script.
-      this.imageEl.style.imageRendering = imageRenderingFor(this.zoom);
+      this.imageEl.style.imageRendering = imageRenderingFor(this.zoom, this.plugin.settings.sharpZoom);
     }
     this.updateViewerBar();
   }
@@ -5527,6 +5559,17 @@ class MediaViewerView extends ItemView {
     // Hidden by the stylesheet in video mode, and disabled as well: a control
     // still reachable by Tab that silently does nothing is worse than one that
     // says it cannot.
+    if (this.sharpEl) {
+      const sharp = Boolean(this.plugin.settings.sharpZoom);
+      this.sharpEl.setText(sharp ? "Sharp" : "Smooth");
+      this.sharpEl.title = sharp
+        ? "Above 100%, pixels are drawn as squares. Good for reading a screenshot."
+        : "Above 100%, pixels are blended. Good for photographs.";
+      this.sharpEl.toggleClass("is-active", sharp);
+      // Meaningless on a video, whose size the browser owns, and during an
+      // edit, where the canvas does its own drawing.
+      this.sharpEl.disabled = video || Boolean(this.session);
+    }
     if (this.fitEl) this.fitEl.disabled = video || Boolean(this.session);
     if (this.fullEl) this.fullEl.disabled = video || Boolean(this.session);
     if (this.prevEl) this.prevEl.disabled = !this.plugin.siblingOf(-1);
@@ -5545,6 +5588,16 @@ class MediaViewerView extends ItemView {
   // Every zoom goes through here, so the clamp and the pan correction are
   // applied in exactly one place. `cursor` is measured from the stage centre;
   // omitting it zooms about the centre, which is what the keyboard wants.
+  /* Flip between sharp and smooth, remember it, and redraw.
+   *
+   * Saved rather than held in the view, because someone who works on
+   * screenshots wants it sharp every time the pane opens, not once. */
+  async toggleSharpZoom() {
+    this.plugin.settings.sharpZoom = !this.plugin.settings.sharpZoom;
+    this.applyTransform();
+    await this.plugin.saveSettings();
+  }
+
   setZoom(nextZoom, cursor) {
     const previous = this.zoom;
     const zoom = clampZoom(nextZoom);

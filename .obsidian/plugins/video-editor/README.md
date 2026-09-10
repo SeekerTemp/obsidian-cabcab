@@ -9,43 +9,115 @@ captures a frame and labels it; this cuts the footage that frame was taken
 from. Both write the same record type, so a frame captured out of a clip
 trimmed here resolves up one chain to the original recording.
 
-## What it needs
+## Install
 
-**ffmpeg and ffprobe.** A browser page cannot cut video: canvas yields frames
-and `MediaRecorder` re-encodes badly, while lossless trimming is demux and
-remux. The plugin is `isDesktopOnly: true` and drives a native binary through
-`child_process`.
-
-They do not have to be *installed*. ffmpeg ships as a self-contained static
-executable, so the simplest complete install is to put `ffmpeg` and `ffprobe`
-in this plugin's own `bin/` folder — no admin rights, nothing on `PATH`. That
-is how this vault has it, and one command does it:
+Everything, from nothing, on a machine that has **git** and **node**. Nothing
+else is required — no npm, no build, no admin rights.
 
 ```bash
+# ── 1. Get the vault ────────────────────────────────────────────────────────
+git clone -b feature/media-viewer https://github.com/SeekerTemp/obsidian-cabcab.git
+cd obsidian-cabcab
+
+# ── 2. Put ffmpeg + ffprobe in the plugin's own bin/  (~1 min, ~290 MB) ─────
+cd .obsidian/plugins/video-editor
+node scripts/fetch-ffmpeg.js
+cd ../../..
+
+# ── 3. Open this folder as a vault in Obsidian, then reload it ─────────────
+#      Both plugins are already enabled in .obsidian/community-plugins.json.
+#      Obsidian → Ctrl/Cmd+P → "Reload app without saving"
+```
+
+Already have the vault? Only step 2 matters:
+
+```bash
+cd <vault>/.obsidian/plugins/video-editor
 node scripts/fetch-ffmpeg.js
 ```
 
-**On a fresh clone that command is the whole setup.** `bin/` is git-ignored, so
-a pull arrives with it empty — see [docs/SETUP.md](docs/SETUP.md) for what does
-and does not travel with the repo.
+**macOS** has no single build worth fetching blind, so step 2 is instead:
 
-The plugin looks in three places, in order:
+```bash
+brew install ffmpeg
+# either leave it on PATH, or carry it with the vault:
+cp "$(which ffmpeg)" "$(which ffprobe)" <vault>/.obsidian/plugins/video-editor/bin/
+```
+
+**Prefer a system install** on Windows or Linux? Any of these satisfies it, and
+step 2 can be skipped:
+
+```bash
+winget install Gyan.FFmpeg      # Windows
+sudo apt install ffmpeg         # Debian / Ubuntu
+brew install ffmpeg             # macOS
+```
+
+### Check it worked
+
+Nothing to run — it is all in the app:
+
+```
+Header badge          green, naming a version      →  found
+                      red "ffmpeg missing"         →  not found anywhere
+
+Settings → Video Editor → Where it is looking
+                      names the exact path, per binary
+
+Open the pane         tiles show stills + durations →  ffmpeg is being used
+                      blank grey rectangles         →  it is not
+```
+
+Then trim a few seconds of something. With the default stream copy it should
+finish almost instantly and leave a new file beside the source plus a
+`MediaInstance` note in `data/media/`.
+
+### If step 2 cannot reach the network
+
+Download a build by hand and drop the two executables into
+`.obsidian/plugins/video-editor/bin/`. On Windows they are `ffmpeg.exe` and
+`ffprobe.exe`; elsewhere the same names without the extension. Use a **GPL**
+build — the LGPL ones omit `libx264`, which the re-encode path asks for by
+name, so an LGPL build installs cleanly and then fails the first frame-exact
+cut.
+
+- Windows / Linux: <https://github.com/BtbN/FFmpeg-Builds/releases>
+- Windows alternative: <https://www.gyan.dev/ffmpeg/builds/>
+
+---
+
+## Why it is shaped that way
+
+**ffmpeg is not optional and cannot be avoided.** A browser page cannot cut
+video: canvas yields frames, `MediaRecorder` re-encodes badly, and lossless
+trimming is demux and remux. The plugin is `isDesktopOnly: true` and drives a
+native binary through `child_process`.
+
+**It does not have to be *installed*.** ffmpeg ships as a self-contained static
+executable, so putting the two files in the plugin's own `bin/` is a complete
+install that needs no admin rights, adds nothing to `PATH`, and travels with
+the vault folder.
+
+**`bin/` is git-ignored**, which is why step 2 exists at all. The two
+executables are about 290 MB, this vault *is* the git repository, and they are
+platform-specific — a vault synced between a Mac and a Windows machine wants a
+different pair on each and cannot usefully carry both.
+
+**The plugin looks in three places, in order:**
 
 1. A full path set in the plugin's settings
 2. `bin/` beside `main.js`
 3. Whatever `PATH` has
 
-Settings reports which of the three it settled on, **for each binary
-separately** — half an install is a real state, and from the red badge it looks
-identical to no install at all. The header badge names the version when one is
-found, and **Check now** re-looks after you change anything.
+Settings reports which of the three it settled on **for each binary
+separately**, because half an install is a real state and from the red badge it
+looks identical to no install at all. **Check now** re-looks after a change.
 
-If you would rather install system-wide: `winget install Gyan.FFmpeg` on
-Windows, `brew install ffmpeg` on macOS, your package manager on Linux.
+**Node is not needed to use either plugin** — only to run step 2. Obsidian
+loads `main.js` and does not care whether node is on the machine.
 
-`bin/` is git-ignored. The two executables are about 290 MB together, this
-vault is the repository, and they are platform-specific anyway — a vault synced
-between a Mac and a Windows machine wants a different pair on each.
+`docs/SETUP.md` has the wider picture: what travels with the repo and what does
+not.
 
 ## Opening a video
 
