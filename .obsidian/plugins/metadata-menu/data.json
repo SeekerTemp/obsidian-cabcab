@@ -232,30 +232,23 @@
       "path": ""
     },
     {
-      "name": "trait",
       "type": "Select",
-      "id": "schema-sync-trait",
-      "path": "",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
           "0": "1",
-          "1": "100",
-          "2": "2",
-          "3": "3",
-          "4": "4",
-          "5": "5",
-          "6": "6",
-          "7": "7",
-          "8": "8",
-          "9": "99",
-          "10": "new",
-          "11": "new value",
-          "12": "Newer"
+          "1": "Newer"
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
-      }
+      },
+      "name": "trait",
+      "id": "schema-sync-trait",
+      "path": ""
     }
   ],
   "fileClassQueries": [],
