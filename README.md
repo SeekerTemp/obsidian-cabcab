@@ -352,24 +352,30 @@ Design notes for the current implementation are in [`.obsidian/plugins/schema-sy
 
 Three kinds of branch, and what each one carries:
 
-| Branch | Carries | `.obsidian/plugins/` | `data/` |
-| --- | --- | --- | --- |
-| `main` | Settings and every plugin | all | ignored |
-| `feature/<plugin>` | One plugin's development | that plugin and what it talks to | ignored |
-| `data/<project>` | One project's notes. Plugins come from `main` | all | tracked |
+| Branch | Carries | Everything else |
+| --- | --- | --- |
+| `main` | The whole vault — every plugin, snippet, theme and folder | — |
+| `feature/<plugin>` | `.githooks/`, `.obsidian/` minus snippets and themes, and only the plugins under development | ignored |
+| `data/<project>` | One project's notes, `data/` tracked. Plugins come from `main` | — |
 
-`feature/db-schema-sync` tracks `schema-sync`, `metadata-menu` and
-`dbml-visualizer` — the plugin being built and the two it integrates with.
-Everything else under `.obsidian/plugins/` is ignored there, so an unrelated
-plugin's settings churn never lands in a commit about the schema system.
+A feature branch carries the plugin and the machinery that runs it, and nothing
+else. `feature/db-schema-sync` tracks `schema-sync`, `metadata-menu` and
+`dbml-visualizer` — the plugin being built and the two it integrates with — plus
+`.githooks/`, the `.obsidian/*.json` settings, `.gitignore` and the documentation
+at the root. Ignored there: every other plugin, `.obsidian/snippets/`,
+`.obsidian/themes/`, and the vault's own `assets/`, `config/`, `doc/`, `Operon/`
+and `data/`.
+
+The point is that a commit about the schema system contains only the schema
+system. Personal appearance and vault content are not part of a plugin's history.
 
 **Integrate plugin work with `cherry-pick`, not `merge`.** A feature branch has
-those other plugins *untracked*, so merging one into `main` arrives as "every
-other plugin deleted" — the same asymmetry that makes a data branch cherry-pick
-its fixes onto `main`. [`.githooks/pre-push`](.githooks/pre-push) refuses a push
-to `main` that removes files under `.obsidian/plugins/`, which is the net for
-doing it by accident. Genuinely uninstalling a plugin is a push of its own,
-with `--no-verify`.
+all of that *untracked*, so merging one into `main` arrives as "every other
+plugin, every snippet, every theme and the vault's folders deleted" — the same
+asymmetry that makes a data branch cherry-pick its fixes onto `main`.
+[`.githooks/pre-push`](.githooks/pre-push) refuses a push to `main` that deletes
+anything under those paths, which is the net for doing it by accident. Genuinely
+removing one is a push of its own, with `--no-verify`.
 
 `.gitignore` is itself a tracked file, so each branch carries its own copy and git
 swaps the rules on checkout. `main` and `feature/*` ignore `/data/`; a

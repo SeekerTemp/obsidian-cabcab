@@ -22,3 +22,16 @@
 !/.obsidian/plugins/schema-sync/
 !/.obsidian/plugins/dbml-visualizer/
 !/.obsidian/plugins/metadata-menu/
+
+# A feature branch carries the plugin and what runs it, nothing else. Vault
+# content and personal appearance live on main and on data/<project> branches.
+#
+# Per-branch, like every rule above, with the same consequence: these paths are
+# untracked here, so merging this branch into main would arrive as deletions.
+# Cherry-pick, and let .githooks/pre-push catch the mistake.
+/assets/
+/config/
+/doc/
+/Operon/
+/.obsidian/snippets/
+/.obsidian/themes/

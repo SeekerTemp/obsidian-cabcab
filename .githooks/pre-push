@@ -42,22 +42,24 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 	fi
 
 	# The mirror of the rule above, in the other direction. A feature branch
-	# tracks only the plugins it develops against, so merging one into main would
-	# arrive as "every other plugin deleted". main is the only branch holding the
-	# full set, and nothing is allowed to thin it out by accident.
+	# tracks the plugin it develops and the machinery that runs it, and nothing
+	# else — so merging one into main would arrive as "every other plugin, every
+	# snippet, every theme and the vault's own folders deleted". main is the only
+	# branch holding the full set, and nothing thins it out by accident.
 	[ "$remote_ref" = "refs/heads/main" ] || continue
 	[ "$remote_sha" = "$ZERO" ] && continue
 
-	gone=$(git diff --name-only --diff-filter=D "$remote_sha" "$local_sha" -- .obsidian/plugins)
+	gone=$(git diff --name-only --diff-filter=D "$remote_sha" "$local_sha" -- \
+		.obsidian/plugins .obsidian/snippets .obsidian/themes assets config doc Operon)
 	if [ -n "$gone" ]; then
 		count=$(printf '%s\n' "$gone" | wc -l | tr -d ' ')
-		echo "pre-push: refusing to remove plugins from main." >&2
-		echo "  $count file(s) under .obsidian/plugins/ are deleted by this push:" >&2
+		echo "pre-push: refusing to strip main." >&2
+		echo "  $count tracked file(s) are deleted by this push:" >&2
 		printf '%s\n' "$gone" | head -5 | sed 's/^/    /' >&2
 		echo "" >&2
-		echo "  A feature branch tracks only the plugins it needs, so merging one" >&2
-		echo "  into main deletes the rest. Cherry-pick the plugin commits instead." >&2
-		echo "  Really uninstalling a plugin? Push that on its own with --no-verify." >&2
+		echo "  A feature branch does not track these, so merging one into main" >&2
+		echo "  deletes them. Cherry-pick the commits you want instead." >&2
+		echo "  Really removing them? Push that on its own with --no-verify." >&2
 		exit 1
 	fi
 done
