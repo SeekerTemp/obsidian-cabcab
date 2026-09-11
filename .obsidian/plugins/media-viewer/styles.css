@@ -1,0 +1,1065 @@
+/* Media Viewer — pane styling.
+   Sizes come from Obsidian's own variables wherever one exists, so the pane
+   follows the active theme instead of pinning its own palette. */
+
+/* The pane is the container every size question is asked against.
+   `inline-size` rather than `size`, because the pane's height comes from its
+   own content in some layouts and querying that would be circular.
+
+   A media query would be wrong here: it reads the window, and this pane can be
+   a narrow right sidebar in a maximised window or a wide split in a small one.
+   Those two want opposite layouts and the window cannot tell them apart. */
+.media-viewer {
+  container-type: inline-size;
+  container-name: media-viewer;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.media-viewer .mv-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
+}
+
+.media-viewer .mv-folder {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+  /* The folder name is the one thing that can be arbitrarily long, so it is
+     the one thing allowed to shrink. */
+  flex: 1 1 6em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-viewer .mv-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  flex: 0 0 auto;
+}
+
+.media-viewer .mv-filter {
+  font-size: var(--font-ui-smaller);
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+}
+
+.media-viewer .mv-toggle {
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  box-shadow: none;
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.media-viewer .mv-toggle:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.media-viewer .mv-toggle.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* The body stacks the viewer above the grid. MV-LAYOUT makes this reflow on
+   the pane's own width rather than the window's. */
+.media-viewer .mv-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.media-viewer .mv-viewer {
+  display: flex;
+  flex-direction: column;
+  /* Half the pane, but never so little that the image is a stripe. The grid
+     takes what is left. */
+  flex: 1 1 50%;
+  min-height: 160px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.media-viewer .mv-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--background-secondary);
+  /* The image is positioned by transform, so the stage must not scroll — the
+     pan is the scroll. */
+  touch-action: none;
+  cursor: default;
+}
+
+.media-viewer .mv-stage.is-panning {
+  cursor: grabbing;
+}
+
+.media-viewer .mv-image {
+  display: block;
+  max-width: none;
+  max-height: none;
+  /* Width and height are set in script from the natural size times the zoom,
+     so the browser scales once rather than fitting and then transforming. */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Fitted by the browser rather than by the zoom maths — see renderVideo. The
+   dark ground is the letterbox: a video that does not match the stage's aspect
+   should read as a video with bars, not as a stage that failed to fill. */
+.media-viewer .mv-video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  background-color: #000;
+  outline: none;
+}
+
+/* Edit mode.
+
+   The canvas is fitted by the browser, not by the zoom maths: it already holds
+   exactly the region being edited, so there is nothing outside it to pan to,
+   and the crop's own maths measures the laid-out width rather than tracking a
+   zoom factor of its own. That measurement is what keeps a crop drawn on a
+   downscaled proxy cutting full-resolution pixels. */
+.media-viewer .mv-edit-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  /* Chequerboard, so transparency in a PNG reads as transparency rather than
+     as the pane's own background. */
+  background-color: var(--background-primary);
+  background-image: linear-gradient(45deg, var(--background-modifier-border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--background-modifier-border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--background-modifier-border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--background-modifier-border) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Over the stage rather than in the bar: it is a readout of the thing being
+   looked at, and the bar is already the busiest row in the pane. */
+.media-viewer .mv-edit-status {
+  position: absolute;
+  left: var(--size-4-2);
+  bottom: var(--size-4-2);
+  padding: var(--size-2-1) var(--size-4-1);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary-alt);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+/* The frame is wrapped tightly around the canvas so that the overlay's
+   "inset: 0" and the picture are the same box. Sizing it any other way means
+   the selection has to know where the canvas ended up, which is arithmetic
+   that stays correct only until the pane is resized. */
+.media-viewer .mv-edit-frame {
+  position: relative;
+  display: flex;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.media-viewer .mv-crop-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Dimming outside the selection is drawn by the selection itself, through an
+   enormous shadow. A four-element mask would be four more things to keep in
+   sync with one rectangle. */
+.media-viewer .mv-crop-rect {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--interactive-accent);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+  cursor: move;
+}
+
+/* The thirds, which is what a crop is usually judged against. Drawn with a
+   gradient rather than four elements, and only while the pointer is down —
+   guides on a finished selection are clutter. */
+.media-viewer .mv-crop-overlay.is-dragging .mv-crop-rect::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+      to right,
+      transparent calc(33.333% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(33.333% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(33.333% + 0.5px),
+      transparent calc(33.333% + 0.5px),
+      transparent calc(66.667% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(66.667% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(66.667% + 0.5px),
+      transparent calc(66.667% + 0.5px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(33.333% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(33.333% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(33.333% + 0.5px),
+      transparent calc(33.333% + 0.5px),
+      transparent calc(66.667% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(66.667% - 0.5px),
+      rgba(255, 255, 255, 0.35) calc(66.667% + 0.5px),
+      transparent calc(66.667% + 0.5px)
+    );
+}
+
+/* Bigger than they look. The visible square is 10px, and the hit area is 18px
+   centred on the same point, because a handle you cannot reliably grab is the
+   complaint the old app's undraggable selection turned into. */
+.media-viewer .mv-crop-handle {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  background-clip: content-box;
+  padding: 4px;
+  background-color: var(--interactive-accent);
+  border-radius: 2px;
+}
+
+.media-viewer .mv-crop-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.media-viewer .mv-crop-n {
+  left: 50%;
+  top: 0;
+  cursor: ns-resize;
+}
+.media-viewer .mv-crop-ne {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.media-viewer .mv-crop-e {
+  left: 100%;
+  top: 50%;
+  cursor: ew-resize;
+}
+.media-viewer .mv-crop-se {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+.media-viewer .mv-crop-s {
+  left: 50%;
+  top: 100%;
+  cursor: ns-resize;
+}
+.media-viewer .mv-crop-sw {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.media-viewer .mv-crop-w {
+  left: 0;
+  top: 50%;
+  cursor: ew-resize;
+}
+
+/* Above the selection when there is room, inside it when there is not, so a
+   crop drawn against the top edge still shows its size. */
+.media-viewer .mv-crop-readout {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  padding: 1px 5px;
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary-alt);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Built with the pane and shown only in edit mode, the same way the transport
+   is — a bar created when a session opens would lose the chosen aspect ratio
+   on every file. */
+.media-viewer .mv-edit-bar {
+  display: none;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-2-2) var(--size-4-2);
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+  flex-wrap: wrap;
+}
+
+.media-viewer .mv-viewer.is-editing .mv-edit-bar {
+  display: flex;
+}
+
+.media-viewer .mv-edit-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0 var(--size-2-1);
+  background-color: var(--background-modifier-border);
+}
+
+.media-viewer .mv-aspect {
+  font-size: var(--font-ui-smaller);
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+}
+
+.media-viewer .mv-size-input {
+  width: 5.5em;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.media-viewer .mv-edit-times {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.media-viewer .mv-scale {
+  font-size: var(--font-ui-smaller);
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+}
+
+/* The one control in the bar that writes a file, so it is the one that does not
+   look like the rest of them. */
+.media-viewer .mv-viewer-button.mv-save {
+  margin-left: auto;
+  color: var(--text-accent);
+  font-weight: var(--font-medium);
+}
+
+.media-viewer .mv-viewer-button.mv-save:not(:disabled) {
+  background-color: var(--background-modifier-hover);
+}
+
+/* The lineage panel.
+
+   A third section of the body, beside the viewer and the grid, so the pane
+   reflows it the same way MV-LAYOUT reflows the other two. It is the part of
+   this plugin that is not a media browser, so it is open by default — nobody
+   would find it folded away. */
+.media-viewer .mv-lineage {
+  flex: 0 0 auto;
+  /* Without this a long path — one unbreakable token — sets the panel's
+     minimum width, and the viewer loses whatever the path is long. */
+  min-width: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 40%;
+  overflow: auto;
+}
+
+.media-viewer .mv-lineage.is-collapsed .mv-lineage-body {
+  display: none;
+}
+
+.media-viewer .mv-lineage-header {
+  display: flex;
+  align-items: center;
+  padding: var(--size-2-2) var(--size-4-2);
+  position: sticky;
+  top: 0;
+  background-color: var(--background-primary);
+  z-index: 1;
+}
+
+.media-viewer .mv-lineage-toggle {
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.media-viewer .mv-lineage-toggle::before {
+  content: "▾ ";
+}
+
+.media-viewer .mv-lineage.is-collapsed .mv-lineage-toggle::before {
+  content: "▸ ";
+}
+
+.media-viewer .mv-lineage-body {
+  padding: 0 var(--size-4-2) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+}
+
+.media-viewer .mv-lineage-empty,
+.media-viewer .mv-lineage-row.is-root {
+  color: var(--text-faint);
+  padding: var(--size-2-1) 0;
+}
+
+/* A break is the one thing in this panel that is not simply information: it
+   says something in the vault is wrong and nothing here is going to fix it
+   silently. */
+.media-viewer .mv-lineage-problem {
+  color: var(--text-error);
+  background-color: var(--background-modifier-error);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-2) var(--size-4-1);
+  margin-bottom: var(--size-4-1);
+}
+
+.media-viewer .mv-lineage-section {
+  margin-top: var(--size-4-1);
+}
+
+.media-viewer .mv-lineage-label {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--size-2-1);
+}
+
+.media-viewer .mv-lineage-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-1);
+}
+
+.media-viewer .mv-lineage-row {
+  min-width: 0;
+}
+
+/* File names here are long and have no spaces to break on. */
+.media-viewer .mv-lineage-link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  color: var(--text-accent);
+  cursor: pointer;
+  text-align: left;
+  font-size: inherit;
+}
+
+.media-viewer .mv-lineage-link:hover {
+  text-decoration: underline;
+}
+
+.media-viewer .mv-lineage-row.is-broken {
+  color: var(--text-error);
+}
+
+.media-viewer .mv-lineage-note {
+  color: var(--text-faint);
+}
+
+.media-viewer .mv-lineage-actions {
+  display: flex;
+  gap: var(--size-4-1);
+  flex-wrap: wrap;
+}
+
+.media-viewer .mv-lineage-action {
+  margin-top: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  cursor: pointer;
+}
+
+/* Three columns: what, what it is, and where it came from. The third is the
+   one the panel exists for — an inherited value nobody can trace back is a
+   value nobody can check. */
+.media-viewer .mv-lineage-field {
+  display: grid;
+  grid-template-columns: minmax(4em, 8em) minmax(0, 1fr) auto;
+  min-width: 0;
+  gap: var(--size-4-1);
+  padding: 1px 0;
+  align-items: baseline;
+}
+
+.media-viewer .mv-lineage-key {
+  color: var(--text-muted);
+}
+
+.media-viewer .mv-lineage-value.is-link {
+  color: var(--text-accent);
+  cursor: pointer;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.media-viewer .mv-lineage-value.is-link:hover {
+  text-decoration: underline;
+}
+
+.media-viewer .mv-lineage-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-viewer .mv-lineage-from {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.media-viewer .mv-lineage-field.is-inherited .mv-lineage-value {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.media-viewer .mv-lineage-field.is-inherited .mv-lineage-from {
+  color: var(--text-accent);
+}
+
+/* The break report. A list, not a fixer: every row here is something only a
+   person can decide about. */
+.mv-breaks .mv-breaks-intro {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.mv-breaks .mv-breaks-list {
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.mv-breaks .mv-breaks-row {
+  display: flex;
+  gap: var(--size-4-2);
+  align-items: baseline;
+  padding: var(--size-2-1) 0;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+}
+
+.mv-breaks .mv-breaks-link {
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  color: var(--text-accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.mv-breaks .mv-breaks-message {
+  color: var(--text-muted);
+}
+
+.media-viewer .mv-viewer-button.is-active {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
+.media-viewer .mv-stage-message {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+  padding: var(--size-4-4);
+}
+
+.media-viewer .mv-stage.is-broken .mv-stage-message {
+  color: var(--text-error);
+}
+
+/* The transport exists in the DOM whether or not a video is open — building it
+   once is what lets a drag survive — so it is the mode class that shows it. */
+.media-viewer .mv-video-bar {
+  display: none;
+}
+
+.media-viewer .mv-viewer.is-video .mv-video-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-2-2) var(--size-4-2);
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Zoom means nothing on a video, and a control that is present but inert is a
+   question the user has to answer for themselves. */
+.media-viewer .mv-viewer.is-video .mv-zoom,
+.media-viewer .mv-viewer.is-video .mv-zoom-control {
+  display: none;
+}
+
+/* Fixed width, so the label swapping between Play and Pause does not shuffle
+   everything to its right on every press. */
+.media-viewer .mv-video-bar .mv-play {
+  min-width: 4.5em;
+}
+
+.media-viewer .mv-scrub {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--size-4-4);
+  margin: 0;
+  accent-color: var(--interactive-accent);
+  cursor: pointer;
+}
+
+.media-viewer .mv-scrub:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.media-viewer .mv-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  /* Tabular figures and a fixed width: a readout that changes width as the
+     digits change drags the scrub bar with it, four times a second. */
+  font-variant-numeric: tabular-nums;
+  min-width: 8.5em;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Sized like the filter dropdown in the header, because they are the same kind
+   of control and a transport that invented its own would read as a third
+   party's widget sitting in the pane. */
+.media-viewer .mv-speed {
+  font-size: var(--font-ui-smaller);
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+  flex: 0 0 auto;
+}
+
+.media-viewer .mv-speed:disabled {
+  opacity: 0.4;
+}
+
+.media-viewer .mv-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-2-2) var(--size-4-2);
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.media-viewer .mv-viewer-button {
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+  box-shadow: none;
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.media-viewer .mv-viewer-button:hover:not(:disabled) {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.media-viewer .mv-viewer-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.media-viewer .mv-zoom {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  /* Fixed, so the buttons beside it do not shuffle as the number changes. */
+  min-width: 3.5em;
+  text-align: center;
+}
+
+.media-viewer .mv-viewer-name {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-viewer .mv-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  /* auto-fill, not auto-fit: an empty last row collapsing to zero would make
+     the final tiles stretch across the pane, which reads as a rendering fault
+     rather than as a layout. */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--size-4-2);
+  align-content: start;
+  padding: var(--size-4-2);
+}
+
+.media-viewer .mv-grid.is-hidden {
+  display: none;
+}
+
+.media-viewer .mv-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-1);
+  cursor: pointer;
+  min-width: 0;
+  border: 1px solid transparent;
+}
+
+.media-viewer .mv-tile:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.media-viewer .mv-tile.is-selected {
+  background-color: var(--background-modifier-active-hover, var(--background-modifier-hover));
+  border-color: var(--interactive-accent);
+}
+
+/* A fixed square, so tiles do not reflow as thumbnails arrive one by one —
+   a grid that jumps under the cursor while it loads is worse than a slow one. */
+.media-viewer .mv-tile-frame {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+}
+
+.media-viewer .mv-thumb {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* The placeholder is what an unloaded tile, a video awaiting MV-VTHUMB, and a
+   file that failed to decode all look like — distinguished by the badge. */
+.media-viewer .mv-tile-frame.is-placeholder::after {
+  content: "";
+  width: 32%;
+  height: 32%;
+  border-radius: var(--radius-s);
+  background-color: var(--background-modifier-border);
+}
+
+/* A frame is being decoded for this tile. Distinct from a plain placeholder,
+   which means there is nothing more coming — a folder of videos otherwise
+   looks broken for as long as the queue takes to reach the end of it. */
+.media-viewer .mv-tile-frame.is-pending::after {
+  animation: mv-pending 1.4s ease-in-out infinite;
+}
+
+@keyframes mv-pending {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.75; }
+}
+
+/* Motion is decoration here, and the whole of it can go. */
+@media (prefers-reduced-motion: reduce) {
+  .media-viewer .mv-tile-frame.is-pending::after {
+    animation: none;
+  }
+}
+
+.media-viewer .mv-tile-frame[data-kind="video"]::before {
+  content: "video";
+  position: absolute;
+  bottom: var(--size-2-1);
+  right: var(--size-2-1);
+  font-size: var(--font-ui-smaller);
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--radius-s);
+  background-color: var(--background-modifier-cover, rgba(0, 0, 0, 0.55));
+  color: var(--text-on-accent);
+}
+
+.media-viewer .mv-tile.is-broken .mv-tile-frame::after {
+  content: "!";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  padding: 0 var(--size-2-2);
+  font-weight: var(--font-bold);
+  background-color: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.media-viewer .mv-tile-name {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-viewer .mv-tile.is-selected .mv-tile-name {
+  color: var(--text-normal);
+}
+
+.media-viewer .mv-empty {
+  display: none;
+}
+
+.media-viewer .mv-empty.is-shown {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+  padding: var(--size-4-4);
+}
+
+/* ------------------------------------------------------------------------ *
+ * Reflow, on the pane's own width.
+ *
+ * Three sizes, and the breakpoints are where the layout actually breaks rather
+ * than at round numbers:
+ *
+ *   below 260px  the header cannot hold its controls on one line
+ *   260 - 559px  stacked: viewer above grid, which is the sidebar case
+ *   560px and up side by side, because at that width a stacked viewer is a
+ *                letterbox and the grid below it is two rows tall
+ *
+ * Everything here is a container query, so a docked sidebar and a wide split
+ * lay out differently in the same window — which is the whole point, and what
+ * a media query could not do.
+ * ------------------------------------------------------------------------ */
+
+/* Narrow: a right sidebar at its default width. The controls wrap under the
+   folder name rather than squeezing it to nothing. */
+@container media-viewer (max-width: 259px) {
+  .media-viewer .mv-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--size-2-2);
+  }
+
+  .media-viewer .mv-controls {
+    justify-content: space-between;
+  }
+
+  /* Tiles get smaller before the grid drops to one column: two small
+     thumbnails say more about a folder than one large one. */
+  .media-viewer .mv-grid {
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: var(--size-4-1);
+    padding: var(--size-4-1);
+  }
+
+  /* The file name in the viewer bar is the first thing to go: the same name is
+     already under the selected tile. */
+  .media-viewer .mv-viewer-name {
+    display: none;
+  }
+
+  /* At this width the transport keeps what has no keyboard equivalent within
+     reach of the mouse — play and the scrub bar. Frame stepping stays on the
+     comma and full stop keys. */
+  .media-viewer .mv-video-bar .mv-step {
+    display: none;
+  }
+
+  .media-viewer .mv-time {
+    min-width: 0;
+  }
+
+  /* The readout is what a narrow transport is for; at this width the speed
+     control gives up its own label padding rather than disappearing, since
+     shift-comma and shift-full-stop are a worse thing to be left with than a
+     small dropdown. */
+  .media-viewer .mv-speed {
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+/* Wide: side by side. The viewer takes the larger share because it is the
+   thing being looked at; the grid is how you get to it. */
+@container media-viewer (min-width: 560px) {
+  .media-viewer .mv-body {
+    flex-direction: row;
+  }
+
+  .media-viewer .mv-viewer {
+    flex: 1 1 62%;
+    min-width: 0;
+    border-bottom: none;
+    border-right: 1px solid var(--background-modifier-border);
+  }
+
+  .media-viewer .mv-grid,
+  .media-viewer .mv-empty.is-shown {
+    flex: 1 1 38%;
+    min-width: 0;
+  }
+
+  /* Its own column, at a width it does not get to choose. Sized from its
+     content, one long path would take the pane over — which is exactly what
+     it did. */
+  .media-viewer .mv-lineage {
+    flex: 0 0 clamp(220px, 24%, 340px);
+    max-height: none;
+    border-top: none;
+    border-left: 1px solid var(--background-modifier-border);
+  }
+}
+
+/* Very wide — a media pane taking most of a large window. The grid stops
+   growing with the pane, because a thumbnail column half the screen across is
+   not a better index than a narrow one; the extra width goes to the image. */
+@container media-viewer (min-width: 1100px) {
+  .media-viewer .mv-viewer {
+    flex: 1 1 auto;
+  }
+
+  .media-viewer .mv-grid,
+  .media-viewer .mv-empty.is-shown {
+    flex: 0 0 360px;
+  }
+}
+
+/* Container queries are widely supported, but a theme or an old Obsidian build
+   could still leave the pane with no container to query. Without a fallback the
+   pane would simply stay stacked, which is the safe half of the choice — this
+   makes that explicit rather than accidental. */
+@supports not (container-type: inline-size) {
+  .media-viewer .mv-body {
+    flex-direction: column;
+  }
+}
+
+/* Labelling — MV-LABEL.
+   Three boxes in the lineage panel, laid out as name-then-field so a narrow
+   pane can stack them without the labels becoming a second column of noise. */
+.media-viewer .mv-label-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-2-2);
+}
+
+.media-viewer .mv-label-name {
+  flex: 0 0 5.5em;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.media-viewer .mv-label-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-4-1);
+}
+
+/* An inherited value shows here as placeholder text. It must read as a hint
+   rather than as content, or someone will think the field is already set. */
+.media-viewer .mv-label-input::placeholder {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+@container media-viewer (max-width: 259px) {
+  .media-viewer .mv-label-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--size-2-1);
+  }
+
+  .media-viewer .mv-label-name {
+    flex: 0 0 auto;
+  }
+}
+
+/* The board picker — MV-BOARD. A question asked rarely, because the answer is
+   remembered, so it gets a plain list rather than a search field. */
+.mv-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  margin-bottom: var(--size-4-2);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.mv-board-option {
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The board last added to, marked so the common answer is the obvious one. */
+.mv-board-option.is-suggested {
+  font-weight: var(--font-semibold);
+  border-color: var(--interactive-accent);
+}
+
+.mv-board-new {
+  display: flex;
+  gap: var(--size-4-1);
+  align-items: center;
+}
+
+.mv-board-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Sharp or smooth above 100%. Active reads as "on" the way the filter toggles
+   in the header do, because it is the same kind of switch. */
+.media-viewer .mv-sharp-toggle.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}

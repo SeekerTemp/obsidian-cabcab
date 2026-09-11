@@ -1,0 +1,19 @@
+{
+  "requireEditUnlock": false,
+  "confirmDestructiveActions": true,
+  "promptForUndeclaredProperties": true,
+  "ignoredProperties": {
+    "LifeForm": [
+      "Cultures.config",
+      "schema-mappings"
+    ]
+  },
+  "configFolder": "assets/config",
+  "configBasePath": "assets/config/config.base",
+  "categoryLinkPrefix": "",
+  "metadataMenuAutoBound": {
+    "LifeForm.trait": true
+  },
+  "metadataMenuMappingEnabled": false,
+  "metadataMenuMappingPrompted": true
+}

@@ -1,4 +1,154 @@
-const { Plugin, ItemView, Modal, Notice, TFile, SuggestModal, normalizePath } = require("obsidian");
+const { Plugin, ItemView, Modal, Notice, TFile, SuggestModal, MarkdownView, PluginSettingTab, Setting, normalizePath } = require("obsidian");
+
+// Deliberately permissive defaults. This is a note editor, not a DBMS: edits
+// apply as you make them, and the cost is that a malformed edit lands rather
+// than being caught at a gate.
+const DEFAULT_SETTINGS = {
+  requireEditUnlock: false,
+  confirmDestructiveActions: true,
+  promptForUndeclaredProperties: true,
+  // schemaName -> [property names answered "leave it alone"]. Persisted, because
+  // a session-only memory would re-ask about every scratch property on restart.
+  ignoredProperties: {},
+  // Asset Renamer, merged in from the sibling plugin. Its keys are namespaced by
+  // meaning rather than prefix; none of them collide with the above.
+  configFolder: "assets/config",
+  configBasePath: "assets/config/config.base",
+  categoryLinkPrefix: "",
+  // "<Schema>.<field>" -> true once its value list has been offered to Metadata
+  // Menu. Auto-binding happens once; without this, a preset deleted on purpose
+  // would come back on the next sync.
+  metadataMenuAutoBound: {},
+};
+
+// Metadata Menu's own field types, from its src/fields/Fields.ts, in its order.
+// Listed here rather than read off the plugin so the dropdown still renders when
+// Metadata Menu is not installed to be asked.
+const METADATA_MENU_TYPES = [
+  "Input", "Number", "Select", "Cycle", "Boolean", "Date", "DateTime", "Time",
+  "Multi", "File", "MultiFile", "Media", "MultiMedia", "Canvas", "CanvasGroup",
+  "CanvasGroupLink", "Formula", "Lookup", "JSON", "YAML", "Object", "ObjectList",
+];
+// The three Metadata Menu backs with a ValuesList. Only these can be filled from
+// a field's value list; the rest carry options it configures itself.
+const METADATA_MENU_LIST_TYPES = new Set(["Select", "Multi", "Cycle"]);
+
+// A Metadata Menu ValuesList: keys are the option's position as a string, values
+// are the options themselves.
+//
+// Each option is a [[link]] to the value, so choosing one writes a link into the
+// record and the graph draws the edge — a value list's rows are notes, or become
+// notes the moment ⤓ implements them. parseConfigValues strips the brackets on
+// the way in and syncConfigLists strips them again when it collects values back
+// off records, so the list itself stays plain either way and the round trip does
+// not drift.
+function valuesListOptions(values) {
+  const valuesList = {};
+  (values || []).forEach((value, index) => { valuesList[String(index)] = plainValue(value); });
+  return { sourceType: "ValuesList", valuesList, valuesListNotePath: "", valuesFromDVQuery: "" };
+}
+
+// The two halves of how a value list value travels.
+//
+// It is *shown* plain, because a menu listing "[[1]]" six times is a menu of
+// brackets. It is *stored* as a link, so the record points at the note that value
+// is — or becomes, the moment ⤓ implements the list. Nothing in Metadata Menu
+// bridges those, so sync casts the value on the way into a record instead.
+// A value list value is a string or a number, and nothing else. YAML reads a
+// bare 6 as a number, so a list of 1..6 arrives here typed — which is exactly the
+// case a string-only guard silently dropped, on both the way in and the way out.
+// A boolean or an object is not a value to name a thing after.
+function isScalarValue(value) {
+  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
+}
+
+// Strip every [[ ]] layer, whatever it contains. A regex that required the
+// wrapper's contents to hold no "]" was the whole disaster: a value like
+// "[Arcade room](https://...)" never looked wrapped, so every sync wrapped it
+// again and the table filled with [[[[[[...]]]]]]. Unwinding has to be
+// structural, and it repairs a value already buried.
+function stripLinkWrappers(value) {
+  let text = String(value ?? "").trim();
+  while (text.length > 4 && text.startsWith("[[") && text.endsWith("]]")) {
+    text = text.slice(2, -2).trim();
+  }
+  return text;
+}
+
+// A wikilink target cannot hold brackets or a pipe. Wrapping something that does
+// never made a link — it made the mess above — so such a value stays plain.
+function isLinkableValue(value) {
+  const text = stripLinkWrappers(value);
+  return Boolean(text) && !/[[\]|]/.test(text);
+}
+
+function plainValue(value) {
+  if (!isScalarValue(value)) return "";
+  const raw = String(value).trim();
+  const text = stripLinkWrappers(raw);
+  // Never wrapped: taken exactly as written, so a value that happens to contain
+  // "#" keeps it.
+  if (text === raw) return raw;
+  if (/[[\]]/.test(text)) return text;
+  const alias = text.indexOf("|");
+  if (alias !== -1) return text.slice(alias + 1).trim() || text;
+  return text.split("#")[0].trim() || text;
+}
+
+function linkedValue(value) {
+  const text = plainValue(value);
+  if (!text) return "";
+  return isLinkableValue(text) ? `[[${text}]]` : text;
+}
+
+// The linked form of a stored value, or undefined when it already says that, so
+// a caller can leave the note alone. Arrays are cast element by element; an empty
+// value stays empty, because "" is how an unfilled column is written and
+// "[[]]" is not a link.
+function castToLinks(stored) {
+  if (Array.isArray(stored)) {
+    const cast = stored.map((entry) => (isScalarValue(entry) ? linkedValue(entry) : entry));
+    return cast.some((entry, index) => entry !== stored[index]) ? cast : undefined;
+  }
+  if (!isScalarValue(stored)) return undefined;
+  const cast = linkedValue(stored);
+  return cast === stored ? undefined : cast;
+}
+
+// Metadata Menu computes these in getDefaultOptions(), which its bundle keeps to
+// itself, so the ones this control can write faithfully are copied here. A type
+// absent from the table gets empty options and has to be finished in Metadata
+// Menu — guessing at a shape this plugin cannot see is how a field ends up
+// half-configured and silently broken.
+const METADATA_MENU_DATE_OPTIONS = { dateShiftInterval: "1 day", dateFormat: "YYYY-MM-DD", defaultInsertAsLink: false, linkPath: "" };
+const METADATA_MENU_DEFAULT_OPTIONS = {
+  Input: {},
+  Number: {},
+  Boolean: {},
+  File: {},
+  MultiFile: {},
+  Formula: {},
+  Date: METADATA_MENU_DATE_OPTIONS,
+  DateTime: { ...METADATA_MENU_DATE_OPTIONS, dateFormat: "YYYY-MM-DD HH:mm" },
+  Time: { ...METADATA_MENU_DATE_OPTIONS, dateFormat: "HH:mm", dateShiftInterval: "1 hour" },
+};
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "svg"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "mkv", "m4v", "ogv", "avi", "3gp"]);
+const MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+const CONFIG_SOURCE_ORDER = ["categories", "eras", "weathers", "roles", "asset_types", "outfit_types", "entities"];
+const EXCLUDED_CONFIG_FILES = new Set(["sources.md", "list.md", "schema-mappings.md"]);
+// Legacy source names that were mapped to a differently-spelled property. A
+// schema-derived source needs no map: its property is the field name itself.
+const LEGACY_SOURCE_PROPERTIES = {
+  categories: "Category",
+  eras: "Era",
+  weathers: "Weather",
+  roles: "Role",
+  entities: "Entity",
+  asset_types: "Asset_type",
+  outfit_types: "Outfit_type",
+};
 
 const SCHEMA_FOLDER = "data/schema";
 const LEGACY_SCHEMA_FOLDER = "schemas";
@@ -16,20 +166,681 @@ const SCHEMA_MAPPING_FILE = "data/config/schema-mappings.md";
 const LEGACY_MAPPING_FILE = "config/schema-mappings.md";
 const SAMPLE_DATABASE = "AssetDatabase";
 const VIEW_TYPE_SCHEMA_SYNC = "schema-sync-dashboard";
+const IDENTITY_FIELDS = new Set(["id", "name"]);
+// `attachment` is a string carrying a [[wikilink]] to a media file. Asset
+// Renamer builds its property dropdown from a note's frontmatter keys, so an
+// attachment field becomes editable there as soon as the key exists.
+const FIELD_TYPES = ["string", "number", "boolean", "array", "object", "attachment"];
+// Keys that appear in a frontmatter cache but are not the note's own properties:
+// `implements` is ours, and `position` is injected by Obsidian's metadata cache.
+// Neither is ever something to offer to add to a schema.
+const RESERVED_PROPERTIES = new Set(["implements", "position"]);
+// Unbound fields are documentation only: shown in the definition editor and the
+// schema note, but never pushed into records, config lists, base views or DBML.
+const isBound = (definition) => definition.bind !== false;
+const storageType = (type) => (type === "attachment" ? "string" : type);
+
+/* ------------------------------------------------------------------------ *
+ * Pure generators. No Obsidian API, no I/O, no `this`.
+ * Everything between this banner and the next one is unit-testable under
+ * plain node, which is the only way the output formats can be verified
+ * without launching Obsidian.
+ * ------------------------------------------------------------------------ */
+
+function emptyValue(type) {
+  if (type === "number") return 0;
+  if (type === "boolean") return false;
+  if (type === "array") return [];
+  if (type === "object") return {};
+  return "";
+}
+
+function inferFieldType(value) {
+  if (Array.isArray(value)) return "array";
+  if (value === null || value === undefined) return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "object") return "object";
+  return "string";
+}
+
+function reorderFields(fields, fromName, toName) {
+  const names = Object.keys(fields);
+  const from = names.indexOf(fromName);
+  const to = names.indexOf(toName);
+  if (from < 0 || to < 0 || from === to) return { ...fields };
+  names.splice(to, 0, ...names.splice(from, 1));
+  return Object.fromEntries(names.map((name) => [name, fields[name]]));
+}
+
+function setFieldBind(fields, name, bind) {
+  if (!fields[name]) return { ...fields };
+  return Object.fromEntries(Object.entries(fields).map(([key, definition]) => [key, key === name ? { ...definition, bind } : definition]));
+}
+
+// Renames a key while holding its position, so reordering and renaming stay
+// independent operations.
+function renameField(fields, oldName, newName) {
+  return Object.fromEntries(Object.entries(fields).map(([name, definition]) => [name === oldName ? newName : name, definition]));
+}
+
+function isEmptyValue(value) {
+  if (typeof value === "string") return value.trim() === "";
+  if (Array.isArray(value)) return value.length === 0;
+  if (value && typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+function yamlValue(value) {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (value === undefined) return "null";
+  return JSON.stringify(value);
+}
+
+function frontmatterText(values) {
+  return Object.entries(values).map(([name, value]) => `${name}: ${yamlValue(value)}`).join("\n");
+}
+
+function recordValuesFor(schemaName, fields) {
+  const values = { implements: schemaName };
+  for (const [name, definition] of Object.entries(fields)) {
+    if (!isBound(definition)) continue;
+    values[name] = definition.hasDefault ? definition.defaultValue : emptyValue(definition.type);
+  }
+  return values;
+}
+
+// A config row is a value someone already decided is real, so it can stand up as
+// a record. The field it came from takes the value, and so does the schema's
+// identity field — the record is named after it, so `id` saying anything else
+// would be a second name for the same thing.
+function recordFromConfigValue(schemaName, fields, fieldName, value) {
+  const values = recordValuesFor(schemaName, fields);
+  values[fieldName] = value;
+  for (const [name, definition] of Object.entries(fields)) {
+    if (isBound(definition) && IDENTITY_FIELDS.has(name.toLowerCase())) values[name] = value;
+  }
+  return values;
+}
+
+// A value carries [[brackets]] in the config table and has to survive being a
+// file name. Anything that would not is refused rather than mangled.
+function recordFileNameFor(value) {
+  const name = String(value ?? "").trim().replace(/^\[\[|\]\]$/g, "").trim();
+  return name && !ILLEGAL_FIELD_NAME.test(name) ? `${name}.md` : null;
+}
+
+function renderRecordFrontmatter(schemaName, fields) {
+  return frontmatterText(recordValuesFor(schemaName, fields));
+}
+
+// Obsidian Bases YAML. Shape mirrors the vault's own working config/config.base:
+// filters nested inside the view, plain-scalar expressions, trailing `sort: []`.
+// A foreign key's target already holds the attributes a row wants to be labelled
+// or filtered by, so the view reads them across the link rather than copying them
+// into the record. Nothing here touches `fields:` — that is what "not binding to
+// the source schema" means. Only one hop: the target's own relations are left
+// alone, or a cycle would generate forever.
+function foreignFormulas(fields, schemas) {
+  const formulas = [];
+  for (const [name, definition] of Object.entries(fields)) {
+    if (!isBound(definition) || !definition.relation?.target) continue;
+    const targetFields = schemas?.get?.(definition.relation.target);
+    if (!targetFields) continue;
+    for (const [targetName, targetDefinition] of Object.entries(targetFields)) {
+      if (!isBound(targetDefinition) || targetDefinition.relation?.target) continue;
+      // asFile() is the only way across a link: Bases resolves a Link to a File
+      // and reads properties from there.
+      formulas.push(`  ${name}_${targetName}: ${name}.asFile().${targetName}`);
+    }
+  }
+  return formulas;
+}
+
+function renderBaseYaml(schemaName, fields, recordFolder, schemas) {
+  const bound = Object.entries(fields).filter(([, d]) => isBound(d));
+  // An attachment holds a [[link]] to a media file. Shown raw the column is a
+  // path; shown through image() it is the picture, which is the point of having
+  // the column at all — so the formula replaces the plain column rather than
+  // sitting beside it.
+  const attachments = bound.filter(([, d]) => d.type === "attachment").map(([name]) => name);
+  const foreign = foreignFormulas(fields, schemas);
+  // image() takes the link itself and resolves it — there is no `.path` on a
+  // link, which is what made every image column come up empty.
+  const formulas = [...attachments.map((name) => `  ${name}Image: image(${name})`), ...foreign];
+  const columns = [
+    "file.name",
+    ...bound.map(([name]) => attachments.includes(name) ? `formula.${name}Image` : name),
+    ...foreign.map((line) => `formula.${line.trim().split(":")[0]}`),
+  ];
+  return [
+    "# Created by Schema Sync. Yours to edit — only the attachment image formulas are kept in sync.",
+    ...(formulas.length ? ["formulas:", ...formulas] : []),
+    "views:",
+    "  - type: table",
+    `    name: ${schemaName}`,
+    "    filters:",
+    "      and:",
+    `        - file.inFolder("${recordFolder}")`,
+    "    order:",
+    ...columns.map((column) => `      - ${column}`),
+    "    sort: []",
+    "",
+  ].join("\n");
+}
+
+// A `.base` is written once and then belongs to the user. Bases reads a record's
+// properties itself, so a field added to the schema shows up without help, and a
+// view someone reordered, filtered or renamed is work that regenerating would
+// throw away every sync.
+//
+// One thing still needs sync: `image(cover)` is what turns an attachment path
+// into a picture, and only the schema knows which fields are attachments. So the
+// merge owns exactly the `<field>Image` formulas and nothing else — other
+// formulas, the views, the filters and the sort are left byte-for-byte alone.
+//
+// Returns null when the file already says what it should, so an untouched view
+// is never rewritten.
+function managedImageFormulas(fields) {
+  const managed = new Map();
+  for (const [name, definition] of Object.entries(fields)) {
+    managed.set(`${name}Image`, isBound(definition) && definition.type === "attachment" ? `image(${name})` : null);
+  }
+  return managed;
+}
+
+function mergeBaseYaml(existingRaw, fields) {
+  const source = String(existingRaw ?? "");
+  const crlf = source.includes("\r\n");
+  const raw = source.split(/\r?\n/);
+  const managed = managedImageFormulas(fields);
+
+  const start = raw.findIndex((line) => /^formulas:\s*$/.test(line));
+  let end = start === -1 ? -1 : start + 1;
+  while (end !== -1 && end < raw.length && raw[end].trim() !== "" && /^\s/.test(raw[end])) end += 1;
+  const block = start === -1 ? [] : raw.slice(start + 1, end);
+
+  const nameOf = (line) => (line.match(/^\s+([^:\s]+)\s*:/) || [])[1];
+  const kept = [];
+  const seen = new Set();
+  const added = [];
+  const dropped = [];
+  let changed = false;
+  for (const line of block) {
+    const name = nameOf(line);
+    if (!name || !managed.has(name)) {
+      kept.push(line);
+      continue;
+    }
+    const wanted = managed.get(name);
+    if (wanted === null) {
+      dropped.push(name);
+      changed = true;
+      continue;
+    }
+    seen.add(name);
+    const expected = `  ${name}: ${wanted}`;
+    if (line === expected) kept.push(line);
+    else {
+      kept.push(expected);
+      changed = true;
+    }
+  }
+  for (const [name, wanted] of managed) {
+    if (wanted === null || seen.has(name)) continue;
+    kept.push(`  ${name}: ${wanted}`);
+    added.push(name);
+    changed = true;
+  }
+  if (!changed) return null;
+
+  let out;
+  if (start === -1) {
+    const viewsAt = raw.findIndex((line) => /^views:\s*$/.test(line));
+    const at = viewsAt === -1 ? raw.length : viewsAt;
+    out = [...raw.slice(0, at), "formulas:", ...kept, ...raw.slice(at)];
+  } else if (kept.length === 0) {
+    out = [...raw.slice(0, start), ...raw.slice(end)];
+  } else {
+    out = [...raw.slice(0, start + 1), ...kept, ...raw.slice(end)];
+  }
+
+  // A formula nothing displays is invisible, so a newly created one earns a
+  // column. Only on creation: a column removed by hand afterwards stays removed.
+  for (const name of added) {
+    const column = `formula.${name}`;
+    if (out.some((line) => line.trim() === `- ${column}`)) continue;
+    const orderAt = out.findIndex((line) => /^\s+order:\s*$/.test(line));
+    if (orderAt === -1) continue;
+    let insertAt = orderAt + 1;
+    while (insertAt < out.length && /^\s+-\s/.test(out[insertAt])) insertAt += 1;
+    const indent = (out[insertAt - 1] || "      - ").match(/^\s*/)[0];
+    out.splice(insertAt, 0, `${indent}- ${column}`);
+  }
+  // A dropped formula leaves a column pointing at nothing, which Bases reports
+  // as an error, so its column goes with it.
+  if (dropped.length) {
+    const stale = new Set(dropped.map((name) => `- formula.${name}`));
+    out = out.filter((line) => !stale.has(line.trim()));
+  }
+  return out.join(crlf ? "\r\n" : "\n");
+}
+
+// Everything below this line in a generated file belongs to the user and is
+// carried across verbatim. Generated files are rebuilt wholesale, so without a
+// protected region anything written into one is destroyed on the next sync.
+const NOTES_MARKER = "<!-- schema-sync:notes -->";
+
+function extractUserNotes(raw) {
+  const index = String(raw || "").indexOf(NOTES_MARKER);
+  // Fully trimmed, not just one leading newline: withUserNotes re-adds fixed
+  // spacing, so anything left here accumulates a blank line on every sync.
+  return index < 0 ? "" : String(raw).slice(index + NOTES_MARKER.length).trim();
+}
+
+function withUserNotes(body, raw) {
+  return [
+    body,
+    NOTES_MARKER,
+    "",
+    extractUserNotes(raw) || "_Anything you write below this marker is preserved across syncs._",
+    "",
+  ].join("\n");
+}
+
+// Reads back a value-list table as value -> notes cell, dropping the header and
+// separator rows, so regeneration can union rather than replace.
+function parseConfigRows(raw) {
+  const rows = [];
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) continue;
+    const cells = trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
+    rows.push(cells);
+  }
+  if (rows.length >= 2 && /^:?-{2,}:?$/.test(rows[1][0] || "")) rows.splice(0, 2);
+  const parsed = new Map();
+  for (const [first, ...rest] of rows) {
+    // plainValue, not a regex that gives up on a "]": a cell holding a markdown
+    // link was read back wrapper and all, then written out wrapped again.
+    const value = plainValue(first || "");
+    if (value) parsed.set(value, rest.join(" | ").trim());
+  }
+  return parsed;
+}
+
+function parseConfigValues(raw) {
+  return [...parseConfigRows(raw).keys()];
+}
+
+function renderConfigNote(attributeName, sources, values, existingRaw) {
+  const existing = parseConfigRows(existingRaw);
+  const merged = [...new Set([...existing.keys(), ...(values || []).map((value) => String(value))]
+    .map((value) => value.trim())
+    .filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const body = [
+    "---",
+    `configFor: [${(sources || []).join(", ")}]`,
+    "---",
+    "",
+    `# ${attributeName}`,
+    "",
+    `Unique \`${attributeName}\` values available for selection. Generated by Schema Sync; rows and notes added by hand are preserved across syncs.`,
+    "",
+    `| ${attributeName} | Notes |`,
+    "| --- | --- |",
+    // The Notes cell is carried over. Rebuilding it empty each sync is what
+    // destroyed anything written into this column.
+    // A value that cannot be a wikilink target is written plain. Wrapping it
+    // produced a broken link and, worse, a cell this file could not read back.
+    ...merged.map((value) => `| ${isLinkableValue(value) ? `[[${value}]]` : value} | ${existing.get(value) || ""} |`),
+    "",
+  ].join("\n");
+  return withUserNotes(body, existingRaw);
+}
+
+function coerceDefault(raw, type) {
+  if (type === "number") return Number(raw);
+  if (type === "boolean") return raw === "true";
+  if (type === "array" || type === "object") {
+    try { return JSON.parse(raw); } catch { return raw; }
+  }
+  return raw;
+}
+
+// The Field Reference table is an input as well as generated output: rows typed
+// there by hand are adopted into `fields:` on the next sync. Editing the table
+// is the obvious way to add a field when working in the note directly.
+function parseFieldReferenceRows(raw) {
+  const section = String(raw || "").match(/##\s+Field Reference\s*\r?\n([\s\S]*)$/i);
+  if (!section) return [];
+  const rows = [];
+  for (const line of section[1].split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) continue;
+    // Escaped alias pipes stay inside their cell. A row written before that fix,
+    // or repaired by hand, still arrives split across two cells — rejoin it so
+    // the columns line up instead of shifting right.
+    const cells = trimmed.slice(1, -1).split(CELL_SPLIT).map((cell) => cell.trim());
+    if (cells[0].startsWith("[[") && !cells[0].endsWith("]]") && cells.length > 1) {
+      cells.splice(0, 2, `${cells[0]}|${cells[1]}`);
+    }
+    const [rawName, type, defaultCell, required, bound, relation] = cells;
+    const name = normalizeFieldName(rawName);
+    if (!name || /^:?-{2,}:?$/.test(name) || name.toLowerCase() === "field") continue;
+    const definition = {
+      // Every blank cell resolves to the quiet option: string, no default,
+      // not required, not bound, no relation.
+      type: FIELD_TYPES.includes(type) ? type : "string",
+      required: /^(yes|true)$/i.test(required || ""),
+      hasDefault: false,
+      defaultValue: undefined,
+      // Binding is opt-in: a row typed by hand stays UNBOUND until asked for.
+      bind: /^(yes|true)$/i.test(bound || ""),
+    };
+    if (relation && relation !== "-") definition.relation = { target: relation };
+    if (defaultCell && defaultCell !== "-") {
+      definition.hasDefault = true;
+      try { definition.defaultValue = JSON.parse(defaultCell); }
+      catch { definition.defaultValue = coerceDefault(defaultCell, definition.type); }
+    }
+    // The generator always writes yes or no here. A blank cell therefore means
+    // a human typed this row, which is what separates a new field from a stale
+    // row left behind by one deleted from `fields:`.
+    rows.push({ name, definition, handAdded: !/^(yes|no|true|false)$/i.test(bound || "") });
+  }
+  return rows;
+}
+
+function parseFieldReference(raw) {
+  return Object.fromEntries(parseFieldReferenceRows(raw).map(({ name, definition }) => [name, definition]));
+}
+
+// Only hand-typed rows are adopted. Without this, deleting a field from `fields:`
+// achieves nothing: its still-generated row in the table is read straight back
+// in, and the two copies resurrect each other forever.
+function handAddedFields(raw) {
+  return Object.fromEntries(parseFieldReferenceRows(raw).filter((row) => row.handAdded).map(({ name, definition }) => [name, definition]));
+}
+
+// One value list per schema plus field, namespaced by schema so two schemas may
+// both declare `trait` without sharing a note. The folder carries the convention
+// that `.config.md` used to; the file is named for the field so a link to it
+// reads as the field name. Shared by the generator and the dashboard's
+// open-config button so the two cannot drift apart.
+function configPathFor(schemaName, fieldName, definition) {
+  if (!definition || definition.type !== "string" || definition.relation?.target || !isBound(definition)) return null;
+  // Identity fields get a list like any other. A primary key's list is the set
+  // of instances that exist — it is what a foreign key points at, and what the
+  // ⤓ button turns into records with id = the row's name.
+  return `${CONFIG_FOLDER}/${schemaName}/${fieldName}.md`;
+}
+
+// A template is deliberately blank, so validating it would report every required
+// field as missing on every pass. That is the whole of what the _placeholder.
+// prefix decides.
+function shouldValidateNote(basename) {
+  return !String(basename).startsWith(PLACEHOLDER_PREFIX);
+}
+
+// The single rule for what a note is offering to add to its schema. Note kind is
+// deliberately not an input: adding a property to a template is the plainest
+// statement of schema intent there is, and for some schemas the template is the
+// only note that ever exists. Sharing one guard with shouldValidateNote() is
+// what silenced this prompt outright once the last numbered record was deleted.
+function undeclaredPropertyFor({ schemaName, frontmatter, fields, ignored, asking }) {
+  if (!frontmatter || !fields) return null;
+  return Object.keys(frontmatter).find((name) =>
+    !RESERVED_PROPERTIES.has(name)
+    && !Object.prototype.hasOwnProperty.call(fields, name)
+    && !ignored.has(name)
+    && !asking.has(`${schemaName}.${name}`)) || null;
+}
+
+const ILLEGAL_FIELD_NAME = /[\\/:#^|[\]]/;
+
+// A field name typed as a wikilink is the user reaching for the value list the
+// field points at. Keep the target, drop the brackets: the link belongs in the
+// Field Reference cell, which the generator writes, not in `fields:`. A trailing
+// ".config" goes too — Asset Renamer used to derive property names from config
+// filenames, which is where fields called "Cultures.config" came from.
+function normalizeFieldName(raw) {
+  let text = String(raw ?? "").trim();
+  const link = text.match(/^\[\[([^\]]+)\]\]$/);
+  if (link) {
+    // The alias, when there is one, is the field name; the target is a path.
+    const [target, alias] = link[1].split(/\\?\|/);
+    text = (alias ?? target).split("#")[0];
+    text = text.slice(text.lastIndexOf("/") + 1);
+  }
+  // `.schema` is the suffix of the fallback link a relation renders to, and
+  // `.config` the residue of Asset Renamer naming properties after files.
+  return text.trim().replace(/\.(config|schema)$/i, "").trim();
+}
+
+// A field name is a file name now, so it has to survive being one.
+function fieldNameError(name) {
+  if (!name) return "A field name cannot be blank.";
+  if (ILLEGAL_FIELD_NAME.test(name)) return `"${name}" cannot be a field name: / \\ : # ^ | [ and ] are not allowed in a file name.`;
+  return null;
+}
+
+// data/config/<Schema>/<field>.md — the two halves a value list is named for.
+// Exactly two segments: one deeper is somebody's own folder, one shallower is
+// plugin bookkeeping.
+function configSourceOfPath(path) {
+  const prefix = `${CONFIG_FOLDER}/`;
+  const text = String(path || "");
+  if (!text.startsWith(prefix) || !text.endsWith(".md")) return null;
+  const parts = text.slice(prefix.length, -3).split("/");
+  return parts.length === 2 && parts[0] && parts[1] ? { schemaName: parts[0], fieldName: parts[1] } : null;
+}
+
+// Which schema's attribute lists apply to a note. A record says so with
+// `implements`, a value list with `configFor`, and a value list's own path says
+// it too — any of the three is enough. Looking only at `implements` left the
+// renamer with nothing to offer on a value list, which is a note that plainly
+// belongs to a schema.
+function schemaNameOfNote(frontmatter, path) {
+  const implemented = frontmatter?.implements;
+  if (typeof implemented === "string" && implemented) return implemented;
+  const sources = frontmatter?.configFor;
+  const source = Array.isArray(sources) ? sources[0] : null;
+  if (typeof source === "string" && source.includes(".")) return source.slice(0, source.indexOf("."));
+  return configSourceOfPath(path)?.schemaName || null;
+}
+
+// Merging two config notes would silently discard one side's hand-written Notes
+// column, which is the whole reason these files are never auto-deleted. Two
+// fields in one schema cannot share a name, so an occupied target can only be a
+// leftover from an earlier failed rename — report it and let the user clear it
+// with the orphan cleanup, rather than merging behind their back.
+function configRenamePlan({ schemaName, oldName, newName, existingPaths }) {
+  const from = `${CONFIG_FOLDER}/${schemaName}/${oldName}.md`;
+  if (!existingPaths.has(from)) return { action: "none" };
+  const to = `${CONFIG_FOLDER}/${schemaName}/${newName}.md`;
+  if (existingPaths.has(to)) return { action: "conflict", from, to };
+  return { action: "rename", from, to, configFor: `${schemaName}.${newName}` };
+}
+
+// A value list is orphaned only when its field is gone from the schema entirely,
+// or the schema itself is gone. Bind state is deliberately irrelevant: unbinding
+// a field is the reversible first press of the × button, and throwing away its
+// curated values would make that press destructive after all.
+function orphanedConfigs(notes, schemas) {
+  const orphans = [];
+  for (const note of notes) {
+    const { path, schemaName, fieldName } = note;
+    const fields = schemas.get(schemaName);
+    if (!fields) {
+      orphans.push({ ...note, reason: `${schemaName} is no longer a schema` });
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(fields, fieldName)) {
+      orphans.push({ ...note, reason: `${schemaName} no longer declares ${fieldName}` });
+      continue;
+    }
+    // A note whose path disagrees with its own configFor is a stray copy —
+    // Obsidian's " 1" suffix after a rename collision, or the residue of a
+    // rename that could not finish. Its field is alive, but this is not the
+    // file serving it, so asking only "does the field exist?" left these behind
+    // for good.
+    const home = `${CONFIG_FOLDER}/${schemaName}/${fieldName}.md`;
+    if (path !== home) orphans.push({ ...note, reason: `a stray copy — ${schemaName}.${fieldName} is served by ${home}` });
+  }
+  return orphans;
+}
+
+// An unescaped "|" is a column separator, even inside [[a|b]]. Writing one makes
+// the row a cell wider than the header, Obsidian's table editor reformats the
+// header to match, and every column shifts right — which is how a field ended up
+// carrying `relation: yes`, the Bound cell landing in the Relation slot.
+const ALIAS = "\\|";
+// Splits a table row on real separators only, leaving an escaped alias pipe
+// inside its cell.
+const CELL_SPLIT = /(?<!\\)\|/;
+
+// What the Field column points at. A link means "this field has somewhere to
+// go"; plain text means it has not. Path-qualified because Obsidian resolves a
+// wikilink by basename alone, and two schemas may both declare `trait`. Aliased
+// so the cell still reads as the bare field name.
+// Where a field points. `path` is always somewhere real, so the ☰ button never
+// has to refuse; `link` is null when the table should show plain text instead of
+// a link. One rule, so the cell and the button cannot drift apart.
+function fieldReferenceTarget(schemaName, fieldName, definition, schemas) {
+  const target = definition?.relation?.target;
+  if (target) {
+    // A foreign key never gets a list of its own: it points at the one list the
+    // target entity already owns, so values cannot drift between the two. The
+    // entity's own-name field is that list when it has one — Realm.Realm — and
+    // otherwise its first list will do, because a list is what the button is
+    // for. Only an entity with no lists at all falls back to its definition.
+    const targetFields = schemas?.get?.(target) || {};
+    const ownField = Object.prototype.hasOwnProperty.call(targetFields, target) ? targetFields[target] : null;
+    const named = ownField && configPathFor(target, target, ownField) ? target : null;
+    const first = named || Object.keys(targetFields).find((name) => configPathFor(target, name, targetFields[name]));
+    if (first) return { path: `${CONFIG_FOLDER}/${target}/${first}.md`, link: `${target}/${first}` };
+    return { path: `${SCHEMA_FOLDER}/${target}.schema.md`, link: `${target}.schema` };
+  }
+  const config = configPathFor(schemaName, fieldName, definition);
+  if (config) return { path: config, link: `${schemaName}/${fieldName}` };
+  // No list of its own and nothing to reference: the schema that declares it is
+  // still worth opening, but the table says so in plain text.
+  return { path: `${SCHEMA_FOLDER}/${schemaName}.schema.md`, link: null };
+}
+
+function fieldReferenceLink(schemaName, fieldName, definition, schemas) {
+  const { link } = fieldReferenceTarget(schemaName, fieldName, definition, schemas);
+  return link ? `[[${link}${ALIAS}${fieldName}]]` : fieldName;
+}
+
+// Carries every property a field has, Relation included, so the table is a
+// lossless representation of `fields:` and a bottom-to-top pull cannot drop
+// anything it is unable to express.
+function renderFieldReference(schemaName, fields, schemas) {
+  const rows = Object.entries(fields).map(([name, field]) =>
+    `| ${fieldReferenceLink(schemaName, name, field, schemas)} | ${field.type} | ${field.hasDefault ? yamlValue(field.defaultValue) : "-"} | ${field.required ? "yes" : "no"} | ${isBound(field) ? "yes" : "no"} | ${field.relation?.target || "-"} |`);
+  return `## Field Reference\n\n| Field | Type | Default | Required | Bound | Relation |\n| --- | --- | --- | --- | --- | --- |\n${rows.join("\n")}\n`;
+}
+
+function renderSchemaFields(fields) {
+  return Object.entries(fields).map(([fieldName, definition]) => {
+    const lines = [`  - ${fieldName}:`, `      type: ${definition.type}`];
+    if (definition.required) lines.push("      required: true");
+    if (definition.hasDefault) lines.push(`      default: ${yamlValue(definition.defaultValue)}`);
+    if (definition.relation?.target) lines.push(`      relation: ${definition.relation.target}`);
+    // Written only when false, so existing schema notes stay byte-identical.
+    if (!isBound(definition)) lines.push("      bind: false");
+    return lines.join("\n");
+  }).join("\n");
+}
+
+function defaultSchemaBody(name, sourcePath) {
+  const intro = sourcePath ? `Source implementation: [[${String(sourcePath).replace(/\.md$/i, "")}]]\n\n` : "";
+  return `${intro}Defines the base fields for any ${name} note.`;
+}
+
+// Strips frontmatter, the title heading, and the generated Field Reference,
+// leaving the author's prose so a rewrite does not destroy it.
+function schemaBodyOf(raw) {
+  // Stops at the Field Reference, which is regenerated. Anything below the
+  // notes marker is recovered separately by extractUserNotes.
+  return String(raw || "")
+    .replace(/^---[\s\S]*?\n---\n?/, "")
+    .replace(/\n?##\s+Field Reference[\s\S]*$/i, "")
+    .replace(new RegExp(`${NOTES_MARKER}[\\s\\S]*$`), "")
+    .replace(/^#\s+.*$/m, "")
+    .trim();
+}
+
+function renderSchemaNote(name, fields, sourcePath, body, existingRaw, schemas) {
+  const frontmatter = ["---", `schema: ${name}`];
+  if (sourcePath) frontmatter.push(`schemaSource: ${sourcePath}`);
+  frontmatter.push("fields:");
+  const fieldBlock = renderSchemaFields(fields);
+  if (fieldBlock) frontmatter.push(fieldBlock);
+  frontmatter.push("---");
+  const prose = (body && body.trim()) || defaultSchemaBody(name, sourcePath);
+  const head = `${frontmatter.join("\n")}\n\n# ${name} Schema\n\n${prose}\n\n${renderFieldReference(name, fields, schemas)}`;
+  return withUserNotes(head, existingRaw);
+}
+
+function dbmlColumnType(type) {
+  return type === "number" ? "int" : type === "boolean" ? "boolean" : "varchar";
+}
+
+function dbmlRefTarget(targetFields) {
+  if (!targetFields) return undefined;
+  if (targetFields.id) return "id";
+  if (targetFields.name) return "name";
+  return Object.keys(targetFields)[0];
+}
+
+function renderDbml(schemas) {
+  const entries = typeof schemas?.entries === "function" ? [...schemas.entries()] : Object.entries(schemas || {});
+  const lookup = new Map(entries);
+  const tables = entries.map(([name, fields]) => {
+    const columns = Object.entries(fields)
+      .filter(([, definition]) => isBound(definition))
+      .map(([fieldName, definition]) => `  ${fieldName} ${dbmlColumnType(definition.type)}${definition.required ? " [not null]" : ""}`)
+      .join("\n");
+    return `Table ${name} {\n${columns}\n}`;
+  });
+  const relations = [];
+  for (const [name, fields] of entries) {
+    for (const [fieldName, definition] of Object.entries(fields)) {
+      if (!isBound(definition)) continue;
+      const target = definition.relation?.target;
+      if (!target || !lookup.has(target)) continue;
+      const key = dbmlRefTarget(lookup.get(target));
+      if (key) relations.push(`Ref: ${name}.${fieldName} > ${target}.${key}`);
+    }
+  }
+  return `${tables.join("\n\n")}\n${relations.join("\n")}`;
+}
+
+function renderErdNote(databaseName, schemas, existingRaw) {
+  const body = `# ${databaseName} Database\n\nGenerated DBML base view for the DBML Visualizer plugin.\n\n\`\`\`dbml title="${databaseName} ERD"\n${renderDbml(schemas)}\n\`\`\`\n`;
+  return withUserNotes(body, existingRaw);
+}
+
+/* --------------------------- end pure generators -------------------------- */
 
 class SchemaInputModal extends Modal {
-  constructor(app, title, placeholder, defaultValue, onSubmit) {
+  constructor(app, title, placeholder, defaultValue, onSubmit, description) {
     super(app);
     this.title = title;
     this.placeholder = placeholder;
     this.defaultValue = defaultValue;
     this.onSubmit = onSubmit;
+    this.description = description;
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: this.title });
+    if (this.description) contentEl.createEl("p", { text: this.description });
     const input = contentEl.createEl("input", { type: "text", placeholder: this.placeholder });
     input.value = this.defaultValue || "";
     input.style.width = "100%";
@@ -47,6 +858,695 @@ class SchemaInputModal extends Modal {
       if (event.key === "Enter") submit.click();
     });
     window.setTimeout(() => input.focus(), 0);
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+class ConfirmDeleteModal extends Modal {
+  constructor(app, title, body, confirmLabel, onResolve) {
+    super(app);
+    this.title = title;
+    this.body = body;
+    this.confirmLabel = confirmLabel;
+    this.onResolve = onResolve;
+    this.answered = false;
+  }
+
+  resolve(confirmed, remember) {
+    if (this.answered) return;
+    this.answered = true;
+    this.onResolve({ confirmed, remember });
+    this.close();
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: this.title });
+    contentEl.createEl("p", { text: this.body });
+    const remember = contentEl.createEl("label", { cls: "schema-sync-modal-remember" });
+    const checkbox = remember.createEl("input", { type: "checkbox" });
+    remember.appendText(" Don't ask again this session");
+    const actions = contentEl.createDiv({ cls: "schema-sync-modal-actions" });
+    actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.resolve(false, false));
+    const confirm = actions.createEl("button", { text: this.confirmLabel, cls: "mod-warning" });
+    confirm.addEventListener("click", () => this.resolve(true, checkbox.checked));
+    confirm.focus();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    this.resolve(false, false);
+  }
+}
+
+// Config notes are the one thing the sync never deletes on its own — they carry
+// a hand-curated Notes column — so this picker is deliberately opt-in per file
+// and preselects nothing.
+class OrphanedConfigModal extends Modal {
+  constructor(app, orphans, onResolve) {
+    super(app);
+    this.orphans = orphans;
+    this.onResolve = onResolve;
+    this.chosen = new Set();
+    this.answered = false;
+  }
+
+  resolve(paths) {
+    if (this.answered) return;
+    this.answered = true;
+    this.onResolve(paths);
+    this.close();
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: `${this.orphans.length} value list(s) no longer belong to a schema` });
+    contentEl.createEl("p", { text: "These carry rows and notes you may have written by hand, so nothing is selected and nothing is deleted until you say so. Selected files go to the trash." });
+    const list = contentEl.createDiv({ cls: "schema-sync-orphans" });
+    for (const orphan of this.orphans) {
+      const row = list.createDiv({ cls: "schema-sync-choice" });
+      const box = row.createEl("input", { type: "checkbox" });
+      box.addEventListener("change", () => box.checked ? this.chosen.add(orphan.path) : this.chosen.delete(orphan.path));
+      row.createEl("span", { text: orphan.path });
+      row.createEl("small", { text: `${orphan.reason} — ${orphan.rows} row(s)` });
+    }
+    const actions = contentEl.createDiv({ cls: "schema-sync-choices" });
+    actions.createEl("button", { text: "Move selected to trash", cls: "mod-warning" })
+      .addEventListener("click", () => this.resolve([...this.chosen]));
+    actions.createEl("button", { text: "Keep everything" })
+      .addEventListener("click", () => this.resolve([]));
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    // Dismissing the modal is not an instruction to delete anything.
+    this.resolve([]);
+  }
+}
+
+class UndeclaredPropertyModal extends Modal {
+  constructor(app, { property, type, schemaName, recordName }, onResolve) {
+    super(app);
+    this.property = property;
+    this.type = type;
+    this.schemaName = schemaName;
+    this.recordName = recordName;
+    this.onResolve = onResolve;
+    this.answered = false;
+  }
+
+  resolve(choice) {
+    if (this.answered) return;
+    this.answered = true;
+    this.onResolve(choice);
+    this.close();
+  }
+
+  option(parent, label, description, choice, cls) {
+    const row = parent.createDiv({ cls: "schema-sync-choice" });
+    const button = row.createEl("button", { text: label, cls: cls || "" });
+    button.addEventListener("click", () => this.resolve(choice));
+    row.createEl("small", { text: description });
+    return button;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: `"${this.property}" is not in the ${this.schemaName} schema` });
+    contentEl.createEl("p", { text: `${this.recordName} has a property the schema does not declare. It was read as ${this.type}.` });
+    const options = contentEl.createDiv({ cls: "schema-sync-choices" });
+    this.option(options, "Define and bind", `Adds ${this.property} to ${this.schemaName} and to every ${this.schemaName} record, then opens the dashboard so you can set its type and default.`, "bind", "mod-cta");
+    this.option(options, "Define, unbound", `Adds ${this.property} to ${this.schemaName} as documentation only. Other records are left alone, and you can bind it later when you want it everywhere.`, "unbind");
+    this.option(options, "Leave it alone", `Keeps ${this.property} as a property of this record only. Nothing is written to the schema, and you will not be asked about it again.`, "ignore");
+    contentEl.createEl("small", { cls: "schema-sync-choice-footer", text: "Turn these prompts off in Settings → Schema Sync." });
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    // Dismissing the modal is not an answer: stay quiet now, ask again later.
+    this.resolve("defer");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Asset Renamer, merged in from the sibling plugin. It keeps its own ribbon icon
+// and commands: naming an attachment from a note's fields is a separate job from
+// keeping schemas in sync, and is wanted on demand rather than on a schedule.
+// ---------------------------------------------------------------------------
+
+class MetadataMenuMapping {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+
+  isAvailable() {
+    return this.plugin.app.plugins?.enabledPlugins?.has("metadata-menu") && Boolean(this.plugin.app.plugins.getPlugin("metadata-menu"));
+  }
+
+  plugin_() {
+    const metadataMenu = this.plugin.app.plugins.getPlugin("metadata-menu");
+    return Array.isArray(metadataMenu?.presetFields) ? metadataMenu : null;
+  }
+
+  // The preset Metadata Menu holds for a property, or null. Matched by name,
+  // because that is what Metadata Menu itself keys a frontmatter property on.
+  presetFor(property) {
+    return this.plugin_()?.presetFields.find((field) => field.name === property) ?? null;
+  }
+
+  typeFor(property) {
+    return this.presetFor(property)?.type ?? "";
+  }
+
+  // Select, Multi and Cycle are the three types Metadata Menu backs with a
+  // ValuesList, so those are the ones a value list has anything to say about.
+  // Every other type gets empty options and is configured in Metadata Menu.
+  optionsFor(type, values) {
+    if (METADATA_MENU_LIST_TYPES.has(type)) return valuesListOptions(values);
+    return { ...(METADATA_MENU_DEFAULT_OPTIONS[type] ?? {}) };
+  }
+
+  // True when this plugin cannot fill in that type's options and Metadata Menu
+  // has to finish the job.
+  needsSetupIn(type) {
+    return !METADATA_MENU_LIST_TYPES.has(type) && !METADATA_MENU_DEFAULT_OPTIONS[type];
+  }
+
+  // Writing here is always something the user just asked for by picking a type,
+  // so unlike a sync it may replace a preset that is already there. The id of an
+  // existing preset is kept: Metadata Menu references it from file classes.
+  async setType(property, type, values, sourceBasename) {
+    const metadataMenu = this.plugin_();
+    if (!metadataMenu) return false;
+    const existing = this.presetFor(property);
+    if (!type) {
+      if (!existing) return false;
+      metadataMenu.presetFields = metadataMenu.presetFields.filter((field) => field !== existing);
+      await metadataMenu.saveSettings();
+      new Notice(`Removed ${property} from Metadata Menu.`);
+      return true;
+    }
+    const preset = {
+      name: property,
+      type,
+      id: existing?.id || `schema-sync-${String(sourceBasename || property).toLowerCase()}`,
+      path: existing?.path ?? "",
+      options: this.optionsFor(type, values),
+    };
+    if (existing) Object.assign(existing, preset);
+    else metadataMenu.presetFields.push(preset);
+    await metadataMenu.saveSettings();
+    new Notice(this.needsSetupIn(type)
+      ? `${property} is now a ${type} field. Finish setting it up in Metadata Menu → Preset Fields.`
+      : `${property} is now a ${type} field in Metadata Menu.`, this.needsSetupIn(type) ? 8000 : undefined);
+    return true;
+  }
+
+  // One value list, straight from the file, straight into Metadata Menu. The
+  // file is the source and Metadata Menu is a copy of it — nothing reads back
+  // the other way, so a stale option cannot become a row.
+  async pushList(file) {
+    const source = configSourceOfPath(file.path);
+    if (!source) return;
+    const values = await this.loadListValues(file);
+    await this.onListsGenerated([{ ...source, property: source.fieldName, values }]);
+  }
+
+  async loadListValues(file) {
+    try {
+      return parseConfigValues(await this.plugin.app.vault.read(file));
+    } catch {
+      return [];
+    }
+  }
+
+  // Called after value lists are written, with one entry per list. Two narrow
+  // jobs and nothing else.
+  //
+  // A field is bound to Select **once** — the first time its list is generated
+  // with anything in it. After that the key is remembered, so removing the
+  // preset in Metadata Menu, or with the renamer's third column, sticks: sync
+  // must never resurrect something deleted on purpose.
+  //
+  // A preset this plugin created keeps its options in step with the list, so a
+  // value added to the table reaches the dropdown. Only its options: the type is
+  // whatever was last chosen, and a preset written by anyone else is untouched.
+  async onListsGenerated(lists) {
+    const metadataMenu = this.plugin_();
+    if (!metadataMenu) return;
+    const seen = this.plugin.settings.metadataMenuAutoBound || (this.plugin.settings.metadataMenuAutoBound = {});
+    let changed = false;
+    let remembered = false;
+    for (const list of lists) {
+      const key = `${list.schemaName}.${list.fieldName}`;
+      const existing = this.presetFor(list.property);
+      if (!existing) {
+        if (seen[key] || !list.values.length) continue;
+        metadataMenu.presetFields.push({
+          name: list.property,
+          type: "Select",
+          id: `schema-sync-${list.property.toLowerCase()}`,
+          path: "",
+          options: this.optionsFor("Select", list.values),
+        });
+        seen[key] = true;
+        changed = true;
+        remembered = true;
+        continue;
+      }
+      if (!seen[key]) {
+        seen[key] = true;
+        remembered = true;
+      }
+      if (!String(existing.id || "").startsWith("schema-sync-")) continue;
+      if (!METADATA_MENU_LIST_TYPES.has(existing.type)) continue;
+      const options = this.optionsFor(existing.type, list.values);
+      if (JSON.stringify(existing.options?.valuesList ?? {}) === JSON.stringify(options.valuesList)) continue;
+      existing.options = { ...existing.options, ...options };
+      changed = true;
+    }
+    if (remembered) await this.plugin.saveSettings();
+    if (changed) await metadataMenu.saveSettings();
+  }
+
+  // Settings-tab only, and additive: a preset Metadata Menu already holds is
+  // left exactly as it is. Everything else becomes a Select over its own list.
+  async registerMissing() {
+    const metadataMenu = this.plugin_();
+    if (!metadataMenu) return;
+    const existing = new Set(metadataMenu.presetFields.map((field) => field.name));
+    const added = [];
+    for (const file of this.plugin.getConfigSourceFiles()) {
+      const property = this.plugin.getSourcePropertyName(file);
+      if (existing.has(property)) continue;
+      const values = await this.plugin.loadConfigValues(file);
+      if (!values.length) continue;
+      existing.add(property);
+      added.push({
+        name: property,
+        type: "Select",
+        id: `schema-sync-${file.basename.toLowerCase()}`,
+        path: "",
+        options: this.optionsFor("Select", values),
+      });
+    }
+    if (added.length) {
+      metadataMenu.presetFields.push(...added);
+      await metadataMenu.saveSettings();
+    }
+    new Notice(added.length ? `Registered ${added.length} value list(s) with Metadata Menu.` : "Metadata Menu already has every value list.");
+  }
+}
+
+class AssetRenamerModal extends Modal {
+  constructor(plugin, noteFile, propertyName) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.noteFile = noteFile;
+    // A record's own schema decides which property holds media. Defaulting to
+    // "Cover" wrote a second, differently-cased property beside the schema's
+    // `cover`, so the field the base view reads stayed empty.
+    this.propertyName = propertyName || plugin.attachmentFieldFor(noteFile) || "Cover";
+    this.selectedImage = this.getPropertyFile();
+    this.mediaFiles = plugin.app.vault.getFiles().filter((file) => MEDIA_EXTENSIONS.has(file.extension.toLowerCase()));
+    this.sourceValues = new Map();
+    this.valueSelects = [];
+    this.sourceEntries = [];
+    this.categorySelect = null;
+  }
+
+  getPropertyFile() {
+    const value = this.app.metadataCache.getFileCache(this.noteFile)?.frontmatter?.[this.propertyName];
+    if (typeof value !== "string") return null;
+    const link = value.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    const path = link ? link[1] : value.trim();
+    return path ? this.app.metadataCache.getFirstLinkpathDest(path, this.noteFile.path) : null;
+  }
+
+  // An attachment-typed field is what this modal exists to fill, so those lead.
+  getPropertyNames() {
+    const frontmatter = this.app.metadataCache.getFileCache(this.noteFile)?.frontmatter ?? {};
+    const fields = this.plugin.schemaFieldsFor(this.noteFile) || {};
+    const attachments = Object.entries(fields).filter(([, definition]) => definition.type === "attachment").map(([name]) => name);
+    const rest = Object.keys(frontmatter).filter((name) => !RESERVED_PROPERTIES.has(name) && !attachments.includes(name)).sort((a, b) => a.localeCompare(b));
+    return [...new Set([...attachments, this.propertyName, ...rest])];
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    // Reset, because "↻ Reload fields" calls this again on a live modal and
+    // these otherwise accumulate a second copy of every row.
+    this.valueSelects = [];
+    this.sourceEntries = [];
+    this.categorySelect = null;
+    this.titleEl.setText(`Asset renamer: ${this.noteFile.basename}`);
+    const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
+    // A schema with ten value lists is ten more rows than fit, and the modal
+    // clipped them with no way to reach the rest. The controls scroll; the
+    // actions stay put, so Rename is always on screen.
+    const body = root.createDiv({ cls: "asset-renamer-body" });
+    this.createTargetControls(body);
+    this.createFilenameControls(body);
+    await this.createSourceControls(body);
+    this.createActions(root);
+  }
+
+  createTargetControls(root) {
+    root.createEl("h3", { text: "Media property" });
+    const propertySelect = this.addSelectRow(root, "Property");
+    for (const property of this.getPropertyNames()) propertySelect.add(new Option(property, property));
+    propertySelect.value = this.propertyName;
+    const folderSelect = this.addSelectRow(root, "Folder");
+    const mediaSelect = this.addSelectRow(root, "Media");
+    const preview = root.createDiv({ cls: "asset-renamer-preview" });
+    const folders = [...new Set(this.mediaFiles.map((file) => file.parent.path))].sort();
+    for (const folder of folders) folderSelect.add(new Option(folder, folder));
+
+    const updatePreview = () => {
+      preview.empty();
+      if (!(this.selectedImage instanceof TFile)) {
+        preview.style.display = "none";
+        return;
+      }
+      const extension = this.selectedImage.extension.toLowerCase();
+      const media = VIDEO_EXTENSIONS.has(extension) ? preview.createEl("video") : preview.createEl("img");
+      media.src = this.app.vault.getResourcePath(this.selectedImage);
+      media.setAttribute("alt", this.selectedImage.name);
+      if (media instanceof HTMLVideoElement) media.controls = true;
+      preview.style.display = "block";
+    };
+    const loadMedia = (folder) => {
+      mediaSelect.replaceChildren(new Option("Select media...", ""));
+      for (const file of this.mediaFiles.filter((item) => item.parent.path === folder)) mediaSelect.add(new Option(file.name, file.path));
+      if (this.selectedImage?.parent?.path === folder) mediaSelect.value = this.selectedImage.path;
+      updatePreview();
+    };
+    propertySelect.addEventListener("change", () => {
+      this.propertyName = propertySelect.value;
+      this.selectedImage = this.getPropertyFile();
+      folderSelect.value = this.selectedImage?.parent?.path ?? folders[0] ?? "";
+      loadMedia(folderSelect.value);
+    });
+    folderSelect.value = this.selectedImage?.parent?.path ?? folders[0] ?? "";
+    folderSelect.addEventListener("change", () => loadMedia(folderSelect.value));
+    mediaSelect.addEventListener("change", () => {
+      this.selectedImage = this.app.vault.getAbstractFileByPath(mediaSelect.value);
+      updatePreview();
+    });
+    loadMedia(folderSelect.value);
+  }
+
+  createFilenameControls(root) {
+    const header = root.createDiv({ cls: "asset-renamer-heading" });
+    header.createEl("h3", { text: "Filename builder" });
+    // A field added since this modal opened has no value list yet, and a modal
+    // built once never learns about it. Reloading the schemas and generating the
+    // lists is what makes a new field appear without closing Obsidian.
+    const reload = header.createEl("button", { text: "↻ Reload fields", cls: "asset-renamer-reload" });
+    reload.title = "Re-read the schemas, generate any missing value list, and rebuild these rows";
+    reload.addEventListener("click", async () => {
+      reload.disabled = true;
+      reload.textContent = "Reloading…";
+      try {
+        await this.plugin.loadSchemas();
+        await this.plugin.syncConfigLists();
+        this.sourceValues.clear();
+        await this.onOpen();
+      } catch (error) {
+        reload.disabled = false;
+        reload.textContent = "↻ Reload fields";
+        new Notice(`Could not reload fields: ${error.message}`);
+      }
+    });
+    const row = root.createDiv({ cls: "asset-renamer-row" });
+    row.createSpan({ text: "Preview" });
+    this.filenamePreview = row.createEl("code", { text: `..._${this.timestamp()}` });
+  }
+
+  async createSourceControls(root) {
+    const files = this.plugin.getConfigSourceFiles(this.noteFile);
+    if (files.length === 0) {
+      const schemaName = this.plugin.schemaNameFor(this.noteFile);
+      root.createEl("p", {
+        cls: "asset-renamer-summary",
+        text: schemaName
+          ? `${schemaName} has no value lists yet, so there is nothing to build a name from. Run Sync schema system, or add values to a field's list.`
+          : `${this.noteFile.basename} does not declare a schema, so no value lists apply to it. Add "implements: <Schema>" to build names from that schema's fields.`,
+      });
+      return;
+    }
+    const metadataMenuAvailable = this.plugin.metadataMenuMapping.isAvailable();
+    if (metadataMenuAvailable) {
+      root.createEl("p", {
+        cls: "asset-renamer-summary",
+        text: "The third column is each field's type in Metadata Menu's Preset Fields. Select, Multi and Cycle take their options from that field's own value list.",
+      });
+    }
+    for (const [index, file] of files.entries()) {
+      const property = this.plugin.getSourcePropertyName(file);
+      const { row, select } = this.addSelectRowEl(root, property);
+      select.add(new Option("Select value...", ""));
+      const values = await this.loadValues(file);
+      for (const value of values) select.add(new Option(value, value));
+      if (metadataMenuAvailable) this.addMetadataMenuControl(row, property, file, values);
+      const currentValue = this.getBoundSourceValue(property, values, index);
+      const matchingOption = [...select.options].find((option) => this.plugin.normalizeToken(option.value) === this.plugin.normalizeToken(currentValue));
+      if (matchingOption) select.value = matchingOption.value;
+      select.addEventListener("change", () => this.updateFilenamePreview());
+      this.valueSelects.push(select);
+      const entry = { file, select, property };
+      this.sourceEntries.push(entry);
+      if (property === "Category") this.categorySelect = select;
+    }
+    this.updateFilenamePreview();
+  }
+
+  getBoundSourceValue(property, values, index) {
+    const frontmatter = this.app.metadataCache.getFileCache(this.noteFile)?.frontmatter ?? {};
+    const direct = this.plugin.parseMetadataValue(frontmatter[property]);
+    if (direct && values.includes(direct)) return direct;
+    const composite = this.plugin.parseCompositeValues(frontmatter.Category);
+    return composite.find((value) => values.includes(value)) ?? composite[index] ?? "";
+  }
+
+  createActions(root) {
+    const actions = root.createDiv({ cls: "asset-renamer-actions" });
+    actions.createEl("button", { text: "Configure sources" })
+      .addEventListener("click", () => { this.close(); new AssetConfigModal(this.plugin).open(); });
+    const renameButton = actions.createEl("button", { text: `Rename ${this.propertyName} media`, cls: "mod-cta" });
+    renameButton.addEventListener("click", () => this.rename(renameButton));
+  }
+
+  addSelectRow(root, label) {
+    return this.addSelectRowEl(root, label).select;
+  }
+
+  addSelectRowEl(root, label) {
+    const row = root.createDiv({ cls: "asset-renamer-row" });
+    row.createSpan({ text: label });
+    return { row, select: row.createEl("select") };
+  }
+
+  // The third column of a value-list row: what this property is in Metadata
+  // Menu. Reads the current preset, and writing one is a deliberate act, so it
+  // may replace what is there — unlike a sync, which never touches a preset.
+  addMetadataMenuControl(row, property, file, values) {
+    row.addClass("has-meta");
+    const select = row.createEl("select", { cls: "asset-renamer-meta-type" });
+    select.title = `Set what ${property} is in Metadata Menu's Preset Fields. Select, Multi and Cycle are filled from this field's value list.`;
+    select.add(new Option("— not in Metadata Menu —", ""));
+    for (const type of METADATA_MENU_TYPES) select.add(new Option(type, type));
+    const current = this.plugin.metadataMenuMapping.typeFor(property);
+    select.value = METADATA_MENU_TYPES.includes(current) ? current : "";
+    select.addEventListener("change", async () => {
+      const chosen = select.value;
+      const previous = this.plugin.metadataMenuMapping.typeFor(property);
+      if (!chosen && previous) {
+        const answer = await new Promise((resolve) => new ConfirmDeleteModal(
+          this.app,
+          "Remove from Metadata Menu",
+          `Delete the ${previous} preset for ${property} from Metadata Menu? Its options are lost; the property stays on every note.`,
+          "Remove",
+          resolve,
+        ).open());
+        if (!answer.confirmed) {
+          select.value = previous;
+          return;
+        }
+      }
+      await this.plugin.metadataMenuMapping.setType(property, chosen, values, file.basename);
+    });
+    return select;
+  }
+
+  async loadValues(file) {
+    if (!this.sourceValues.has(file.path)) {
+      this.sourceValues.set(file.path, await this.plugin.loadConfigValues(file));
+    }
+    return this.sourceValues.get(file.path);
+  }
+
+  joinedName() {
+    return this.valueSelects.map((select) => select.value).filter(Boolean).map((value) => this.plugin.normalizeToken(value)).filter(Boolean).join("_");
+  }
+
+  timestamp() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  }
+
+  updateFilenamePreview() {
+    const name = this.joinedName();
+    this.filenamePreview.textContent = name ? `${name}_${this.timestamp()}` : `..._${this.timestamp()}`;
+  }
+
+  async rename(button) {
+    const name = this.joinedName();
+    if (!name) return new Notice("Select at least one value.");
+    if (!(this.selectedImage instanceof TFile)) return new Notice("Select media from the folder browser.");
+    button.disabled = true;
+    try {
+      const filename = `${name}_${this.timestamp()}.${this.selectedImage.extension}`;
+      const folder = this.selectedImage.parent.path === "/" ? "" : `${this.selectedImage.parent.path}/`;
+      const targetPath = `${folder}${filename}`;
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing && existing !== this.selectedImage) throw new Error(`A file already exists: ${targetPath}`);
+      if (targetPath !== this.selectedImage.path) await this.app.fileManager.renameFile(this.selectedImage, targetPath);
+      await this.app.fileManager.processFrontMatter(this.noteFile, (frontmatter) => {
+        frontmatter[this.propertyName] = `[[${targetPath}]]`;
+        for (const entry of this.sourceEntries) {
+          if (entry.select.value) frontmatter[entry.property] = `[[${entry.select.value}]]`;
+        }
+        if (!this.categorySelect?.value && "Category" in frontmatter) frontmatter.Category = name;
+      });
+      new Notice(`Renamed to ${filename}`);
+      this.close();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Could not rename the media.");
+      button.disabled = false;
+    }
+  }
+}
+
+class BulkCategoryModal extends Modal {
+  constructor(plugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.notes = [];
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText("Bulk rename category dependencies");
+    const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
+    root.createEl("p", { text: "Rename a category binding across notes and their Cover attachments." });
+    const oldInput = this.addTextRow(root, "Current category", "");
+    const newInput = this.addTextRow(root, "New category", "");
+    const summary = root.createEl("p", { cls: "asset-renamer-summary", text: "Enter a category to scan the vault." });
+    const actions = root.createDiv({ cls: "asset-renamer-actions" });
+    const scanButton = actions.createEl("button", { text: "Scan dependencies" });
+    const renameButton = actions.createEl("button", { text: "Rename all dependencies", cls: "mod-cta" });
+    renameButton.disabled = true;
+    scanButton.addEventListener("click", () => {
+      this.notes = this.plugin.findCategoryNotes(oldInput.value.trim());
+      const attachmentCount = new Set(this.notes.map(({ image }) => image?.path).filter(Boolean)).size;
+      summary.textContent = `${this.notes.length} note(s), ${attachmentCount} unique attachment(s) found.`;
+      renameButton.disabled = !this.notes.length || !newInput.value.trim() || newInput.value.trim() === oldInput.value.trim();
+    });
+    renameButton.addEventListener("click", async () => {
+      renameButton.disabled = true;
+      try {
+        await this.plugin.bulkRenameCategory(oldInput.value.trim(), newInput.value.trim(), this.notes);
+        this.close();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : "Bulk category rename failed.");
+        renameButton.disabled = false;
+      }
+    });
+  }
+
+  addTextRow(root, label, value) {
+    const row = root.createDiv({ cls: "asset-renamer-row" });
+    row.createSpan({ text: label });
+    return row.createEl("input", { type: "text", value });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+class BulkReloadModal extends Modal {
+  constructor(plugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.records = [];
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText("Bulk reload attachment names");
+    const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
+    root.createEl("p", { text: "Read each note's current values and update only its Cover filename. The timestamp suffix and note metadata are preserved." });
+    const summary = root.createEl("p", { cls: "asset-renamer-summary", text: "Scanning bound attachments..." });
+    const reloadButton = root.createDiv({ cls: "asset-renamer-actions" }).createEl("button", { text: "Reload attachment names", cls: "mod-cta" });
+    reloadButton.disabled = true;
+    this.records = await this.plugin.findCategoryAttachmentRecords();
+    const uniqueImages = new Set(this.records.map(({ image }) => image.path));
+    summary.textContent = `${this.records.length} note(s), ${uniqueImages.size} attachment(s) ready. No values or timestamps will be changed.`;
+    reloadButton.disabled = !this.records.length;
+    reloadButton.addEventListener("click", async () => {
+      reloadButton.disabled = true;
+      try {
+        await this.plugin.reloadAttachmentNames(this.records);
+        this.close();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : "Attachment name reload failed.");
+        reloadButton.disabled = false;
+      }
+    });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+class AssetConfigModal extends Modal {
+  constructor(plugin) { super(plugin.app); this.plugin = plugin; }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText("Asset renamer sources");
+    contentEl.createEl("p", { text: "A record's name is built from its own schema's value lists. These settings only cover notes outside the schema system." });
+    new Setting(contentEl).setName("Fallback config folder").setDesc("Markdown files here become source dropdowns for notes that do not declare a schema.").addText((text) => text.setValue(this.plugin.settings.configFolder).onChange(async (value) => {
+      this.plugin.settings.configFolder = value.trim().replace(/\\/g, "/");
+      await this.plugin.saveSettings();
+    }));
+    new Setting(contentEl).setName("config.base path").setDesc("Bases view generated for the fallback folder. One is always generated for data/config as well.").addText((text) => text.setValue(this.plugin.settings.configBasePath).onChange(async (value) => {
+      this.plugin.settings.configBasePath = value.trim().replace(/\\/g, "/");
+      await this.plugin.saveSettings();
+    }));
+    new Setting(contentEl).setName("Category link prefix").setDesc("Prefix used when binding category values to the Category property.").addText((text) => text.setValue(this.plugin.settings.categoryLinkPrefix).onChange(async (value) => {
+      this.plugin.settings.categoryLinkPrefix = value.trim();
+      await this.plugin.saveSettings();
+    }));
+    const available = this.plugin.metadataMenuMapping.isAvailable();
+    new Setting(contentEl)
+      .setName("Metadata Menu")
+      .setDesc(available
+        ? "Each value-list row in the renamer carries the field's Metadata Menu type. This button fills in anything Metadata Menu is missing, as a Select over that field's own list. Additive — a preset it already holds is left alone."
+        : "Metadata Menu is not enabled, so there is nothing to register with.")
+      .addButton((button) => button.setButtonText("Register missing fields").setDisabled(!available).onClick(() => void this.plugin.metadataMenuMapping.registerMissing()));
+    new Setting(contentEl).setName("Generate config.base").setDesc("Create or update both Bases views.").addButton((button) => button.setButtonText("Generate").setCta().onClick(async () => {
+      await this.plugin.generateConfigBase();
+      this.close();
+    }));
   }
 
   onClose() { this.contentEl.empty(); }
@@ -72,13 +1572,15 @@ class SchemaSyncView extends ItemView {
     if (!this.selectedSchema || !this.plugin.schemas.has(this.selectedSchema)) this.selectedSchema = schemas[0]?.[0];
     const schemaName = this.selectedSchema;
     const fields = this.plugin.schemas.get(schemaName) || {};
-    const entities = this.plugin.dataFiles().filter((file) => this.plugin.app.metadataCache.getFileCache(file)?.frontmatter?.implements === schemaName && !file.basename.startsWith(PLACEHOLDER_PREFIX));
+    // Templates are listed too. A schema whose only file is _placeholder.X used
+    // to report "No mapped entities", which read as nothing being mapped at all.
+    const entities = this.plugin.dataFiles().filter((file) => this.plugin.app.metadataCache.getFileCache(file)?.frontmatter?.implements === schemaName);
     if (!this.selectedEntity || !entities.some((file) => file.path === this.selectedEntity.path)) this.selectedEntity = entities[0];
     const selectedFrontmatter = this.selectedEntity ? this.plugin.app.metadataCache.getFileCache(this.selectedEntity)?.frontmatter || {} : {};
     const fieldRows = Object.entries(fields).map(([name, definition]) => { const value = Object.prototype.hasOwnProperty.call(selectedFrontmatter, name) ? selectedFrontmatter[name] : definition.hasDefault ? definition.defaultValue : "—"; return `<div class="schema-sync-property"><span><b>${name}</b><small>${definition.type}${definition.required ? " · required" : ""}</small></span><code>${this.plugin.yamlValue(value)}</code></div>`; }).join("");
     this.contentEl.empty();
     this.contentEl.addClass("schema-sync-view");
-        this.contentEl.innerHTML = `<div class="schema-sync-head"><div><small>SCHEMA SYNC / VAULT ARCHITECTURE</small><h1>Schema dashboard</h1></div><button data-action="sync">Sync schema system</button></div><div class="schema-sync-grid"><section><small class="schema-sync-label">01 / Registry</small><h2>Manage schemas</h2><div class="schema-sync-list">${schemas.map(([name, schemaFields]) => `<button class="schema-sync-schema ${name === schemaName ? "is-active" : ""}" data-schema="${name}"><span>${name.slice(0, 1)}</span><b>${name}</b><small>${Object.keys(schemaFields).length} properties</small></button>`).join("")}</div></section><section><small class="schema-sync-label">02 / Relation</small><h2>Entity mapping</h2><div class="schema-sync-count"><b>${entities.length}</b><small>mapped entities</small></div><div class="schema-sync-entities">${entities.map((file) => { const fm = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}; const missing = Object.keys(fields).filter((name) => !(name in fm) && fields[name].required).length; return `<button class="schema-sync-entity ${file.path === this.selectedEntity?.path ? "is-active" : ""}" data-entity="${file.path}"><b>${file.basename}</b><small>${file.path}</small><em class="${missing ? "is-warning" : ""}">${missing ? `${missing} issue` : "In sync"}</em></button>`; }).join("") || "<p class=\"schema-sync-empty\">No mapped entities.</p>"}</div></section><section><small class="schema-sync-label">03 / Resolved entity</small><h2>${this.selectedEntity?.basename || "Select an entity"}</h2><small class="schema-sync-path">${this.selectedEntity?.path || "Choose a note from the mapping panel"}</small><div class="schema-sync-inherits">↳ Inherits from <b>${schemaName || "—"}</b></div><div class="schema-sync-properties">${this.selectedEntity ? fieldRows : "<p class=\"schema-sync-empty\">No entity selected.</p>"}</div></section></div>`;
+        this.contentEl.innerHTML = `<div class="schema-sync-head"><div><small>SCHEMA SYNC / VAULT ARCHITECTURE</small><h1>Schema dashboard</h1></div><div class="schema-sync-head-actions"><button data-action="reload" class="schema-sync-danger" title="Bottom to top: the Field Reference table in each .schema note becomes the definition. Rows deleted there drop the field. Blank cells mean string, no default, not required, unbound, no relation.">↑ Pull from notes</button><button data-action="sync" title="Top to bottom: push the schema out to records, config lists, base views and the ERD">↓ Sync schema system</button></div></div><div class="schema-sync-grid"><section><small class="schema-sync-label">01 / Registry</small><h2>Manage schemas</h2><button data-clean-orphans class="schema-sync-row-action" title="Find value lists whose field or schema no longer exists. Nothing is deleted without you selecting it.">Clean orphaned configs</button><div class="schema-sync-list">${schemas.map(([name, schemaFields]) => `<button class="schema-sync-schema ${name === schemaName ? "is-active" : ""}" data-schema="${name}"><span>${name.slice(0, 1)}</span><b>${name}</b><small>${Object.keys(schemaFields).length} properties</small></button>`).join("")}</div></section><section><small class="schema-sync-label">02 / Relation</small><h2>Entity mapping</h2><div class="schema-sync-count"><b>${entities.length}</b><small>mapped entities</small></div><div class="schema-sync-entities">${entities.map((file) => { const fm = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter || {}; const isTemplate = file.basename.startsWith(PLACEHOLDER_PREFIX); const missing = Object.keys(fields).filter((name) => !(name in fm) && fields[name].required).length; const badge = isTemplate ? "template" : missing ? `${missing} issue` : "In sync"; return `<button class="schema-sync-entity ${file.path === this.selectedEntity?.path ? "is-active" : ""}" data-entity="${file.path}"><b>${file.basename}</b><small>${file.path}</small><em class="${isTemplate ? "is-template" : missing ? "is-warning" : ""}">${badge}</em></button>`; }).join("") || "<p class=\"schema-sync-empty\">No mapped entities.</p>"}</div></section><section><small class="schema-sync-label">03 / Resolved entity</small><h2>${this.selectedEntity?.basename || "Select an entity"}</h2><small class="schema-sync-path">${this.selectedEntity?.path || "Choose a note from the mapping panel"}</small><div class="schema-sync-inherits">↳ Inherits from <b>${schemaName || "—"}</b></div><div class="schema-sync-properties">${this.selectedEntity ? fieldRows : "<p class=\"schema-sync-empty\">No entity selected.</p>"}</div></section></div>`;
         const grid = this.contentEl.querySelector(".schema-sync-grid");
         const sections = grid ? [...grid.children] : [];
         if (grid && sections.length === 3) {
@@ -86,7 +1588,7 @@ class SchemaSyncView extends ItemView {
         }
         const editorPanel = this.contentEl.querySelector(".schema-sync-grid > section:nth-child(2)");
         if (editorPanel) {
-          editorPanel.innerHTML = `<small class="schema-sync-label">02 / Definition</small><h2>Edit ${schemaName || "schema"}</h2><p class="schema-sync-editor-help">Changes save automatically when a field is edited.</p><div class="schema-sync-field-editor">${Object.entries(fields).map(([name, definition]) => `<div class="schema-sync-field-row" data-schema-row="${name}"><input data-field-name value="${name}" aria-label="Field name" /><select data-field-type aria-label="Field type">${["string", "number", "boolean", "array", "object"].map((type) => `<option value="${type}" ${definition.type === type ? "selected" : ""}>${type}</option>`).join("")}</select><input data-field-default value="${this.plugin.editorValue(definition.hasDefault ? definition.defaultValue : "")}" placeholder="default" aria-label="Default value" /><select data-field-relation aria-label="Foreign key target"><option value="">no foreign key</option>${schemas.map(([target]) => `<option value="${target}" ${definition.relation?.target === target ? "selected" : ""}>→ ${target}</option>`).join("")}</select><label><input data-field-required type="checkbox" ${definition.required ? "checked" : ""} /> required</label><button data-delete-field="${name}" title="Remove field">×</button></div>`).join("") || "<p class=\"schema-sync-empty\">No fields defined.</p>"}</div>`;
+          editorPanel.innerHTML = `<small class="schema-sync-label">02 / Definition</small><h2>Edit ${schemaName || "schema"}</h2><p class="schema-sync-editor-help">${this.plugin.settings.requireEditUnlock ? "Click ✎ to edit a row." : "Edit any row directly — changes save as you make them."} Enter commits, Escape reverts. Drag ⠿ to reorder. <b>Default</b> is the value a new record starts this field at — leave it blank for an empty value. <b>Bind</b> off keeps a field documented here but out of records, config lists, base views and the ERD.</p><div class="schema-sync-field-editor${this.plugin.settings.requireEditUnlock ? "" : " is-live"}"><div class="schema-sync-field-row schema-sync-field-head"><span></span><span>Field</span><span>Type</span><span title="Value a new record starts this field at">Default</span><span title="Points this field at another schema, drawn as a relation in the ERD">Relation</span><span title="Written to records, config lists, base views and the ERD">Bind</span><span title="Reports an issue when missing or blank in a record">Req</span><span title="Open this field's value list">☰</span><span title="Create one record per row of this field's value list">⤓</span><span class="schema-sync-edit-col"></span><span></span></div>${Object.entries(fields).map(([name, definition]) => `<div class="schema-sync-field-row" data-schema-row="${name}"><span class="schema-sync-drag" draggable="true" title="Drag to reorder">⠿</span><input data-field-name value="${name}" aria-label="Field name" /><select data-field-type aria-label="Field type">${FIELD_TYPES.map((type) => `<option value="${type}" ${definition.type === type ? "selected" : ""}>${type}</option>`).join("")}</select><input data-field-default value="${this.plugin.editorValue(definition.hasDefault ? definition.defaultValue : "")}" placeholder="default" aria-label="Default value" /><select data-field-relation aria-label="Foreign key target"><option value="">no foreign key</option>${schemas.map(([target]) => `<option value="${target}" ${definition.relation?.target === target ? "selected" : ""}>→ ${target}</option>`).join("")}</select><input data-field-bind type="checkbox" ${definition.bind === false ? "" : "checked"} aria-label="Bound" title="Bound: written to records, config lists, base views and the ERD. Unbound: documented here only." /><input data-field-required type="checkbox" ${definition.required ? "checked" : ""} aria-label="Required" title="Reports an issue when this field is missing or blank in a record" /><button data-open-config="${name}" class="schema-sync-row-action" title="Open ${fieldReferenceTarget(schemaName, name, definition, this.plugin.schemas).path}">☰</button><button data-implement-config="${name}" class="schema-sync-row-action ${configPathFor(schemaName, name, definition) ? "" : "is-muted"}" title="${configPathFor(schemaName, name, definition) ? `Create one ${schemaName} record per row of ${configPathFor(schemaName, name, definition)}, named after the value` : `${name} has no value list to implement`}">⤓</button><button data-delete-field="${name}" class="${definition.bind === false ? "schema-sync-row-delete" : ""}" title="${definition.bind === false ? `Remove ${name} from the schema` : `Unbind ${name} — stops writing it anywhere, keeps existing values`}">×</button></div>`).join("") || "<p class=\"schema-sync-empty\">No fields defined.</p>"}</div>`;
           const definitionHeader = document.createElement("div");
           definitionHeader.className = "schema-sync-definition-header";
           const definitionTitle = editorPanel.querySelector("h2");
@@ -99,8 +1601,42 @@ class SchemaSyncView extends ItemView {
           addFieldButton.textContent = "+ Add field";
           addFieldButton.dataset.action = "add-definition-field";
           definitionHeader.appendChild(addFieldButton);
-          editorPanel.querySelectorAll("[data-schema-row]").forEach((row) => {
+          const lockRow = (row) => {
             row.querySelectorAll("input, select").forEach((control) => { control.disabled = true; });
+            row.classList.remove("is-editing");
+          };
+          // Snapshot on unlock so Escape has something exact to restore to.
+          const snapshotRow = (row) => [...row.querySelectorAll("input, select")].map((control) => (control.type === "checkbox" ? control.checked : control.value));
+          const restoreRow = (row, snapshot) => {
+            [...row.querySelectorAll("input, select")].forEach((control, index) => {
+              if (control.type === "checkbox") control.checked = snapshot[index];
+              else control.value = snapshot[index];
+            });
+          };
+          // Live editing is the default: no gate, changes apply as they are made.
+          // The lock is opt-in for anyone who wants the extra step.
+          const requireUnlock = this.plugin.settings.requireEditUnlock;
+          editorPanel.querySelectorAll("[data-schema-row]").forEach((row) => {
+            if (!requireUnlock) {
+              // Escape still reverts, so snapshot whenever the row takes focus.
+              row.addEventListener("focusin", () => {
+                if (!row.dataset.snapshot) row.dataset.snapshot = JSON.stringify(snapshotRow(row));
+              });
+              row.addEventListener("keydown", (event) => {
+                if (event.key === "Escape" && row.dataset.snapshot) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  restoreRow(row, JSON.parse(row.dataset.snapshot));
+                  delete row.dataset.snapshot;
+                  row.querySelectorAll("input, select").forEach((control) => control.blur());
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.target.blur();
+                }
+              });
+              return;
+            }
+            lockRow(row);
             const editButton = document.createElement("button");
             editButton.className = "schema-sync-row-action";
             editButton.dataset.editField = row.dataset.schemaRow;
@@ -109,13 +1645,68 @@ class SchemaSyncView extends ItemView {
             row.insertBefore(editButton, row.querySelector("[data-delete-field]"));
           });
           editorPanel.querySelectorAll("[data-delete-field]").forEach((button) => button.addEventListener("click", () => void this.plugin.deleteSchemaField(schemaName, button.dataset.deleteField)));
+          editorPanel.querySelectorAll("[data-open-config]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.openFieldConfig(schemaName, button.dataset.openConfig); }));
+          editorPanel.querySelectorAll("[data-implement-config]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.implementConfigValues(schemaName, button.dataset.implementConfig); }));
           editorPanel.querySelectorAll("[data-edit-field]").forEach((button) => button.addEventListener("click", () => {
             const row = button.closest("[data-schema-row]");
-            row?.querySelectorAll("input, select").forEach((control) => { control.disabled = false; });
-            row?.classList.add("is-editing");
+            // Guard against a second click stacking another set of key handlers
+            // on the same row.
+            if (!row || row.classList.contains("is-editing")) return;
+            row.querySelectorAll("input, select").forEach((control) => { control.disabled = false; });
+            row.classList.add("is-editing");
+            const snapshot = snapshotRow(row);
+            row.querySelectorAll("input, select").forEach((control) => {
+              control.addEventListener("keydown", (event) => {
+                // Escape must abandon the edit outright. Relying on the browser
+                // to revert an input is not dependable inside Electron.
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  restoreRow(row, snapshot);
+                  lockRow(row);
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  control.blur();
+                }
+              });
+            });
           }));
           editorPanel.querySelector("[data-action=add-definition-field]")?.addEventListener("click", () => void this.plugin.updateSchema(schemaName));
-          editorPanel.querySelectorAll("[data-schema-row] input, [data-schema-row] select").forEach((control) => control.addEventListener("change", () => void this.plugin.saveSchemaFromDashboard(schemaName, editorPanel)));
+          editorPanel.querySelectorAll("[data-schema-row] input, [data-schema-row] select").forEach((control) => control.addEventListener("change", () => {
+            if (control.disabled) return;
+            void this.plugin.saveSchemaFromDashboard(schemaName, editorPanel);
+          }));
+          let draggedRow = null;
+          editorPanel.querySelectorAll(".schema-sync-drag").forEach((handle) => {
+            const row = handle.closest("[data-schema-row]");
+            handle.addEventListener("dragstart", (event) => {
+              draggedRow = row;
+              row.classList.add("is-dragging");
+              event.dataTransfer.effectAllowed = "move";
+              // Firefox and Electron both refuse to start a drag without data.
+              event.dataTransfer.setData("text/plain", row.dataset.schemaRow);
+            });
+            handle.addEventListener("dragend", () => {
+              row.classList.remove("is-dragging");
+              editorPanel.querySelectorAll(".is-drop-target").forEach((el) => el.classList.remove("is-drop-target"));
+              draggedRow = null;
+            });
+          });
+          editorPanel.querySelectorAll("[data-schema-row]").forEach((row) => {
+            row.addEventListener("dragover", (event) => {
+              if (!draggedRow || draggedRow === row) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              row.classList.add("is-drop-target");
+            });
+            row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
+            row.addEventListener("drop", (event) => {
+              event.preventDefault();
+              row.classList.remove("is-drop-target");
+              if (!draggedRow || draggedRow === row) return;
+              void this.plugin.reorderSchemaFields(schemaName, draggedRow.dataset.schemaRow, row.dataset.schemaRow);
+            });
+          });
         }
         const relationLabel = this.contentEl.querySelector(".schema-sync-grid > section:nth-child(3) .schema-sync-label");
         if (relationLabel) relationLabel.textContent = "03 / Relation";
@@ -141,6 +1732,11 @@ class SchemaSyncView extends ItemView {
             selectButton.className = row.className;
             selectButton.dataset.schema = schemaNameForRow;
             selectButton.innerHTML = row.innerHTML;
+            const openButton = document.createElement("button");
+            openButton.className = "schema-sync-row-action";
+            openButton.dataset.openSchema = schemaNameForRow;
+            openButton.title = `Open ${schemaNameForRow}.schema.md`;
+            openButton.textContent = "↗";
             const duplicateButton = document.createElement("button");
             duplicateButton.className = "schema-sync-row-action";
             duplicateButton.dataset.duplicateSchema = schemaNameForRow;
@@ -151,7 +1747,7 @@ class SchemaSyncView extends ItemView {
             deleteButton.dataset.deleteSchema = schemaNameForRow;
             deleteButton.title = `Delete ${schemaNameForRow}`;
             deleteButton.textContent = "×";
-            wrapper.append(selectButton, duplicateButton, deleteButton);
+            wrapper.append(selectButton, openButton, duplicateButton, deleteButton);
             row.replaceWith(wrapper);
           });
         }
@@ -176,19 +1772,56 @@ class SchemaSyncView extends ItemView {
         mappingNote.className = "schema-sync-mapping-note";
         mappingNote.textContent = mapping ? `Bound to ${mapping.target}` : "No target config binding";
         this.contentEl.querySelector(".schema-sync-inherits")?.after(mappingNote);
-        if (entities.length === 0 && schemaName) {
+        const relationPanel = this.contentEl.querySelector(".schema-sync-grid > section:nth-child(3)");
+        if (relationPanel && schemaName) {
+          // Each entity row gets duplicate and asset-renamer actions, mirroring
+          // the 01/Registry row layout.
+          relationPanel.querySelectorAll(".schema-sync-entity").forEach((entityRow) => {
+            const entityPath = entityRow.dataset.entity;
+            const wrapper = document.createElement("div");
+            wrapper.className = "schema-sync-entity-row";
+            const openButton = document.createElement("button");
+            openButton.className = entityRow.className;
+            openButton.dataset.entity = entityPath;
+            openButton.innerHTML = entityRow.innerHTML;
+            const duplicateButton = document.createElement("button");
+            duplicateButton.className = "schema-sync-row-action";
+            duplicateButton.dataset.duplicateEntity = entityPath;
+            duplicateButton.title = "Duplicate this record";
+            duplicateButton.textContent = "⧉";
+            const assetButton = document.createElement("button");
+            assetButton.className = "schema-sync-row-action";
+            assetButton.dataset.assetEntity = entityPath;
+            assetButton.title = "Open Asset Renamer for this record";
+            assetButton.textContent = "🖼";
+            const deleteButton = document.createElement("button");
+            deleteButton.className = "schema-sync-row-action schema-sync-row-delete";
+            deleteButton.dataset.deleteEntity = entityPath;
+            deleteButton.title = "Delete this record";
+            deleteButton.textContent = "×";
+            wrapper.append(openButton, duplicateButton, assetButton, deleteButton);
+            entityRow.replaceWith(wrapper);
+          });
+          // Always offered, not only when the schema has no records yet. It sits
+          // after the list rather than inside it: the list is a scroller, and a
+          // hundred records put this button a hundred rows down.
           const implementButton = document.createElement("button");
           implementButton.className = "schema-sync-implement";
-          implementButton.textContent = `Implement ${schemaName} to config/entity.md`;
+          implementButton.textContent = `+ New ${schemaName} record`;
           implementButton.dataset.action = "implement-entity";
-          this.contentEl.querySelector(".schema-sync-entities")?.appendChild(implementButton);
+          this.contentEl.querySelector(".schema-sync-entities")?.after(implementButton);
         }
+        this.contentEl.querySelectorAll("[data-duplicate-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.duplicateRecord(button.dataset.duplicateEntity); }));
+        this.contentEl.querySelectorAll("[data-asset-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.openAssetRenamerForRecord(button.dataset.assetEntity); }));
+        this.contentEl.querySelectorAll("[data-delete-entity]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.deleteRecord(button.dataset.deleteEntity); }));
     this.contentEl.querySelectorAll("[data-schema]").forEach((el) => el.addEventListener("click", () => { this.selectedSchema = el.dataset.schema; this.selectedEntity = null; this.render(); }));
     this.contentEl.querySelectorAll("[data-entity]").forEach((el) => el.addEventListener("click", () => {
       const file = this.plugin.app.vault.getAbstractFileByPath(el.dataset.entity);
       if (file instanceof TFile) void this.plugin.app.workspace.getLeaf(true).openFile(file);
     }));
     this.contentEl.querySelector("[data-action=sync]")?.addEventListener("click", () => void this.plugin.syncSystem(true));
+    this.contentEl.querySelector("[data-action=reload]")?.addEventListener("click", () => void this.plugin.reloadFromDisk());
+    this.contentEl.querySelector("[data-clean-orphans]")?.addEventListener("click", () => void this.plugin.cleanOrphanedConfigs());
     this.contentEl.querySelector("[data-action=open-base]")?.addEventListener("click", () => void this.plugin.openBaseNote(schemaName));
         this.contentEl.querySelector("[data-action=create-schema]")?.addEventListener("click", () => void this.plugin.createSchema());
         this.contentEl.querySelector("[data-action=update-schema]")?.addEventListener("click", () => void this.plugin.updateSchema(schemaName));
@@ -198,49 +1831,169 @@ class SchemaSyncView extends ItemView {
         this.contentEl.querySelector("[data-action=reattach-schema]")?.addEventListener("click", () => void this.plugin.reattachSchema());
         this.contentEl.querySelector("[data-action=implement-entity]")?.addEventListener("click", () => void this.plugin.implementEntity(schemaName));
         this.contentEl.querySelector("[data-action=create-schema-registry]")?.addEventListener("click", () => void this.plugin.createSchema());
+        this.contentEl.querySelectorAll("[data-open-schema]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.openSchemaNote(button.dataset.openSchema); }));
         this.contentEl.querySelectorAll("[data-duplicate-schema]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.duplicateSchema(button.dataset.duplicateSchema); }));
         this.contentEl.querySelectorAll("[data-delete-schema]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); void this.plugin.deleteSchema(button.dataset.deleteSchema); }));
   }
 }
 
+class SchemaSyncSettingTab extends PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  toggle(name, description, key, onChange) {
+    new Setting(this.containerEl)
+      .setName(name)
+      .setDesc(description)
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings[key])
+        .onChange(async (value) => {
+          this.plugin.settings[key] = value;
+          await this.plugin.saveSettings();
+          if (onChange) onChange();
+        }));
+  }
+
+  display() {
+    this.containerEl.empty();
+    this.toggle(
+      "Require unlock before editing a field",
+      "Off by default: rows in 02 / Definition are editable straight away and save as you change them. Turn it on to put a ✎ button on every row that has to be clicked first — slower, but harder to change a schema by accident. Escape still reverts a row in either mode.",
+      "requireEditUnlock",
+      () => this.plugin.refreshDashboards(),
+    );
+    this.toggle(
+      "Ask about undeclared record properties",
+      "On by default. When a record gains a property its schema does not declare, offers to define it — bound to every record, or documented but unbound for a one-off. Answering \"leave it alone\" is remembered, so a record's private annotations are only ever asked about once.",
+      "promptForUndeclaredProperties",
+    );
+    new Setting(this.containerEl)
+      .setName("Forget dismissed properties")
+      .setDesc(`Clears the list of properties you chose to leave alone, so they are offered again. Currently ${Object.values(this.plugin.settings.ignoredProperties).reduce((total, list) => total + list.length, 0)} remembered.`)
+      .addButton((button) => button.setButtonText("Forget all").onClick(async () => {
+        this.plugin.settings.ignoredProperties = {};
+        await this.plugin.saveSettings();
+        this.display();
+      }));
+    this.toggle(
+      "Confirm before removing a field or deleting a record",
+      "On by default. Pressing × on a bound field only unbinds it, which is never confirmed; this gates the second press that drops the field, and record deletion. Records go to the trash, so both are recoverable.",
+      "confirmDestructiveActions",
+    );
+  }
+}
+
 class SchemaSyncPlugin extends Plugin {
+  settings = { ...DEFAULT_SETTINGS };
   pending = new Map();
   patching = new Set();
   schemas = new Map();
   schemaValidationTimeout = null;
   schemaReloadTimeout = null;
+  // Schema notes the user is editing by hand. While a path is in here the sync
+  // will not rewrite it; edits flow the other way, from note to registry.
+  safetyOff = new Set();
+  // "Don't ask again" for field deletion, deliberately session-scoped so it
+  // never persists across a restart.
+  skipDeleteConfirm = false;
+  skipRecordDeleteConfirm = false;
+  safetyPrompted = new Set();
+  lastAdopted = new Map();
+  // Guards against a second modal for the same property while one is open, and
+  // against re-asking after the modal is dismissed without an answer.
+  askingAbout = new Set();
+  // Paths this plugin renamed back itself. Without this the undo arrives as a
+  // fresh rename event and the prompt loops.
+  revertedRenames = new Set();
+  // Schema notes edited while focused. Their sync is held until focus leaves the
+  // file, so typing is never interrupted by a vault-wide rewrite.
+  pendingSchemaEdits = new Set();
+  pendingCasts = new Set();
+  schemaPreviewTimeout = null;
+
+  async loadSettings() {
+    this.settings = { ...DEFAULT_SETTINGS, ...(await this.loadData()) };
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
 
   async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new SchemaSyncSettingTab(this.app, this));
     this.registerView(VIEW_TYPE_SCHEMA_SYNC, (leaf) => new SchemaSyncView(leaf, this));
     this.addRibbonIcon("workflow", "Open schema dashboard", () => {
       void this.openDashboard();
     });
+    // Two icons on purpose. Naming an attachment from a note's own fields is a
+    // separate job from keeping schemas in sync, and is wanted on demand.
+    this.addRibbonIcon("image", "Open asset renamer for active note", () => this.openAssetRenamer(false));
+    this.metadataMenuMapping = new MetadataMenuMapping(this);
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText("Schema Sync: loading");
 
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
-        if (file.path.startsWith(`${SCHEMA_FOLDER}/`)) {
-          this.scheduleSchemaValidation();
-        } else {
-          this.scheduleValidation(file);
+        if (!this.isSchemaPath(file.path)) return this.scheduleValidation(file);
+        // While the note is the focused file it belongs to the user. Hold the
+        // sync, and only refresh the dashboard so edits are still visible.
+        if (this.activeNotePath() === file.path) {
+          this.pendingSchemaEdits.add(file.path);
+          this.scheduleSchemaPreview();
+          return;
         }
+        this.scheduleSchemaValidation();
       })
     );
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile && (file.path.startsWith(`${ASSET_CONFIG_FOLDER}/`) || file.path.startsWith(`${CONFIG_FOLDER}/`) || file.path.startsWith(`${ROOT_CONFIG_FOLDER}/`)) && file.path !== SCHEMA_MAPPING_FILE && file.path !== LEGACY_MAPPING_FILE) {
         void this.checkImplementationColumns(file);
+        // The value list is the source. Editing one by hand has to reach
+        // Metadata Menu, or its dropdown is a stale copy of a file that moved on.
+        void this.metadataMenuMapping.pushList(file);
+        return;
       }
+      // A value typed into a record is a value its list should offer, so the
+      // list follows without waiting for a sync.
+      if (file instanceof TFile && this.isRecordFile(file)) this.scheduleConfigListSync(file);
     }));
     this.registerEvent(this.app.vault.on("create", (file) => {
-      if (this.isSchemaFile(file)) this.scheduleSchemaReload();
+      if (this.isSchemaFile(file)) return this.scheduleSchemaReload();
+      // A record appearing from anywhere — the file explorer, Sync, a template —
+      // has to reach the 03 panel, not just records this plugin created.
+      if (file instanceof TFile && this.isRecordFile(file)) this.refreshDashboards();
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
-      if (this.isSchemaFile(file)) this.scheduleSchemaReload();
+      if (this.isSchemaFile(file)) return this.scheduleSchemaReload();
+      if (!(file instanceof TFile) || !this.isRecordFile(file)) return;
+      const timeout = this.pending.get(file.path);
+      if (timeout) clearTimeout(timeout);
+      this.pending.delete(file.path);
+      void this.forgetRecord(file.path);
+      this.refreshDashboards();
+    }));
+    // Leaving a schema note is the signal that editing is finished. Both events
+    // fire on a pane or file switch; flushing is idempotent, so both call it.
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+      this.releaseClosedSafetyFiles();
+      void this.refreshFromSchemaNotes();
+    }));
+    this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      this.releaseClosedSafetyFiles();
+      void this.flushPendingSchemaEdits();
+      // Told once per open, never asked. A blocking confirm here stole focus
+      // from the editor, and there is nothing left to decide: an open schema
+      // note is never rewritten.
+      if (!this.isSchemaFile(file) || this.safetyPrompted.has(file.path)) return;
+      this.safetyPrompted.add(file.path);
+      new Notice(`${file.basename} is yours to edit. Schema Sync will not rewrite it while it is open, and will pick up your changes — including rows added to the Field Reference table — when you move off it.`, 6000);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       if (this.isSchemaPath(file.path) || this.isSchemaPath(oldPath)) this.scheduleSchemaReload();
-      void this.handleTrackedRename(oldPath, file.path);
+      void this.handleRename(file, oldPath);
     }));
     this.addCommand({
       id: "validate-schema-notes",
@@ -252,18 +2005,182 @@ class SchemaSyncPlugin extends Plugin {
       name: "Sync schema system",
       callback: () => this.syncSystem(true),
     });
+    // Deferral already protects a note while it is focused. This is for the
+    // longer case: keeping a schema note pinned open, untouched, across syncs.
+    this.addCommand({
+      id: "toggle-schema-safety",
+      name: "Toggle schema safety for the active note",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!this.isSchemaFile(file)) return false;
+        if (!checking) {
+          if (this.safetyOff.delete(file.path)) new Notice(`Safety on for ${file.basename}. Sync may rewrite it again.`);
+          else {
+            this.safetyOff.add(file.path);
+            new Notice(`Safety off for ${file.basename}. Sync will not rewrite it while it stays open.`);
+          }
+        }
+        return true;
+      },
+    });
     this.addCommand({
       id: "open-schema-dashboard",
       name: "Open schema dashboard",
       callback: () => this.openDashboard(),
     });
     this.addCommand({
+      id: "clean-orphaned-configs",
+      name: "Clean orphaned config notes",
+      callback: () => this.cleanOrphanedConfigs(),
+    });
+    this.addCommand({ id: "open-asset-renamer", name: "Open asset renamer for active note", checkCallback: (checking) => this.openAssetRenamer(checking) });
+    this.addCommand({ id: "configure-asset-renamer", name: "Configure asset renamer sources", callback: () => new AssetConfigModal(this).open() });
+    this.addCommand({ id: "bulk-rename-category", name: "Bulk rename category dependencies", callback: () => new BulkCategoryModal(this).open() });
+    this.addCommand({ id: "bulk-reload-attachment-names", name: "Bulk reload attachment names from metadata", callback: () => new BulkReloadModal(this).open() });
+    this.addCommand({ id: "generate-config-base", name: "Generate config.base views", callback: () => this.generateConfigBase() });
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+      if (file instanceof TFile && file.extension === "md") {
+        menu.addItem((item) => item.setTitle("Open asset renamer").setIcon("image").onClick(() => new AssetRenamerModal(this, file).open()));
+      }
+    }));
+    this.addCommand({
       id: "open-schema-erd",
       name: "Open schema ERD",
       callback: () => this.openBaseNote([...this.schemas.keys()][0]),
     });
 
-    this.app.workspace.onLayoutReady(() => void this.initializeDatabase());
+    this.app.workspace.onLayoutReady(() => {
+      void this.initializeDatabase();
+    });
+  }
+
+  // getActiveFile() keeps returning the last opened note even when focus has
+  // moved to a non-file view such as this plugin's dashboard, which left edits
+  // pending forever. The active markdown view is the honest signal.
+  activeNotePath() {
+    return this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path;
+  }
+
+  // Reads every schema note's Field Reference and adopts rows that are not yet
+  // declared in `fields:`. Registry only — the file is written later, and only
+  // when it is not the note being edited.
+  async adoptFieldReferenceEdits() {
+    for (const [schemaName, fields] of this.schemas) {
+      const file = this.schemaFile(schemaName);
+      if (!file) continue;
+      const tableFields = handAddedFields(await this.app.vault.read(file));
+      const adopted = Object.entries(tableFields).filter(([name]) => !Object.prototype.hasOwnProperty.call(fields, name));
+      if (adopted.length === 0) {
+        this.lastAdopted.delete(schemaName);
+        continue;
+      }
+      this.schemas.set(schemaName, { ...fields, ...Object.fromEntries(adopted) });
+      // The note cannot be written back while it is open, so adoption repeats on
+      // every sync. Only announce it when the set of adopted names changes.
+      const signature = adopted.map(([name]) => name).join(",");
+      if (this.lastAdopted.get(schemaName) === signature) continue;
+      this.lastAdopted.set(schemaName, signature);
+      new Notice(`${schemaName}: adopted ${signature.split(",").join(", ")} from the Field Reference table.`);
+    }
+  }
+
+  // Runs on every pane switch. Re-reads the schema notes and re-renders so the
+  // dashboard always matches the file, whether or not a metadata change was
+  // recorded. Writes nothing itself; the full sync only follows if there were
+  // edits waiting to be applied.
+  async refreshFromSchemaNotes() {
+    await this.loadSchemas();
+    await this.adoptFieldReferenceEdits();
+    this.refreshDashboards();
+    await this.flushPendingSchemaEdits();
+  }
+
+  // Bottom-to-top, and destructive by design. Sync pushes the schema outward to
+  // records and views; this pulls the schema note back in and lets it win. The
+  // Field Reference table becomes the field set, so a row deleted there deletes
+  // the field — the one thing an ordinary sync deliberately will not do.
+  async reloadFromDisk() {
+    await this.loadSchemas();
+    const plan = [];
+    for (const [schemaName, current] of this.schemas) {
+      const file = this.schemaFile(schemaName);
+      if (!file) continue;
+      const table = parseFieldReference(await this.app.vault.read(file));
+      // No table yet means nothing to pull from; frontmatter stands.
+      if (Object.keys(table).length === 0) continue;
+      const removed = Object.keys(current).filter((name) => !(name in table));
+      const added = Object.keys(table).filter((name) => !(name in current));
+      plan.push({ schemaName, file, fields: table, removed, added });
+    }
+    if (plan.length === 0) return new Notice("No Field Reference tables to pull from.");
+
+    const removals = plan.filter((entry) => entry.removed.length);
+    if (removals.length) {
+      const detail = removals.map((entry) => `${entry.schemaName}: ${entry.removed.join(", ")}`).join("\n");
+      const answer = await new Promise((resolve) => new ConfirmDeleteModal(
+        this.app,
+        "Pull from schema notes?",
+        `The Field Reference tables become the definition. These fields are not in a table and will be dropped from the schema:\n\n${detail}\n\nValues already stored in records are left untouched.`,
+        "Pull and drop",
+        resolve,
+      ).open());
+      if (!answer.confirmed) return;
+    }
+
+    for (const entry of plan) {
+      await this.app.vault.modify(entry.file, renderSchemaNote(entry.schemaName, entry.fields, this.app.metadataCache.getFileCache(entry.file)?.frontmatter?.schemaSource, schemaBodyOf(await this.app.vault.read(entry.file)), await this.app.vault.read(entry.file), this.schemas));
+      this.schemas.set(entry.schemaName, entry.fields);
+    }
+    this.pendingSchemaEdits.clear();
+    this.lastAdopted.clear();
+    this.refreshDashboards();
+    const changed = plan.filter((entry) => entry.added.length || entry.removed.length);
+    new Notice(changed.length
+      ? `Pulled from schema notes. ${changed.map((entry) => `${entry.schemaName}: ${entry.added.length} added, ${entry.removed.length} dropped`).join("; ")}. Run Sync schema system to push this out to records.`
+      : `Pulled from schema notes. Nothing changed in ${plan.length} schema(s).`, 8000);
+  }
+
+  // Dashboard-only refresh: reads the registry from the metadata cache and
+  // re-renders. Writes nothing, so it is safe to run against a note being typed.
+  scheduleSchemaPreview() {
+    if (this.schemaPreviewTimeout) clearTimeout(this.schemaPreviewTimeout);
+    this.schemaPreviewTimeout = setTimeout(async () => {
+      this.schemaPreviewTimeout = null;
+      await this.loadSchemas();
+      this.refreshDashboards();
+    }, 400);
+  }
+
+  // Runs the deferred sync once the user has moved off the edited note. Files
+  // still focused stay pending, so a flush triggered by an unrelated pane switch
+  // does not touch the note being worked on.
+  async flushPendingSchemaEdits() {
+    if (this.pendingSchemaEdits.size === 0) return;
+    const active = this.activeNotePath();
+    const ready = [...this.pendingSchemaEdits].filter((path) => path !== active);
+    if (ready.length === 0) return;
+    for (const path of ready) this.pendingSchemaEdits.delete(path);
+    await this.syncSystem(false);
+    const names = ready.map((path) => path.split("/").pop().replace(/\.schema\.md$/, ""));
+    new Notice(`Schema Sync: applied your edits to ${names.join(", ")}.`);
+  }
+
+  // Safety is scoped to "while the note is open", so anything no longer open in
+  // a leaf is re-armed.
+  // Every path currently open in a leaf, in any pane or sidebar.
+  openNotePaths() {
+    const open = new Set();
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const path = leaf.view?.file?.path;
+      if (path) open.add(path);
+    });
+    return open;
+  }
+
+  releaseClosedSafetyFiles() {
+    const open = this.openNotePaths();
+    for (const path of [...this.safetyOff]) if (!open.has(path)) this.safetyOff.delete(path);
+    for (const path of [...this.safetyPrompted]) if (!open.has(path)) this.safetyPrompted.delete(path);
   }
 
   async openDashboard() {
@@ -328,12 +2245,15 @@ class SchemaSyncPlugin extends Plugin {
       description: { type: "string", required: false, hasDefault: true, defaultValue: "" },
       assetCount: { type: "number", required: false, hasDefault: true, defaultValue: 0 },
     };
-    await Promise.all([SCHEMA_FOLDER, CONFIG_FOLDER, ASSET_FOLDER, BASE_VIEW_FOLDER, DATA_FOLDER].map((folder) => this.ensureFolder(folder)));
-    await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${name}.schema.md`), this.schemaMarkdownWithSource(name, schemaFields, `${CONFIG_FOLDER}/${name}.config.md`));
-    await this.app.vault.create(normalizePath(`${CONFIG_FOLDER}/${name}.config.md`), `# ${name} Config\n\n| name | description | assetCount |\n| --- | --- | --- |\n`);
+    // The sample's source table is a hand-authored implementation target, not a
+    // generated value list, so it belongs in the hand-authored config folder.
+    // data/config/ now holds only generated lists, namespaced by schema.
+    await Promise.all([SCHEMA_FOLDER, CONFIG_FOLDER, ROOT_CONFIG_FOLDER, ASSET_FOLDER, BASE_VIEW_FOLDER, DATA_FOLDER].map((folder) => this.ensureFolder(folder)));
+    await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${name}.schema.md`), renderSchemaNote(name, schemaFields, `${ROOT_CONFIG_FOLDER}/${name}.md`, undefined, undefined, this.schemas));
+    await this.app.vault.create(normalizePath(`${ROOT_CONFIG_FOLDER}/${name}.md`), `# ${name} Config\n\n| name | description | assetCount |\n| --- | --- | --- |\n`);
     await this.app.vault.create(normalizePath(`${DATA_FOLDER}/${name}Instance.md`), `---\nimplements: ${name}\nname: Sample ${name}\ndescription: "Sample record"\nassetCount: 0\n---\n\n# Sample ${name}\n`);
     await this.createSampleAsset(name);
-    await this.saveMappings({ [name]: { target: `${CONFIG_FOLDER}/${name}.config.md`, fields: { name: "name", description: "description", assetCount: "assetCount" } } });
+    await this.saveMappings({ [name]: { target: `${ROOT_CONFIG_FOLDER}/${name}.md`, fields: { name: "name", description: "description", assetCount: "assetCount" } } });
     await this.loadSchemas();
     await this.syncBaseViews();
     this.refreshDashboards();
@@ -348,10 +2268,8 @@ class SchemaSyncPlugin extends Plugin {
     await this.app.vault.createBinary(path, bytes.buffer);
   }
 
-  dbmlMarkdown(name, fields) {
-    const columns = Object.entries(fields).map(([fieldName, definition]) => `  ${fieldName} ${definition.type === "number" ? "int" : definition.type === "boolean" ? "boolean" : "varchar"}${definition.required ? " [not null]" : ""}`).join("\n");
-    return `# ${name} Database\n\n
-generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTable ${name} {\n${columns}\n}\n\`\`\`\n`;
+  databaseName() {
+    return this.pascalCase(SAMPLE_DATABASE);
   }
 
   async openBaseNote(schemaName) {
@@ -361,14 +2279,18 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     else new Notice("No .base view exists yet. Run Sync database first.");
   }
 
+  // The single source of truth for a schema's name. The filename wins; the
+  // `schema:` property is only a fallback for legacy notes that lack the
+  // `.schema` suffix. Every lookup must go through this, or the two identities
+  // drift and one schema's generated content lands in another's file.
+  schemaKeyFor(file) {
+    if (!this.isSchemaPath(file.path)) return undefined;
+    if (file.basename.endsWith(".schema")) return file.basename.slice(0, -".schema".length);
+    return this.app.metadataCache.getFileCache(file)?.frontmatter?.schema;
+  }
+
   schemaFile(schemaName) {
-    return this.app.vault.getMarkdownFiles().find((file) => {
-      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-      const fileNameSchema = file.path.startsWith(`${SCHEMA_FOLDER}/`) && file.basename.endsWith(".schema")
-        ? file.basename.slice(0, -".schema".length)
-        : frontmatter?.schema;
-      return (file.path.startsWith(`${SCHEMA_FOLDER}/`) || file.path.startsWith(`${LEGACY_SCHEMA_FOLDER}/`)) && fileNameSchema === schemaName;
-    });
+    return this.app.vault.getMarkdownFiles().find((file) => this.isSchemaPath(file.path) && this.schemaKeyFor(file) === schemaName);
   }
 
   schemaSource(schemaName) {
@@ -382,21 +2304,22 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     }
   }
 
-  schemaMarkdown(name, fields) {
-    const fieldLines = Object.entries(fields).map(([fieldName, definition]) => {
-      const lines = [`  - ${fieldName}:`, `      type: ${definition.type}`];
-      if (definition.required) lines.push("      required: true");
-      if (definition.hasDefault) lines.push(`      default: ${this.yamlValue(definition.defaultValue)}`);
-      if (definition.relation?.target) lines.push(`      relation: ${definition.relation.target}`);
-      return lines.join("\n");
-    });
-    return `---\nschema: ${name}\nfields:\n${fieldLines.join("\n")}\n---\n\n# ${name} Schema\n\nDefines the base fields for any ${name} note.\n`;
+  // Rewrites an existing schema note in place, carrying its prose across. Every
+  // field-editing path goes through here so none of them can wipe the body.
+  async writeSchemaFile(schemaName, fields, sourceOverride) {
+    const file = this.schemaFile(schemaName);
+    if (!file) return null;
+    const raw = await this.app.vault.read(file);
+    const sourcePath = sourceOverride !== undefined ? sourceOverride : this.schemaSource(schemaName);
+    await this.app.vault.modify(file, renderSchemaNote(schemaName, fields, sourcePath, schemaBodyOf(raw), raw, this.schemas));
+    return file;
   }
 
-  schemaMarkdownWithSource(name, fields, sourcePath) {
-    const content = this.schemaMarkdown(name, fields);
-    const sourceLink = sourcePath.replace(/\.md$/i, "");
-    return content.replace(`schema: ${name}\n`, `schema: ${name}\nschemaSource: ${sourcePath}\n`).replace("\nDefines the base fields", `\nSource implementation: [[${sourceLink}]]\n\nDefines the base fields`);
+  async writeFile(path, content) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (!(existing instanceof TFile)) return this.app.vault.create(path, content);
+    if (await this.app.vault.read(existing) !== content) await this.app.vault.modify(existing, content);
+    return existing;
   }
 
   parseConfigColumns(raw) {
@@ -416,6 +2339,8 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
       required: name.toLowerCase() === "name",
       hasDefault: false,
       defaultValue: undefined,
+      // Imported, not authored. Bind it deliberately in 02/Definition.
+      bind: false,
     }]));
   }
 
@@ -440,11 +2365,10 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     const fields = this.fieldsFromConfig(raw);
     const existing = this.schemaFile(schemaName);
     if (existing && !window.confirm(`Schema ${schemaName} exists. Replace its fields from ${file.path}?`)) return;
-    const content = this.schemaMarkdownWithSource(schemaName, fields, file.path);
-    if (existing) await this.app.vault.modify(existing, content);
+    if (existing) await this.writeSchemaFile(schemaName, fields, file.path);
     else {
       await this.ensureFolder(SCHEMA_FOLDER);
-      await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${this.pascalCase(schemaName)}.schema.md`), content);
+      await this.app.vault.create(normalizePath(`${SCHEMA_FOLDER}/${this.pascalCase(schemaName)}.schema.md`), renderSchemaNote(schemaName, fields, file.path, undefined, undefined, this.schemas));
     }
     const mappings = { ...this.currentMappings(), [schemaName]: { target: file.path, fields: Object.fromEntries(Object.keys(fields).map((name) => [name, name])) } };
     await this.saveMappings(mappings);
@@ -454,7 +2378,13 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
   }
 
   async checkImplementationColumns(file) {
+    // Value lists this plugin generates live in the same folder; they are not
+    // implementation targets and must not raise "define these columns" prompts.
+    if (this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor) return;
     const raw = await this.app.vault.read(file);
+    // Checked against the raw text as well: the metadata cache lags a write, and
+    // a missed guard here means a modal on every generated config file.
+    if (/^configFor:/m.test(raw)) return;
     const columns = this.parseConfigColumns(raw);
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
     const mappings = this.currentMappings();
@@ -471,11 +2401,12 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     for (const column of unknown) {
       const value = frontmatter[column];
       const type = value === null ? "string" : Array.isArray(value) ? "array" : typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : typeof value === "object" ? "object" : "string";
-      nextFields[column] = { type, required: false, hasDefault: false, defaultValue: undefined };
+      // Inferred from a file the plugin did not author, so it stays unbound:
+      // documented, but never written back into records or a config list.
+      nextFields[column] = { type, required: false, hasDefault: false, defaultValue: undefined, bind: false };
     }
-    const schemaFile = this.schemaFile(schemaName);
-    if (!schemaFile) return;
-    await this.app.vault.modify(schemaFile, this.schemaMarkdownWithSource(schemaName, nextFields, file.path));
+    if (!this.schemaFile(schemaName)) return;
+    await this.writeSchemaFile(schemaName, nextFields, file.path);
     await this.loadSchemas();
     this.refreshDashboards();
     new Notice(`Added ${unknown.length} field(s) to ${schemaName}.`);
@@ -503,9 +2434,9 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
 
   parseFieldSpec(spec) {
     const [name, type = "string", ...options] = spec.split(":").map((part) => part.trim());
-    if (!name || !["string", "number", "boolean", "array", "object"].includes(type)) return null;
-    const definition = { type, required: options.includes("required"), hasDefault: false, defaultValue: undefined };
-    const defaultOption = options.find((option) => option !== "required");
+    if (!name || !FIELD_TYPES.includes(type)) return null;
+    const definition = { type, required: options.includes("required"), hasDefault: false, defaultValue: undefined, bind: !options.includes("unbound") };
+    const defaultOption = options.find((option) => option !== "required" && option !== "unbound");
     if (defaultOption !== undefined) {
       definition.hasDefault = true;
       if (type === "number") definition.defaultValue = Number(defaultOption);
@@ -523,17 +2454,143 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     return JSON.stringify(value);
   }
 
+  // Moves a renamed key in every record implementing the schema, preserving the
+  // value. Without this a rename silently orphans the data: the schema forgets
+  // the old key and validation then reports it as undeclared on every note.
+  async renameRecordField(schemaName, oldName, newName) {
+    for (const file of this.dataFiles()) {
+      if (this.app.metadataCache.getFileCache(file)?.frontmatter?.implements !== schemaName) continue;
+      await this.app.fileManager.processFrontMatter(file, (current) => {
+        if (!(oldName in current) || newName in current) return;
+        current[newName] = current[oldName];
+        delete current[oldName];
+      });
+    }
+  }
+
+  // Renaming a field used to leave its value list behind under the old name,
+  // and the next sync generated a second one alongside it.
+  async renameFieldConfig(schemaName, oldName, newName) {
+    const existingPaths = new Set(this.app.vault.getMarkdownFiles().map((each) => each.path));
+    const plan = configRenamePlan({ schemaName, oldName, newName, existingPaths });
+    if (plan.action === "none") return;
+    if (plan.action === "conflict") {
+      return new Notice(`${plan.to} already exists, so "${oldName}" kept its value list at ${plan.from}. Clear the leftover from 01 / Registry, then rename again.`, 10000);
+    }
+    const file = this.app.vault.getAbstractFileByPath(plan.from);
+    if (!(file instanceof TFile)) return;
+    await this.app.fileManager.renameFile(file, normalizePath(plan.to));
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      frontmatter.configFor = [plan.configFor];
+    });
+  }
+
+  // One field rename, everywhere it lands: the property on every record, the
+  // value list's file name, and the schema entry — in that order, so our own
+  // regeneration of the schema note is the last write.
+  async renameSchemaField(schemaName, oldName, newName) {
+    const fields = this.schemas.get(schemaName);
+    if (!fields || !Object.prototype.hasOwnProperty.call(fields, oldName)) return new Notice(`"${oldName}" is not a field of ${schemaName}.`);
+    if (newName === oldName) return;
+    const error = fieldNameError(newName);
+    if (error) return new Notice(error);
+    if (Object.keys(fields).some((name) => name !== oldName && name.toLowerCase() === newName.toLowerCase())) {
+      return new Notice(`${schemaName} already has a field named "${newName}".`);
+    }
+    await this.renameRecordField(schemaName, oldName, newName);
+    await this.renameFieldConfig(schemaName, oldName, newName);
+    const next = renameField(fields, oldName, newName);
+    await this.writeSchemaFile(schemaName, next);
+    this.schemas.set(schemaName, next);
+    await this.syncBaseViews();
+    this.refreshDashboards();
+    new Notice(`Renamed ${schemaName}.${oldName} to ${newName}. The records, the value list and the schema all moved together.`, 7000);
+  }
+
+  // Renaming a value list IS renaming the attribute: the note is the thing, so
+  // its file name is the field name. Obsidian offers no way to veto a rename, so
+  // the file is put back and the real rename offered instead — renaming the file
+  // alone would strand it and the next sync would generate a fresh one beside it.
+  async interceptConfigRename(file, oldPath) {
+    // Our own undo, coming back round as another rename event.
+    if (this.revertedRenames.delete(file.path)) return true;
+
+    // The folder is the schema's name, so renaming it is renaming the schema —
+    // which is done from the schema note, and moveSchemaConfigFolder brings the
+    // folder along. Renaming it here would leave every configFor inside it
+    // pointing at a schema whose lists are no longer where they say they are.
+    const folderSchema = oldPath.startsWith(`${CONFIG_FOLDER}/`) && !oldPath.endsWith(".md")
+      ? oldPath.slice(CONFIG_FOLDER.length + 1)
+      : null;
+    if (folderSchema && !folderSchema.includes("/") && this.schemas.has(folderSchema)) {
+      this.revertedRenames.add(oldPath);
+      await this.app.fileManager.renameFile(file, normalizePath(oldPath));
+      new Notice(`${oldPath} holds ${folderSchema}'s value lists, and its name is the schema's name. It has been put back — rename ${SCHEMA_FOLDER}/${folderSchema}.schema.md instead and the folder follows it.`, 10000);
+      return true;
+    }
+
+    const source = configSourceOfPath(oldPath);
+    if (!source) return false;
+    const fields = this.schemas.get(source.schemaName);
+    if (!fields || !Object.prototype.hasOwnProperty.call(fields, source.fieldName)) return false;
+
+    const moved = configSourceOfPath(file.path);
+    const proposed = normalizeFieldName(moved ? moved.fieldName : file.basename);
+    this.revertedRenames.add(oldPath);
+    await this.app.fileManager.renameFile(file, normalizePath(oldPath));
+    if (!proposed || proposed === source.fieldName) return true;
+
+    new SchemaInputModal(
+      this.app,
+      `Rename the ${source.fieldName} field of ${source.schemaName}?`,
+      "New field name",
+      proposed,
+      (value) => this.renameSchemaField(source.schemaName, source.fieldName, normalizeFieldName(value)),
+      `${oldPath} is the value list for ${source.schemaName}.${source.fieldName}, so its file name is the field's name. It has been put back for now. Renaming the field from here moves the list, the schema entry and every record's property together.`,
+    ).open();
+    return true;
+  }
+
+  async handleRename(file, oldPath) {
+    if (await this.interceptConfigRename(file, oldPath)) return;
+    await this.handleTrackedRename(oldPath, file.path);
+  }
+
   async saveSchemaFromDashboard(schemaName, editor) {
     const file = this.schemaFile(schemaName);
     if (!file) return;
     const fields = {};
+    const renames = [];
     for (const row of editor.querySelectorAll("[data-schema-row]")) {
-      const name = row.querySelector("[data-field-name]")?.value.trim() || row.dataset.schemaRow;
-      const type = row.querySelector("[data-field-type]")?.value || "string";
+      const original = row.dataset.schemaRow;
+      const input = row.querySelector("[data-field-name]");
+      // A name typed as [[link]] is the user reaching for the value list, not
+      // asking for brackets in the field name.
+      const typed = normalizeFieldName(input?.value);
+      // A bad name is a mistake, not an instruction. Restore what was there and
+      // abandon the whole save rather than writing a half-renamed schema.
+      const nameError = input ? fieldNameError(typed) : null;
+      if (nameError) {
+        input.value = original;
+        new Notice(`${nameError} Reverted to "${original}".`);
+        return;
+      }
+      const name = typed || original;
+      // Case-insensitive: the two names are two file names now, and this vault
+      // is on a case-insensitive filesystem.
+      if (Object.keys(fields).some((existing) => existing.toLowerCase() === name.toLowerCase())) {
+        if (input) input.value = original;
+        new Notice(`${schemaName} already has a field named "${name}".`);
+        return;
+      }
+      if (name !== original) renames.push([original, name]);
+      const rawType = row.querySelector("[data-field-type]")?.value;
+      const type = FIELD_TYPES.includes(rawType) ? rawType : "string";
       const required = row.querySelector("[data-field-required]")?.checked === true;
+      const bind = row.querySelector("[data-field-bind]")?.checked !== false;
       const relationTarget = row.querySelector("[data-field-relation]")?.value || "";
       const rawDefault = row.querySelector("[data-field-default]")?.value || "";
-      const definition = { type, required, hasDefault: rawDefault.length > 0, defaultValue: undefined };
+      const definition = { type, required, bind, hasDefault: rawDefault.length > 0, defaultValue: undefined };
       if (definition.hasDefault) {
         if (type === "number") definition.defaultValue = Number(rawDefault);
         else if (type === "boolean") definition.defaultValue = rawDefault === "true";
@@ -544,23 +2601,65 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
       if (relationTarget) definition.relation = { target: relationTarget };
       fields[name] = definition;
     }
-    const source = this.schemaSource(schemaName);
-      await this.app.vault.modify(file, source ? this.schemaMarkdownWithSource(schemaName, fields, source) : this.schemaMarkdown(schemaName, fields));
+    // Before writeSchemaFile: renameFile makes Obsidian rewrite every
+    // [[Schema/field|field]] in the vault, and our own regeneration of the
+    // schema note has to be the last write to land.
+    for (const [oldName, newName] of renames) {
+      await this.renameRecordField(schemaName, oldName, newName);
+      await this.renameFieldConfig(schemaName, oldName, newName);
+    }
+    await this.writeSchemaFile(schemaName, fields);
     await this.addSchemaFieldsToImplementation(schemaName, fields);
     await this.syncEntityFieldsForSchema(schemaName, fields);
     this.schemas.set(schemaName, fields);
     this.refreshDashboards();
-    new Notice(`${schemaName} schema saved.`);
+    new Notice(renames.length ? `${schemaName} saved; renamed ${renames.map(([o, n]) => `${o} → ${n}`).join(", ")} in records.` : `${schemaName} schema saved.`);
   }
 
+  // Two-stage and non-destructive first. Deleting a bound field unbinds it: the
+  // field stops being written anywhere, and values already in records survive as
+  // free-form properties rather than being orphaned. Deleting an already-unbound
+  // field is the one that actually removes it.
   async deleteSchemaField(schemaName, fieldName) {
     const file = this.schemaFile(schemaName);
-    if (!file || !window.confirm(`Remove field "${fieldName}" from ${schemaName}?`)) return;
-    const fields = { ...(this.schemas.get(schemaName) || {}) };
+    if (!file) return;
+    const current = this.schemas.get(schemaName) || {};
+    const definition = current[fieldName];
+    if (!definition) return;
+    if (isBound(definition)) {
+      // No confirmation: unbinding writes nothing away and is reversible from
+      // the bind dropdown in the same row.
+      const next = setFieldBind(current, fieldName, false);
+      await this.writeSchemaFile(schemaName, next);
+      this.schemas.set(schemaName, next);
+      await this.syncBaseViews();
+      this.refreshDashboards();
+      new Notice(`"${fieldName}" unbound. It is no longer written to records, config lists, base views or the ERD, and existing values are left in place. Press × again to remove it from ${schemaName}.`, 8000);
+      return;
+    }
+    if (this.settings.confirmDestructiveActions && !this.skipDeleteConfirm) {
+      // Mirrors Obsidian's own "don't ask again" on file deletion, and like it
+      // the choice lasts only for this session.
+      const answer = await new Promise((resolve) => new ConfirmDeleteModal(this.app, `Remove "${fieldName}" from ${schemaName}?`, `It is already unbound, so nothing is written to it. This drops it from the schema entirely. Values already stored in records are left untouched and become ordinary free-form properties.`, "Remove field", resolve).open());
+      if (!answer.confirmed) return;
+      if (answer.remember) this.skipDeleteConfirm = true;
+    }
+    const fields = { ...current };
     delete fields[fieldName];
-    const source = this.schemaSource(schemaName);
-    await this.app.vault.modify(file, source ? this.schemaMarkdownWithSource(schemaName, fields, source) : this.schemaMarkdown(schemaName, fields));
-    await this.loadSchemas();
+    await this.writeSchemaFile(schemaName, fields);
+    this.schemas.set(schemaName, fields);
+    await this.syncBaseViews();
+    this.refreshDashboards();
+    new Notice(`"${fieldName}" removed from ${schemaName}.`);
+  }
+
+  async reorderSchemaFields(schemaName, fromName, toName) {
+    const fields = this.schemas.get(schemaName);
+    if (!fields) return;
+    const next = reorderFields(fields, fromName, toName);
+    await this.writeSchemaFile(schemaName, next);
+    this.schemas.set(schemaName, next);
+    await this.syncBaseViews();
     this.refreshDashboards();
   }
 
@@ -588,7 +2687,7 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     const path = normalizePath(`${SCHEMA_FOLDER}/${schemaName}.schema.md`);
     if (this.app.vault.getAbstractFileByPath(path)) return new Notice(`Schema file already exists: ${path}`);
     try {
-      await this.app.vault.create(path, this.schemaMarkdown(schemaName, fields));
+      await this.app.vault.create(path, renderSchemaNote(schemaName, fields, undefined, undefined, undefined, this.schemas));
       await this.loadSchemas();
       this.selectedSchema = schemaName;
       this.refreshDashboards();
@@ -617,8 +2716,7 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
       const parsed = this.parseFieldSpec(spec);
       if (!parsed) return new Notice("Use string, number, boolean, array, or object as the field type.");
       const fields = { ...(this.schemas.get(schemaName) || {}), [parsed.name]: parsed.definition };
-      const source = this.schemaSource(schemaName);
-      await this.app.vault.modify(file, source ? this.schemaMarkdownWithSource(schemaName, fields, source) : this.schemaMarkdown(schemaName, fields));
+      await this.writeSchemaFile(schemaName, fields);
       await this.addSchemaFieldsToImplementation(schemaName, fields);
       await this.syncEntityFieldsForSchema(schemaName, fields);
       this.schemas.set(schemaName, fields);
@@ -669,18 +2767,36 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     new Notice(`Bindings removed for ${schemaName}.`);
   }
 
-  async saveMappings(mappings) {
-    await this.ensureFolder("config");
+  // Single writer for the mappings note. Previously three near-identical copies
+  // of this existed, and all of them created the folder "config" while writing
+  // to data/config/schema-mappings.md.
+  async writeMappingsFile(schemaMappings, records, generatedPaths) {
+    await this.ensureFolder(CONFIG_FOLDER);
+    const content = `---\nschemaMappings: ${JSON.stringify(schemaMappings)}\nrecordMappings: ${JSON.stringify(records)}\ngeneratedPaths: ${JSON.stringify(generatedPaths)}\n---\n\n# Schema Mappings\n\nField bindings are tracked by vault path, not note name.\n`;
     const file = this.mappingFile();
-    const records = this.currentRecordMappings();
-    const content = `---\nschemaMappings: ${JSON.stringify(mappings)}\nrecordMappings: ${JSON.stringify(records)}\n---\n\n# Schema Mappings\n\nField bindings are tracked by vault path, not note name.\n`;
-    if (file instanceof TFile) await this.app.vault.modify(file, content);
-    else await this.app.vault.create(SCHEMA_MAPPING_FILE, content);
+    if (!(file instanceof TFile)) return this.app.vault.create(SCHEMA_MAPPING_FILE, content);
+    // Compare before writing: syncSystem calls this on every run, and a
+    // no-op write still churns the file's mtime and Obsidian Sync.
+    if (await this.app.vault.read(file) !== content) await this.app.vault.modify(file, content);
+    return file;
+  }
+
+  async saveMappings(mappings) {
+    await this.writeMappingsFile(mappings, this.currentRecordMappings(), this.currentGeneratedPaths());
+  }
+
+  async saveGeneratedPaths(generatedPaths) {
+    await this.writeMappingsFile(this.currentMappings(), this.currentRecordMappings(), generatedPaths);
   }
 
   currentRecordMappings() {
     const file = this.mappingFile();
     return file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter?.recordMappings || {} : {};
+  }
+
+  currentGeneratedPaths() {
+    const file = this.mappingFile();
+    return file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter?.generatedPaths || {} : {};
   }
 
   async trackRecord(filePath, schemaName) {
@@ -689,12 +2805,7 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
   }
 
   async saveRecordMappings(records) {
-    await this.ensureFolder("config");
-    const file = this.mappingFile();
-    const mappings = this.currentMappings();
-    const content = `---\nschemaMappings: ${JSON.stringify(mappings)}\nrecordMappings: ${JSON.stringify(records)}\n---\n\n# Schema Mappings\n\nField bindings are tracked by vault path, not note name.\n`;
-    if (file instanceof TFile) await this.app.vault.modify(file, content);
-    else await this.app.vault.create(SCHEMA_MAPPING_FILE, content);
+    await this.writeMappingsFile(this.currentMappings(), records, this.currentGeneratedPaths());
   }
 
   async updateTrackedPath(oldPath, newPath) {
@@ -712,13 +2823,33 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
       delete records[oldPath];
       changed = true;
     }
-    if (changed) {
-      await this.ensureFolder("config");
-      const file = this.mappingFile();
-      const content = `---\nschemaMappings: ${JSON.stringify(schemaMappings)}\nrecordMappings: ${JSON.stringify(records)}\n---\n\n# Schema Mappings\n\nField bindings are tracked by vault path, not note name.\n`;
-      if (file instanceof TFile) await this.app.vault.modify(file, content);
-      else await this.app.vault.create(SCHEMA_MAPPING_FILE, content);
+    const generatedPaths = { ...this.currentGeneratedPaths() };
+    if (generatedPaths[oldPath]) {
+      generatedPaths[newPath] = generatedPaths[oldPath];
+      delete generatedPaths[oldPath];
+      changed = true;
     }
+    if (changed) await this.writeMappingsFile(schemaMappings, records, generatedPaths);
+  }
+
+  // Renaming a schema note takes its whole folder of value lists with it, so the
+  // configFor back-links stay true and nothing is left looking orphaned.
+  async moveSchemaConfigFolder(oldPath, newPath) {
+    if (!this.isSchemaPath(oldPath) || !this.isSchemaPath(newPath)) return;
+    const schemaOf = (path) => path.split("/").pop().replace(/\.schema\.md$/i, "");
+    const oldSchema = schemaOf(oldPath);
+    const newSchema = schemaOf(newPath);
+    if (oldSchema === newSchema) return;
+    const folder = this.app.vault.getAbstractFileByPath(`${CONFIG_FOLDER}/${oldSchema}`);
+    if (!folder || this.app.vault.getAbstractFileByPath(`${CONFIG_FOLDER}/${newSchema}`)) return;
+    await this.app.fileManager.renameFile(folder, normalizePath(`${CONFIG_FOLDER}/${newSchema}`));
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (file.parent?.path !== `${CONFIG_FOLDER}/${newSchema}`) continue;
+      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+        frontmatter.configFor = [`${newSchema}.${file.basename}`];
+      });
+    }
+    new Notice(`Moved ${oldSchema}'s value lists to ${CONFIG_FOLDER}/${newSchema}.`);
   }
 
   async handleTrackedRename(oldPath, newPath) {
@@ -732,6 +2863,8 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
         frontmatter.schemaSource = newPath;
       });
     }
+    await this.moveSchemaConfigFolder(oldPath, newPath);
+    this.refreshDashboards();
     const movedConfig = newPath.startsWith(`${CONFIG_FOLDER}/`) || newPath.startsWith(`${ASSET_CONFIG_FOLDER}/`);
     if (movedConfig) {
       const movedFile = this.app.vault.getAbstractFileByPath(newPath);
@@ -739,33 +2872,543 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     }
   }
 
+  // Creates a real record in the schema's own records folder, carrying every
+  // field. Repeatable: each press takes the next free number, starting at 2 so
+  // the numbering sits alongside the unnumbered _placeholder template.
   async implementEntity(schemaName) {
-    const existingData = this.dataFiles().some((file) => this.app.metadataCache.getFileCache(file)?.frontmatter?.implements === schemaName && !file.basename.startsWith(PLACEHOLDER_PREFIX));
-    if (existingData) return new Notice(`${schemaName} already has entity data.`);
-    const path = "config/entity.md";
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    const values = { implements: schemaName, ...this.defaultsFor(this.schemas.get(schemaName) || {}) };
-    if (existing instanceof TFile) {
-      const raw = await this.app.vault.read(existing);
-      const frontmatter = this.app.metadataCache.getFileCache(existing)?.frontmatter || {};
-      if (frontmatter.implements && frontmatter.implements !== "Temp" && frontmatter.implements !== schemaName) {
-        return new Notice(`config/entity.md already implements ${frontmatter.implements}.`);
-      }
-      const nextFrontmatter = `---\n${this.frontmatterText(values)}\n---`;
-      const nextContent = raw.match(/^---[\s\S]*?---/) ? raw.replace(/^---[\s\S]*?---/, nextFrontmatter) : `${nextFrontmatter}\n${raw}`;
-      await this.app.vault.modify(existing, nextContent.replace(/^#\s+.*$/m, `# ${schemaName} Entity`));
-      await this.trackRecord(existing.path, schemaName);
-      await this.loadSchemas();
-      this.refreshDashboards();
-      new Notice(`config/entity.md now implements ${schemaName}.`);
+    const fields = this.schemas.get(schemaName);
+    if (!fields) return new Notice(`Schema "${schemaName}" was not found.`);
+    const folder = await this.folderForSchema(schemaName);
+    await this.ensureFolder(folder);
+    const stem = PLACEHOLDER_PREFIX.slice(0, -1);
+    let index = 2;
+    let path = normalizePath(`${folder}/${stem}${index}.${schemaName}.md`);
+    while (this.app.vault.getAbstractFileByPath(path)) {
+      index += 1;
+      path = normalizePath(`${folder}/${stem}${index}.${schemaName}.md`);
+    }
+    await this.app.vault.create(path, `---\n${renderRecordFrontmatter(schemaName, fields)}\n---\n# ${schemaName} ${index}\n\nRecord generated from the ${schemaName} schema. Rename this note once it holds real data.\n\n${NOTES_MARKER}\n\n`);
+    await this.trackRecord(path, schemaName);
+    this.refreshDashboards();
+    new Notice(`Created ${path}.`);
+  }
+
+  async forgetRecord(recordPath) {
+    const records = this.currentRecordMappings();
+    if (!records[recordPath]) return;
+    const next = { ...records };
+    delete next[recordPath];
+    await this.saveRecordMappings(next);
+  }
+
+  async deleteRecord(recordPath) {
+    const file = this.app.vault.getAbstractFileByPath(recordPath);
+    if (!(file instanceof TFile)) return new Notice("That record no longer exists.");
+    if (this.settings.confirmDestructiveActions && !this.skipRecordDeleteConfirm) {
+      const answer = await new Promise((resolve) => new ConfirmDeleteModal(this.app, `Delete "${file.basename}"?`, `${file.path} will be moved to trash.`, "Delete record", resolve).open());
+      if (!answer.confirmed) return;
+      if (answer.remember) this.skipRecordDeleteConfirm = true;
+    }
+    // trashFile honours the vault's own "move to system trash" setting rather
+    // than deleting outright.
+    if (this.app.fileManager.trashFile) await this.app.fileManager.trashFile(file);
+    else await this.app.vault.trash(file, true);
+    await this.forgetRecord(recordPath);
+    this.refreshDashboards();
+    new Notice(`Deleted ${file.basename}.`);
+  }
+
+  // Fires when a record gains a property its schema does not declare. Asks once
+  // per property; "leave it alone" is remembered on disk so a record's private
+  // annotations never nag again.
+  async checkUndeclaredProperties(file) {
+    if (!this.settings.promptForUndeclaredProperties) return;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    const schemaName = frontmatter?.implements;
+    if (typeof schemaName !== "string") return;
+    const fields = this.schemas.get(schemaName);
+    const ignored = new Set(this.settings.ignoredProperties[schemaName] || []);
+    // Templates are included on purpose — see undeclaredPropertyFor().
+    const unknown = undeclaredPropertyFor({ schemaName, frontmatter, fields, ignored, asking: this.askingAbout });
+    if (!unknown) return;
+
+    const key = `${schemaName}.${unknown}`;
+    this.askingAbout.add(key);
+    const type = this.inferRecordFieldType(frontmatter[unknown]);
+    const choice = await new Promise((resolve) => new UndeclaredPropertyModal(
+      this.app,
+      { property: unknown, type, schemaName, recordName: file.basename },
+      resolve,
+    ).open());
+
+    if (choice === "defer") {
+      this.askingAbout.delete(key);
       return;
     }
-    await this.ensureFolder("config");
-    await this.app.vault.create(path, `---\n${this.frontmatterText(values)}\n---\n# ${schemaName} Entity\n\nImplementation template generated from the ${schemaName} schema.\n`);
-    await this.trackRecord(path, schemaName);
-    await this.loadSchemas();
+    if (choice === "ignore") {
+      this.settings.ignoredProperties[schemaName] = [...ignored, unknown];
+      await this.saveSettings();
+      new Notice(`"${unknown}" left as a property of ${file.basename} alone.`);
+      return;
+    }
+
+    const bind = choice === "bind";
+    const next = { ...fields, [unknown]: { type, required: false, hasDefault: false, defaultValue: undefined, bind } };
+    await this.writeSchemaFile(schemaName, next);
+    this.schemas.set(schemaName, next);
+    if (bind) await this.syncEntityFieldsForSchema(schemaName, next);
+    await this.syncBaseViews();
     this.refreshDashboards();
-    new Notice(`Created config/entity.md implementing ${schemaName}.`);
+    if (bind) {
+      new Notice(`"${unknown}" added to ${schemaName} and to every ${schemaName} record.`);
+      await this.openDashboardAt(schemaName);
+    } else {
+      new Notice(`"${unknown}" documented in ${schemaName} as unbound. Other records are untouched; bind it when you want it everywhere.`, 7000);
+    }
+  }
+
+  // An [[link]] to a non-markdown file is an attachment, not a plain string.
+  inferRecordFieldType(value) {
+    if (typeof value === "string") {
+      const link = value.trim().match(/^\[\[([^\]|]+?)(?:\|[^\]]*)?\]\]$/);
+      const target = link ? this.app.metadataCache.getFirstLinkpathDest(link[1].trim(), "") : null;
+      if (target && target.extension && target.extension.toLowerCase() !== "md") return "attachment";
+    }
+    return inferFieldType(value);
+  }
+
+  async openDashboardAt(schemaName) {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_SCHEMA_SYNC)[0];
+    const leaf = existing || this.app.workspace.getLeaf(true);
+    if (!existing) await leaf.setViewState({ type: VIEW_TYPE_SCHEMA_SYNC, active: true });
+    this.app.workspace.revealLeaf(leaf);
+    if (leaf.view?.selectedSchema !== undefined) {
+      leaf.view.selectedSchema = schemaName;
+      leaf.view.render();
+    }
+  }
+
+  async openSchemaNote(schemaName) {
+    const file = this.schemaFile(schemaName);
+    if (!file) return new Notice(`No schema file found for "${schemaName}".`);
+    await this.app.workspace.getLeaf(true).openFile(file);
+  }
+
+  // Opens the value list backing a field. When there is no list, says which of
+  // the rules excluded it rather than failing silently.
+  // Always opens something. A field with a value list opens it, a foreign key
+  // opens whatever the target entity offers, and anything else opens the schema
+  // that declares it — a button that refuses to navigate is just a lecture.
+  async openFieldConfig(schemaName, fieldName) {
+    const definition = (this.schemas.get(schemaName) || {})[fieldName];
+    if (!definition) return new Notice(`"${fieldName}" is not a field of ${schemaName}.`);
+    const { path } = fieldReferenceTarget(schemaName, fieldName, definition, this.schemas);
+    const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    if (file instanceof TFile) return this.app.workspace.getLeaf(true).openFile(file);
+    // Not generated yet — fall back to the schema rather than going nowhere.
+    const schemaFile = this.schemaFile(schemaName);
+    if (schemaFile) {
+      new Notice(`${path} has not been generated yet. Opening ${schemaName}'s schema instead; run Sync schema system to create it.`, 6000);
+      return this.app.workspace.getLeaf(true).openFile(schemaFile);
+    }
+    new Notice(`${path} does not exist yet. Run Sync schema system first.`);
+  }
+
+  // --- Asset Renamer -------------------------------------------------------
+
+  schemaNameFor(noteFile) {
+    if (!noteFile) return null;
+    const name = schemaNameOfNote(this.app.metadataCache.getFileCache(noteFile)?.frontmatter, noteFile.path);
+    return name && this.schemas.has(name) ? name : null;
+  }
+
+  schemaFieldsFor(noteFile) {
+    const name = this.schemaNameFor(noteFile);
+    return name ? this.schemas.get(name) : null;
+  }
+
+  // The first bound attachment field the record's schema declares. This is the
+  // property the base view's image column reads, so it is the one the renamer
+  // must write — matching its case exactly.
+  attachmentFieldFor(noteFile) {
+    const fields = this.schemaFieldsFor(noteFile) || {};
+    const found = Object.entries(fields).find(([, definition]) => definition.type === "attachment" && isBound(definition));
+    return found ? found[0] : null;
+  }
+
+  // README item 10. A record's filename is built from its own schema's value
+  // lists, not from every list in the vault, so the dropdowns already suit the
+  // note in front of you. A note that declares no schema offers nothing — the
+  // renamer is for notes that follow the data pattern. Called with no note (the
+  // Metadata Menu sync, the bulk tools) it means "every list there is".
+  getConfigSourceFiles(noteFile) {
+    const fileAt = (path) => {
+      const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+      return file instanceof TFile ? file : null;
+    };
+    if (noteFile) {
+      const schemaName = this.schemaNameFor(noteFile);
+      if (!schemaName) return [];
+      return Object.entries(this.schemas.get(schemaName))
+        .map(([fieldName, definition]) => configPathFor(schemaName, fieldName, definition))
+        .filter(Boolean)
+        .map(fileAt)
+        .filter(Boolean);
+    }
+    const fromSchemas = [];
+    for (const [schemaName, fields] of this.schemas) {
+      for (const [fieldName, definition] of Object.entries(fields)) {
+        const path = configPathFor(schemaName, fieldName, definition);
+        const file = path && fileAt(path);
+        if (file) fromSchemas.push(file);
+      }
+    }
+    const legacy = this.app.vault.getMarkdownFiles()
+      .filter((file) => file.parent?.path === this.settings.configFolder && !EXCLUDED_CONFIG_FILES.has(file.name.toLowerCase()))
+      // Bookkeeping and anything else under data/config that is not a generated
+      // list is never a filename source.
+      .filter((file) => !file.path.startsWith(`${CONFIG_FOLDER}/`) || Boolean(this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor))
+      .sort((left, right) => {
+        const leftIndex = CONFIG_SOURCE_ORDER.indexOf(left.basename.toLowerCase());
+        const rightIndex = CONFIG_SOURCE_ORDER.indexOf(right.basename.toLowerCase());
+        if (leftIndex !== -1 || rightIndex !== -1) return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
+        return left.name.localeCompare(right.name);
+      });
+    return [...fromSchemas, ...legacy];
+  }
+
+  // A schema-derived list is named for its field, so the property is the file
+  // name verbatim. Only the older hand-made sources need the spelling map.
+  getSourcePropertyName(file) {
+    if (file.parent?.path?.startsWith(`${CONFIG_FOLDER}/`)) return file.basename;
+    const base = String(file.basename).split(".")[0];
+    return LEGACY_SOURCE_PROPERTIES[base.toLowerCase()] ?? base;
+  }
+
+  // A generated list is a markdown table whose header must not be read as a
+  // value; a hand-made one is a plain list. The frontmatter says which.
+  async loadConfigValues(file) {
+    const raw = await this.app.vault.read(file);
+    // A value list's values are the rows of its table. Frontmatter keys, the
+    // heading and the prose around it are not options — reading a file line by
+    // line offered "# Schema Mappings" and a sentence about vault paths as
+    // things you could name a file after.
+    const isValueList = configSourceOfPath(file.path)
+      || Boolean(this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor)
+      || /^configFor:/m.test(raw)
+      || /^\s*\|/m.test(raw);
+    if (isValueList) return parseConfigValues(raw);
+    // Only a hand-made source with no table at all is read line by line.
+    return [...new Set(raw.split(/\r?\n/).map((line) => this.parseLegacyConfigValue(line)).filter(Boolean))];
+  }
+
+  parseLegacyConfigValue(line) {
+    let value = line.trim();
+    if (!value || value.startsWith("//") || /^\|?\s*-{3,}/.test(value)) return "";
+    if (value.startsWith("|")) value = value.split("|").map((cell) => cell.trim()).filter(Boolean)[0] ?? "";
+    const link = value.match(/\[\[([^#|\]]+)/);
+    if (link) value = link[1];
+    if (value.includes(":")) value = value.split(":", 1)[0].trim();
+    return value.replace(/^\|\s*/, "").trim();
+  }
+
+  parseMetadataValue(value) {
+    if (Array.isArray(value)) return value.map((item) => this.parseMetadataValue(item)).find(Boolean) ?? "";
+    if (typeof value !== "string") return "";
+    const text = value.trim().replace(/^['"]|['"]$/g, "");
+    const link = text.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    return (link ? link[1] : text).trim();
+  }
+
+  parseCompositeValues(value) {
+    if (typeof value !== "string") return [];
+    const links = [...value.matchAll(/\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]/g)].map((match) => match[1]);
+    if (links.length) return links;
+    return value.split("_").map((part) => part.trim()).filter(Boolean);
+  }
+
+  getCategoryValue(noteFile) {
+    const value = this.app.metadataCache.getFileCache(noteFile)?.frontmatter?.Category;
+    if (typeof value !== "string") return "";
+    const link = value.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    const target = link ? link[1] : value.trim();
+    if (this.settings.categoryLinkPrefix && target.startsWith(this.settings.categoryLinkPrefix)) return target.slice(this.settings.categoryLinkPrefix.length);
+    return target.startsWith("categories.") ? target.slice("categories.".length) : target;
+  }
+
+  getLinkedFile(noteFile, propertyName) {
+    const value = this.app.metadataCache.getFileCache(noteFile)?.frontmatter?.[propertyName];
+    if (typeof value !== "string") return null;
+    const link = value.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]$/);
+    const path = link ? link[1] : value.trim();
+    const file = path ? this.app.metadataCache.getFirstLinkpathDest(path, noteFile.path) : null;
+    return file instanceof TFile && MEDIA_EXTENSIONS.has(file.extension.toLowerCase()) ? file : null;
+  }
+
+  normalizeToken(value) {
+    return String(value).trim().toLowerCase().replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  }
+
+  findCategoryNotes(category) {
+    if (!category) return [];
+    return this.app.vault.getMarkdownFiles()
+      .map((note) => ({ note, image: this.getLinkedFile(note, "Cover") }))
+      .filter(({ note }) => this.getCategoryValue(note) === category);
+  }
+
+  async findCategoryAttachmentRecords() {
+    const sourceValues = new Map();
+    for (const file of this.getConfigSourceFiles()) sourceValues.set(file.path, await this.loadConfigValues(file));
+    const records = [];
+    for (const note of this.app.vault.getMarkdownFiles()) {
+      const image = this.getLinkedFile(note, "Cover");
+      if (!image || !image.basename.match(/_(\d{8}_\d{6})$/)) continue;
+      const name = this.getFilenameName(note, sourceValues);
+      if (name) records.push({ note, category: this.getCategoryValue(note), name, image });
+    }
+    return records;
+  }
+
+  getFilenameName(noteFile, sourceValues = new Map()) {
+    const frontmatter = this.app.metadataCache.getFileCache(noteFile)?.frontmatter ?? {};
+    const composite = this.parseCompositeValues(frontmatter.Category);
+    const values = this.getConfigSourceFiles(noteFile)
+      .map((file) => {
+        const direct = this.parseMetadataValue(frontmatter[this.getSourcePropertyName(file)]);
+        const candidates = sourceValues.get(file.path) ?? [];
+        if (direct && (!candidates.length || candidates.includes(direct))) return direct;
+        return composite.find((value) => candidates.includes(value)) ?? "";
+      })
+      .filter(Boolean);
+    return this.normalizeToken(values.length ? values.join("_") : composite.join("_"));
+  }
+
+  async bulkRenameCategory(oldCategory, newCategory, notes) {
+    if (!oldCategory || !newCategory || oldCategory === newCategory) throw new Error("Enter two different category values.");
+    const oldToken = this.normalizeToken(oldCategory);
+    const newToken = this.normalizeToken(newCategory);
+    const imageTargets = new Map();
+    for (const { image } of notes) {
+      if (!image || imageTargets.has(image.path)) continue;
+      const prefix = `${oldToken}_`;
+      const newName = image.basename.startsWith(prefix) ? `${newToken}_${image.basename.slice(prefix.length)}` : `${newToken}_${image.basename}`;
+      const folder = image.parent.path === "/" ? "" : `${image.parent.path}/`;
+      imageTargets.set(image.path, `${folder}${newName}.${image.extension}`);
+    }
+    for (const targetPath of imageTargets.values()) {
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing && !imageTargets.has(existing.path)) throw new Error(`A file already exists: ${targetPath}`);
+    }
+    const renamedPaths = new Map();
+    for (const [oldPath, targetPath] of imageTargets) {
+      const image = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(image instanceof TFile)) continue;
+      if (oldPath !== targetPath) await this.app.fileManager.renameFile(image, targetPath);
+      renamedPaths.set(oldPath, targetPath);
+    }
+    for (const { note, image } of notes) {
+      await this.app.fileManager.processFrontMatter(note, (frontmatter) => {
+        frontmatter.Category = `[[${this.settings.categoryLinkPrefix}${newToken}]]`;
+        const newCover = image ? renamedPaths.get(image.path) : null;
+        if (newCover) frontmatter.Cover = `[[${newCover}]]`;
+      });
+    }
+    new Notice(`Updated ${notes.length} note(s) and ${renamedPaths.size} attachment(s).`);
+  }
+
+  async reloadAttachmentNames(records) {
+    const imageTargets = new Map();
+    for (const { image, name } of records) {
+      const suffix = image.basename.match(/_(\d{8}_\d{6})$/)?.[1];
+      if (!suffix) continue;
+      const targetPath = `${image.parent.path === "/" ? "" : `${image.parent.path}/`}${name}_${suffix}.${image.extension}`;
+      const previous = imageTargets.get(image.path);
+      if (previous && previous !== targetPath) throw new Error(`One attachment is bound to conflicting values: ${image.path}`);
+      imageTargets.set(image.path, targetPath);
+    }
+    for (const targetPath of imageTargets.values()) {
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing && !imageTargets.has(existing.path)) throw new Error(`A file already exists: ${targetPath}`);
+    }
+    let renamedCount = 0;
+    for (const [oldPath, targetPath] of imageTargets) {
+      if (oldPath === targetPath) continue;
+      const image = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(image instanceof TFile)) continue;
+      await this.app.fileManager.renameFile(image, targetPath);
+      renamedCount += 1;
+    }
+    new Notice(`Reloaded ${renamedCount} attachment name(s); timestamps and metadata were unchanged.`);
+  }
+
+  // README item 4. One view over the hand-made fallback folder, and one over
+  // data/config, which is where the generated lists actually live now.
+  async generateConfigBase() {
+    const written = [];
+    for (const [path, folder] of [[this.settings.configBasePath, this.settings.configFolder], [`${CONFIG_FOLDER}/config.base`, CONFIG_FOLDER]]) {
+      if (!path || !folder) continue;
+      const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (parent) await this.ensureFolder(parent);
+      const baseName = path.slice(path.lastIndexOf("/") + 1);
+      const content = `views:\n  - type: table\n    name: Configuration records\n    filters:\n      and:\n        - file.inFolder("${folder}")\n        - file.name != "${baseName}"\n    order:\n      - file.name\n      - file.path\n    sort:\n      - property: file.name\n        direction: ASC\n`;
+      await this.writeFile(normalizePath(path), content);
+      written.push(path);
+    }
+    new Notice(`Generated ${written.join(" and ")}.`);
+  }
+
+  openAssetRenamer(checking) {
+    const file = this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || file.extension !== "md") return false;
+    if (!checking) new AssetRenamerModal(this, file).open();
+    return true;
+  }
+
+  // Turns a field's value list into records, one per row, named after the value.
+  // Existing notes are never touched — a value that already has a record is
+  // skipped, so this is safe to press twice.
+  async implementConfigValues(schemaName, fieldName) {
+    const fields = this.schemas.get(schemaName);
+    const definition = fields?.[fieldName];
+    const path = definition && configPathFor(schemaName, fieldName, definition);
+    if (!path) return new Notice(`"${fieldName}" has no value list to implement.`);
+    const configFile = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    if (!(configFile instanceof TFile)) return new Notice(`${path} has not been generated yet. Run Sync schema system first.`);
+
+    const values = parseConfigValues(await this.app.vault.read(configFile));
+    if (values.length === 0) return new Notice(`${path} has no rows yet.`);
+    const folder = await this.folderForSchema(schemaName);
+    const planned = [];
+    const unusable = [];
+    for (const value of values) {
+      const fileName = recordFileNameFor(value);
+      if (!fileName) { unusable.push(value); continue; }
+      const recordPath = normalizePath(`${folder}/${fileName}`);
+      if (this.app.vault.getAbstractFileByPath(recordPath)) continue;
+      planned.push({ recordPath, value });
+    }
+    if (planned.length === 0) {
+      return new Notice(unusable.length ? `Every usable row already has a record. ${unusable.length} row(s) cannot be file names.` : "Every row already has a record.");
+    }
+
+    const answer = await new Promise((resolve) => new ConfirmDeleteModal(
+      this.app,
+      `Create ${planned.length} ${schemaName} record(s)?`,
+      `One note per row of ${path}, written to ${folder} and named after the value. ${values.length - planned.length - unusable.length} row(s) already have a record and are left alone.${unusable.length ? ` ${unusable.length} row(s) cannot be a file name and are skipped.` : ""}`,
+      `Create ${planned.length} record(s)`,
+      resolve,
+    ).open());
+    if (!answer.confirmed) return;
+
+    for (const { recordPath, value } of planned) {
+      await this.ensureFolder(folder);
+      const frontmatter = recordFromConfigValue(schemaName, fields, fieldName, value);
+      await this.app.vault.create(recordPath, `---\n${frontmatterText(frontmatter)}\n---\n\n# ${value}\n\n${NOTES_MARKER}\n\n`);
+      await this.trackRecord(recordPath, schemaName);
+    }
+    this.refreshDashboards();
+    new Notice(`Created ${planned.length} ${schemaName} record(s) in ${folder}.`);
+  }
+
+  // The only path that removes a config note. syncConfigLists deliberately never
+  // registers them as generated, so cleanupGeneratedPaths cannot reach them and
+  // an orphan otherwise survives forever.
+  async cleanOrphanedConfigs() {
+    const notes = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(`${CONFIG_FOLDER}/`) || file.path === SCHEMA_MAPPING_FILE) continue;
+      const sources = this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor;
+      const source = Array.isArray(sources) ? sources[0] : null;
+      if (typeof source !== "string" || !source.includes(".")) continue;
+      notes.push({
+        path: file.path,
+        schemaName: source.slice(0, source.indexOf(".")),
+        fieldName: source.slice(source.indexOf(".") + 1),
+        rows: parseConfigValues(await this.app.vault.read(file)).length,
+      });
+    }
+    const orphans = orphanedConfigs(notes, this.schemas);
+    if (orphans.length === 0) return new Notice("Every value list still belongs to a declared field.");
+    const chosen = await new Promise((resolve) => new OrphanedConfigModal(this.app, orphans, resolve).open());
+    for (const path of chosen) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      if (this.app.fileManager.trashFile) await this.app.fileManager.trashFile(file);
+      else await this.app.vault.trash(file, true);
+    }
+    this.refreshDashboards();
+    new Notice(chosen.length ? `Moved ${chosen.length} value list(s) to the trash.` : "Nothing was deleted.");
+  }
+
+  async duplicateRecord(recordPath) {
+    const source = this.app.vault.getAbstractFileByPath(recordPath);
+    if (!(source instanceof TFile)) return new Notice("That record no longer exists.");
+    const raw = await this.app.vault.read(source);
+    const folder = source.parent?.path && source.parent.path !== "/" ? source.parent.path : DATA_FOLDER;
+    let index = 2;
+    let path = normalizePath(`${folder}/${source.basename} ${index}.md`);
+    while (this.app.vault.getAbstractFileByPath(path)) {
+      index += 1;
+      path = normalizePath(`${folder}/${source.basename} ${index}.md`);
+    }
+    const created = await this.app.vault.create(path, raw);
+    const schemaName = this.app.metadataCache.getFileCache(source)?.frontmatter?.implements;
+    if (typeof schemaName === "string") await this.trackRecord(path, schemaName);
+    this.refreshDashboards();
+    await this.app.workspace.getLeaf(true).openFile(created);
+    new Notice(`Duplicated to ${path}.`);
+  }
+
+  // The 03 panel's per-record 🖼 button. Since the renamer moved in-house this
+  // opens the modal directly rather than bouncing through a command that may or
+  // may not be registered.
+  async openAssetRenamerForRecord(recordPath) {
+    const file = this.app.vault.getAbstractFileByPath(recordPath);
+    if (!(file instanceof TFile)) return new Notice("That record no longer exists.");
+    await this.app.workspace.getLeaf(true).openFile(file);
+    new AssetRenamerModal(this, file).open();
+  }
+
+  // A value typed into a record joins its list, and the value itself is cast to
+  // a link. Debounced, because modify fires while you are still typing.
+  //
+  // Only the record that changed is cast, not every record of its schema: this
+  // runs on every keystroke-ish save, and a sweep of the whole vault does not
+  // belong there.
+  scheduleConfigListSync(file) {
+    if (file) this.pendingCasts.add(file.path);
+    if (this.configListTimeout) clearTimeout(this.configListTimeout);
+    this.configListTimeout = setTimeout(async () => {
+      this.configListTimeout = null;
+      const paths = [...this.pendingCasts];
+      this.pendingCasts.clear();
+      await this.syncConfigLists();
+      for (const path of paths) {
+        const target = this.app.vault.getAbstractFileByPath(path);
+        if (target instanceof TFile) await this.castRecordValues(target);
+      }
+    }, 1500);
+  }
+
+  // Casting writes, writing fires modify, and modify schedules another cast — so
+  // the decision is made against the cache first and the file is only opened when
+  // something actually has to change. Without that the loop never settles.
+  async castRecordValues(file) {
+    const schemaName = this.schemaNameFor(file);
+    const fields = schemaName ? this.schemas.get(schemaName) : null;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!fields || !frontmatter) return;
+    const castable = Object.entries(fields).filter(([fieldName, definition]) => isBound(definition)
+      && fieldName in frontmatter
+      && Boolean(configPathFor(schemaName, fieldName, definition)));
+    if (!castable.some(([fieldName]) => castToLinks(frontmatter[fieldName]) !== undefined)) return;
+    await this.app.fileManager.processFrontMatter(file, (current) => {
+      for (const [fieldName] of castable) {
+        if (!(fieldName in current)) continue;
+        const cast = castToLinks(current[fieldName]);
+        if (cast !== undefined) current[fieldName] = cast;
+      }
+    });
   }
 
   onunload() {
@@ -773,6 +3416,8 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     this.pending.clear();
     if (this.schemaValidationTimeout) clearTimeout(this.schemaValidationTimeout);
     if (this.schemaReloadTimeout) clearTimeout(this.schemaReloadTimeout);
+    if (this.schemaPreviewTimeout) clearTimeout(this.schemaPreviewTimeout);
+    if (this.configListTimeout) clearTimeout(this.configListTimeout);
   }
 
   scheduleSchemaValidation() {
@@ -789,9 +3434,10 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     if (previous) clearTimeout(previous);
     this.pending.set(
       file.path,
-      setTimeout(() => {
+      setTimeout(async () => {
         this.pending.delete(file.path);
-        void this.validateFile(file, true);
+        await this.validateFile(file, true);
+        await this.checkUndeclaredProperties(file);
       }, 250)
     );
   }
@@ -809,90 +3455,163 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
 
   async syncSystem(showNotice) {
     await this.loadSchemas();
+    // Runs before records so a field added by hand to a Field Reference table
+    // reaches records, config lists and base views on this pass, not the next.
+    await this.adoptFieldReferenceEdits();
     for (const [schemaName, fields] of this.schemas) {
       await this.syncEntityFieldsForSchema(schemaName, fields);
     }
-    await this.syncBaseViews();
     await this.ensurePlaceholders();
     await this.importLists();
-    await this.syncSchemaDocs();
+    // Config lists read record values, so they must run after records are
+    // back-filled. Base views depend only on schema fields.
+    await this.syncConfigLists();
+    const generated = {};
+    await this.syncBaseViews(generated);
+    await this.cleanupGeneratedPaths(generated);
+    await this.saveGeneratedPaths(generated);
+    // showNotice is true only for a user-pressed sync, which is exactly when
+    // normalising an open schema note is wanted.
+    await this.syncSchemaDocs(showNotice);
     await this.validateVault(showNotice);
     this.refreshDashboards();
   }
 
   async syncEntityFieldsForSchema(schemaName, fields) {
-    const entities = this.dataFiles().filter((file) => !file.basename.startsWith(PLACEHOLDER_PREFIX));
-    for (const file of entities) {
+    for (const file of this.dataFiles()) {
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (frontmatter?.implements !== schemaName) continue;
+      // A template is not data — ensurePlaceholders owns its keys, and its values
+      // are never collected into a value list. It is still cast, so a value typed
+      // into the template reads the same as one typed into a record.
+      const isTemplate = file.basename.startsWith(PLACEHOLDER_PREFIX);
       await this.app.fileManager.processFrontMatter(file, (current) => {
         for (const [fieldName, definition] of Object.entries(fields)) {
-          if (fieldName in current) continue;
-          current[fieldName] = definition.hasDefault ? definition.defaultValue : this.entityValueForDefinition(fieldName, definition);
+          if (!isBound(definition)) continue;
+          if (!(fieldName in current)) {
+            if (isTemplate) continue;
+            current[fieldName] = definition.hasDefault ? definition.defaultValue : emptyValue(definition.type);
+            continue;
+          }
+          // A field with a value list stores links, whatever wrote the value —
+          // the ⤓ button, a Metadata Menu dropdown showing plain options, or a
+          // hand-typed name. Casting here is the only place the two forms meet.
+          if (!configPathFor(schemaName, fieldName, definition)) continue;
+          const cast = castToLinks(current[fieldName]);
+          if (cast !== undefined) current[fieldName] = cast;
         }
       });
     }
   }
 
-  entityValueForDefinition(fieldName, definition) {
-    if (definition.type === "string") return definition.required ? `TODO_${fieldName}` : "";
-    return this.emptyValue(definition.type);
+  // `.base` is Obsidian Bases YAML; `.base.md` is a note wrapping a DBML fence
+  // for the DBML Visualizer plugin. Two unrelated formats — writing DBML into a
+  // `.base` file is what made Bases report "unable to parse file".
+  async syncBaseViews(generated = {}) {
+    if (this.schemas.size === 0) return;
+    await this.ensureFolder(BASE_VIEW_FOLDER);
+    for (const [schemaName, fields] of this.schemas) {
+      const path = normalizePath(`${BASE_VIEW_FOLDER}/${schemaName}.base`);
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      // Created once, then left alone. See mergeBaseYaml for why only the
+      // attachment formulas are still sync's business.
+      if (existing instanceof TFile) {
+        const merged = mergeBaseYaml(await this.app.vault.read(existing), fields);
+        if (merged !== null) await this.writeFile(path, merged);
+      } else {
+        const folder = await this.folderForSchema(schemaName);
+        await this.writeFile(path, renderBaseYaml(schemaName, fields, folder, this.schemas));
+      }
+      generated[path] = schemaName;
+    }
+    await this.syncErd(generated);
   }
 
-  dbmlForSchemas() {
-    const tables = [...this.schemas.entries()].map(([name, fields]) => {
-      const columns = Object.entries(fields).map(([fieldName, definition]) => `  ${fieldName} ${definition.type === "number" ? "int" : definition.type === "boolean" ? "boolean" : "varchar"}${definition.required ? " [not null]" : ""}`).join("\n");
-      return `Table ${name} {\n${columns}\n}`;
-    });
-    const relations = [];
-    for (const [name, fields] of this.schemas) {
+  async syncErd(generated = {}) {
+    const path = normalizePath(`${BASE_FOLDER}/${this.databaseName()}.base.md`);
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    const existingRaw = existing instanceof TFile ? await this.app.vault.read(existing) : "";
+    await this.writeFile(path, renderErdNote(this.databaseName(), this.schemas, existingRaw));
+    generated[path] = "*";
+  }
+
+  // Only paths this plugin recorded as generated are ever deleted. The previous
+  // implementation cleared every .base / .base.md under data/, taking
+  // hand-authored files with it.
+  async cleanupGeneratedPaths(generated) {
+    for (const path of Object.keys(this.currentGeneratedPaths())) {
+      if (Object.prototype.hasOwnProperty.call(generated, path)) continue;
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) await this.app.vault.delete(file);
+    }
+  }
+
+  // One note per schema plus field, never shared, so a rename is a plain rename
+  // and no two schemas can fight over one list.
+  // Values found in records are unioned with whatever the file already holds, so
+  // hand-added options are never dropped. These are deliberately not registered
+  // as generated paths: they carry user-curated content and must survive a field
+  // being renamed or removed.
+  async syncConfigLists() {
+    await this.relocateConfigNotes();
+    const targets = new Map();
+    for (const [schemaName, fields] of this.schemas) {
       for (const [fieldName, definition] of Object.entries(fields)) {
-        if (definition.relation?.target && this.schemas.has(definition.relation.target)) {
-          const targetFields = this.schemas.get(definition.relation.target);
-          const targetKey = targetFields?.id ? "id" : targetFields?.name ? "name" : Object.keys(targetFields || {})[0];
-          if (targetKey) relations.push(`Ref: ${name}.${fieldName} > ${definition.relation.target}.${targetKey}`);
+        const path = configPathFor(schemaName, fieldName, definition);
+        if (path) targets.set(path, { schemaName, fieldName, values: new Set() });
+      }
+    }
+    if (targets.size === 0) return;
+    // Templates included, and deliberately. "Never counted as data" governs
+    // validation and the record count; a value is a different thing. For some
+    // schemas the template is the only note that ever exists — the same reason
+    // the undeclared-property prompt fires on one — and a value typed there is
+    // as plain a statement that the value exists as one typed anywhere else.
+    for (const file of this.dataFiles()) {
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!frontmatter || typeof frontmatter.implements !== "string") continue;
+      for (const entry of targets.values()) {
+        if (entry.schemaName !== frontmatter.implements) continue;
+        const raw = frontmatter[entry.fieldName];
+        for (const value of Array.isArray(raw) ? raw : [raw]) {
+          // plainValue, not a bare bracket strip: a number reaches the list too,
+          // and an aliased link contributes what it displays.
+          const text = plainValue(value);
+          if (text) entry.values.add(text);
         }
       }
     }
-    return `${tables.join("\n\n")}\n${relations.join("\n")}`;
-  }
-
-  dbmlForSchema(schemaName, fields) {
-    const columns = Object.entries(fields).map(([fieldName, definition]) => `  ${fieldName} ${definition.type === "number" ? "int" : definition.type === "boolean" ? "boolean" : "varchar"}${definition.required ? " [not null]" : ""}`).join("\n");
-    const relations = Object.entries(fields).filter(([, definition]) => definition.relation?.target && this.schemas.has(definition.relation.target)).map(([fieldName, definition]) => {
-      const targetFields = this.schemas.get(definition.relation.target);
-      const targetKey = targetFields?.id ? "id" : targetFields?.name ? "name" : Object.keys(targetFields || {})[0];
-      return targetKey ? `Ref: ${schemaName}.${fieldName} > ${definition.relation.target}.${targetKey}` : "";
-    }).filter(Boolean);
-    return `Table ${schemaName} {\n${columns}\n}\n${relations.join("\n")}`;
-  }
-
-  async syncBaseViews() {
-    if (this.schemas.size === 0) return;
-    await this.ensureFolder(BASE_VIEW_FOLDER);
-    const databaseName = this.pascalCase(SAMPLE_DATABASE);
-    const aggregateContent = `# ${databaseName} Database\n\nGenerated DBML base view for the DBML Visualizer plugin.\n\n\`\`\`dbml title="${databaseName} ERD"\n${this.dbmlForSchemas()}\n\`\`\`\n`;
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      if (file.path.startsWith(`${BASE_FOLDER}/`) && file.path.endsWith(".base.md") && file.path !== `${BASE_FOLDER}/${databaseName}.base.md`) {
-        await this.app.vault.delete(file);
-      }
-      if (file.path.startsWith(`${BASE_VIEW_FOLDER}/`) && file.path.endsWith(".base.md")) {
-        await this.app.vault.delete(file);
-      }
-      if (file.path.startsWith(`${TABLE_FOLDER}/`) && file.path.endsWith(".table.md")) {
-        await this.app.vault.delete(file);
-      }
+    const written = [];
+    for (const [path, entry] of targets) {
+      await this.ensureFolder(`${CONFIG_FOLDER}/${entry.schemaName}`);
+      const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
+      const existingRaw = existing instanceof TFile ? await this.app.vault.read(existing) : "";
+      const text = renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values], existingRaw);
+      await this.writeFile(normalizePath(path), text);
+      // The note's own rows, not entry.values: renderConfigNote unions in rows
+      // added by hand, and those are options too.
+      written.push({ schemaName: entry.schemaName, fieldName: entry.fieldName, property: entry.fieldName, values: parseConfigValues(text) });
     }
-    const aggregatePath = normalizePath(`${BASE_FOLDER}/${databaseName}.base.md`);
-    const aggregateFile = this.app.vault.getAbstractFileByPath(aggregatePath);
-    if (aggregateFile instanceof TFile) await this.app.vault.modify(aggregateFile, aggregateContent);
-    else await this.app.vault.create(aggregatePath, aggregateContent);
-    for (const [schemaName, fields] of this.schemas) {
-      const nativePath = normalizePath(`${BASE_VIEW_FOLDER}/${this.pascalCase(schemaName)}.base`);
-      const nativeContent = `# ${this.pascalCase(schemaName)} Base\n\n${this.dbmlForSchema(this.pascalCase(schemaName), fields)}\n`;
-      const nativeFile = this.app.vault.getAbstractFileByPath(nativePath);
-      if (nativeFile instanceof TFile) await this.app.vault.modify(nativeFile, nativeContent);
-      else await this.app.vault.create(nativePath, nativeContent);
+    await this.metadataMenuMapping.onListsGenerated(written);
+  }
+
+  // Notes written by an older version sit flat in data/config/. Move each into
+  // its schema's folder before generation runs, so generation does not create an
+  // empty note at the new path and leave the old one looking like an orphan.
+  async relocateConfigNotes() {
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (file.parent?.path !== CONFIG_FOLDER) continue;
+      const sources = this.app.metadataCache.getFileCache(file)?.frontmatter?.configFor;
+      const source = Array.isArray(sources) ? sources[0] : null;
+      if (typeof source !== "string" || !source.includes(".")) continue;
+      const schemaName = source.slice(0, source.indexOf("."));
+      const fieldName = source.slice(source.indexOf(".") + 1);
+      if (!this.schemas.has(schemaName)) continue;
+      const destination = normalizePath(`${CONFIG_FOLDER}/${schemaName}/${fieldName}.md`);
+      if (file.path === destination || this.app.vault.getAbstractFileByPath(destination)) continue;
+      await this.ensureFolder(`${CONFIG_FOLDER}/${schemaName}`);
+      await this.app.fileManager.renameFile(file, destination);
+      new Notice(`Moved ${file.name} to ${destination}.`);
     }
   }
 
@@ -933,41 +3652,44 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     return winner || `${DATA_FOLDER}/${schemaName.toLowerCase()}s`;
   }
 
-  defaultsFor(fields) {
-    const values = {};
-    for (const [name, definition] of Object.entries(fields)) {
-      if (definition.hasDefault) values[name] = definition.defaultValue;
-      else if (definition.required) values[name] = definition.type === "string" ? `TODO_${name}` : this.emptyValue(definition.type);
-    }
-    return values;
+  // Every field, not just required and defaulted ones. Records and placeholders
+  // must carry the whole schema so the columns exist to be filled in.
+  recordValuesFor(schemaName, fields) {
+    return recordValuesFor(schemaName, fields);
   }
 
   emptyValue(type) {
-    if (type === "number") return 0;
-    if (type === "boolean") return false;
-    if (type === "array") return [];
-    if (type === "object") return {};
-    return "";
+    return emptyValue(type);
   }
 
   yamlValue(value) {
-    if (typeof value === "string") return JSON.stringify(value);
-    if (value === undefined) return "null";
-    return JSON.stringify(value);
+    return yamlValue(value);
   }
 
   frontmatterText(values) {
-    return Object.entries(values).map(([name, value]) => `${name}: ${this.yamlValue(value)}`).join("\n");
+    return frontmatterText(values);
   }
 
+  // Back-fills an existing placeholder rather than skipping it, so fields added
+  // to a schema after the placeholder was created still appear. Values already
+  // present are left alone.
   async ensurePlaceholders() {
     for (const [schemaName, fields] of this.schemas) {
       const folder = await this.folderForSchema(schemaName);
       await this.ensureFolder(folder);
       const path = normalizePath(`${folder}/${PLACEHOLDER_PREFIX}${schemaName}.md`);
-      if (this.app.vault.getAbstractFileByPath(path)) continue;
-      const values = { implements: schemaName, ...this.defaultsFor(fields) };
-      await this.app.vault.create(path, `---\n${this.frontmatterText(values)}\n---\n# ${schemaName} Placeholder\n\nUse this file as a template and duplicate it when creating new ${schemaName} notes.\n`);
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing instanceof TFile) {
+        await this.app.fileManager.processFrontMatter(existing, (current) => {
+          current.implements = schemaName;
+          for (const [name, definition] of Object.entries(fields)) {
+            if (name in current) continue;
+            current[name] = definition.hasDefault ? definition.defaultValue : emptyValue(definition.type);
+          }
+        });
+        continue;
+      }
+      await this.app.vault.create(path, `---\n${renderRecordFrontmatter(schemaName, fields)}\n---\n# ${schemaName} Placeholder\n\nUse this file as a template and duplicate it when creating new ${schemaName} notes.\n\n${NOTES_MARKER}\n\n`);
     }
   }
 
@@ -988,26 +3710,36 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
         const safeName = name.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/[. ]+$/g, "") || "Untitled";
         const path = normalizePath(`${folder}/${safeName}.md`);
         if (this.app.vault.getAbstractFileByPath(path)) continue;
-        const values = { implements: schemaName, ...this.defaultsFor(fields) };
+        const values = recordValuesFor(schemaName, fields);
         if (labelField) values[labelField] = name;
-        await this.app.vault.create(path, `---\n${this.frontmatterText(values)}\n---\n# ${name}\n\nAuto-generated from ${schemaName}.csv list import.\n`);
+        await this.app.vault.create(path, `---\n${frontmatterText(values)}\n---\n# ${name}\n\nAuto-generated from ${schemaName}.csv list import.\n`);
       }
     }
   }
 
-  async syncSchemaDocs() {
+  // Rewrites each schema note so its `schema:` property, title heading and
+  // Field Reference all agree with its filename. Idempotent: a second pass over
+  // a repaired file produces identical text and writes nothing.
+  // Background syncs never touch a note that is open in any leaf: flushing runs
+  // on active-leaf-change, when the note is no longer active but is very much
+  // still open, and rewriting it there reloads the buffer under the cursor.
+  // An explicitly pressed sync does normalise open notes — the user asked for it,
+  // so a cursor jump is expected rather than destructive.
+  async syncSchemaDocs(force) {
+    const open = force ? new Set() : this.openNotePaths();
+    const active = this.activeNotePath();
     for (const [schemaName, fields] of this.schemas) {
-      const schemaFile = this.app.vault.getMarkdownFiles().find((file) => {
-        const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-        return file.path.startsWith(`${SCHEMA_FOLDER}/`) && frontmatter?.schema === schemaName;
-      });
-      if (!schemaFile) continue;
-      const raw = await this.app.vault.read(schemaFile);
-      const body = raw.replace(/\n## Field Reference[\s\S]*$/i, "").trimEnd();
-      const rows = Object.entries(fields).map(([name, field]) => `| ${name} | ${field.type} | ${field.hasDefault ? this.yamlValue(field.defaultValue) : "-"} | ${field.required ? "yes" : "no"} |`);
-      const reference = `\n\n## Field Reference\n\n| Field | Type | Default | Required |\n| --- | --- | --- | --- |\n${rows.join("\n")}\n`;
-      const next = `${body}${reference}`;
-      if (next !== raw) await this.app.vault.modify(schemaFile, next);
+      const file = this.schemaFile(schemaName);
+      if (!file) continue;
+      // Even a forced sync leaves the note being typed in alone.
+      if (this.safetyOff.has(file.path) || open.has(file.path) || active === file.path) continue;
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const raw = await this.app.vault.read(file);
+      // A note whose declared name disagrees with its filename has prose about
+      // the wrong entity, so it is reset rather than carried over.
+      const body = frontmatter?.schema === schemaName ? schemaBodyOf(raw) : undefined;
+      const next = renderSchemaNote(schemaName, fields, frontmatter?.schemaSource, body, raw, this.schemas);
+      if (next !== raw) await this.app.vault.modify(file, next);
     }
   }
 
@@ -1029,13 +3761,11 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
   async loadSchemas() {
     this.schemas.clear();
     for (const file of this.app.vault.getMarkdownFiles()) {
-      if (!file.path.startsWith(`${SCHEMA_FOLDER}/`) && !file.path.startsWith(`${LEGACY_SCHEMA_FOLDER}/`)) continue;
+      if (!this.isSchemaPath(file.path)) continue;
+      const key = this.schemaKeyFor(file);
+      if (typeof key !== "string" || !key) continue;
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-      if (!frontmatter || typeof frontmatter.schema !== "string") continue;
-      const normalizedName = file.path.startsWith(`${SCHEMA_FOLDER}/`) && file.basename.endsWith(".schema")
-        ? file.basename.slice(0, -".schema".length)
-        : frontmatter.schema;
-      this.schemas.set(normalizedName, this.readFields(frontmatter.fields));
+      this.schemas.set(key, this.readFields(frontmatter?.fields));
     }
   }
 
@@ -1047,16 +3777,28 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
         ? Object.entries(rawFields).map(([name, meta]) => ({ [name]: meta }))
         : [];
     for (const entry of entries) {
+      // `- fieldName` with nothing under it is a half-written field, not a
+      // reason to drop it silently. Treat it as a plain bound string.
+      if (typeof entry === "string" && entry.trim()) {
+        fields[entry.trim()] = { type: "string", required: false, hasDefault: false, defaultValue: undefined, bind: false };
+        continue;
+      }
       if (!entry || typeof entry !== "object") continue;
       for (const [name, rawDefinition] of Object.entries(entry)) {
-        if (!rawDefinition || typeof rawDefinition !== "object") continue;
-        const definition = rawDefinition;
+        const declared = rawDefinition && typeof rawDefinition === "object" ? rawDefinition : null;
+        const definition = declared || {};
+        // A field with no type declared is a placeholder for a decision not yet
+        // made. It stays unbound until it is given one.
+        const bindsByDefault = Boolean(declared && declared.type);
         fields[name] = {
-          type: definition.type || "string",
+          type: FIELD_TYPES.includes(definition.type) ? definition.type : "string",
           required: definition.required === true,
           hasDefault: Object.prototype.hasOwnProperty.call(definition, "default"),
           defaultValue: definition.default,
           relation: typeof definition.relation === "string" ? { target: definition.relation } : definition.relation,
+          // An explicit bind wins; otherwise a typed field binds and an
+          // untyped placeholder does not.
+          bind: typeof definition.bind === "boolean" ? definition.bind : bindsByDefault,
         };
       }
     }
@@ -1064,7 +3806,7 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
   }
 
   async validateFile(file, showNotice) {
-    if (file.basename.startsWith(PLACEHOLDER_PREFIX)) return 0;
+    if (!shouldValidateNote(file.basename)) return 0;
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
     if (!frontmatter || typeof frontmatter.implements !== "string") return 0;
 
@@ -1078,20 +3820,27 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
     const errors = [];
     const defaults = {};
     for (const [name, definition] of Object.entries(fields)) {
+      // Unbound fields are never written to records, so they are never missing.
+      if (!isBound(definition)) continue;
       if (!(name in frontmatter) || frontmatter[name] === null || frontmatter[name] === undefined) {
         if (definition.hasDefault) defaults[name] = definition.defaultValue;
         else if (definition.required) errors.push(`${name} is required`);
         continue;
       }
       const actual = this.valueType(frontmatter[name]);
-      if (actual !== definition.type) errors.push(`${name} expects ${definition.type}, got ${actual}`);
+      // An attachment is stored as a string holding a [[wikilink]].
+      if (actual !== storageType(definition.type)) {
+        errors.push(`${name} expects ${definition.type}, got ${actual}`);
+        continue;
+      }
+      // Records now carry every field, so a required field arrives present but
+      // blank. Without this the whole vault would validate clean.
+      if (definition.required && isEmptyValue(frontmatter[name])) errors.push(`${name} is required`);
     }
 
-    for (const name of Object.keys(frontmatter)) {
-      if (name !== "implements" && !Object.prototype.hasOwnProperty.call(fields, name)) {
-        errors.push(`${name} is not declared by schema ${frontmatter.implements}`);
-      }
-    }
+    // Properties a record carries that its schema does not declare are the
+    // note's own business: scratch annotations, kept local, never reported and
+    // never pushed back into the schema. Nothing removes them either.
 
     if (Object.keys(defaults).length > 0 && !this.patching.has(file.path)) {
       this.patching.add(file.path);
@@ -1120,3 +3869,53 @@ generated base view for DBML Visualizer.\n\n\`\`\`dbml title="${name} ERD"\nTabl
 }
 
 module.exports = SchemaSyncPlugin;
+
+// Exposed for the out-of-vault test script. Obsidian ignores extra exports.
+module.exports.generators = {
+  emptyValue,
+  isEmptyValue,
+  isBound,
+  storageType,
+  reorderFields,
+  renameField,
+  inferFieldType,
+  setFieldBind,
+  yamlValue,
+  frontmatterText,
+  recordValuesFor,
+  recordFromConfigValue,
+  recordFileNameFor,
+  renderRecordFrontmatter,
+  renderBaseYaml,
+  mergeBaseYaml,
+  valuesListOptions,
+  plainValue,
+  linkedValue,
+  castToLinks,
+  managedImageFormulas,
+  foreignFormulas,
+  parseConfigValues,
+  parseConfigRows,
+  configPathFor,
+  configSourceOfPath,
+  schemaNameOfNote,
+  configRenamePlan,
+  orphanedConfigs,
+  normalizeFieldName,
+  fieldNameError,
+  shouldValidateNote,
+  undeclaredPropertyFor,
+  extractUserNotes,
+  NOTES_MARKER,
+  renderConfigNote,
+  fieldReferenceTarget,
+  fieldReferenceLink,
+  renderFieldReference,
+  parseFieldReference,
+  handAddedFields,
+  coerceDefault,
+  schemaBodyOf,
+  renderSchemaNote,
+  renderDbml,
+  renderErdNote,
+};

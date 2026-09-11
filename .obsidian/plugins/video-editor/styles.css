@@ -1,0 +1,745 @@
+/* Video Editor — pane styling.
+   Carried across from docs/layout.html, which is where the layout was settled.
+   Sizes and colours come from Obsidian's own variables wherever one exists, so
+   the pane follows the active theme rather than pinning its own palette. */
+
+/* The pane is the container every size question is asked against. A media
+   query would read the window, and this pane can be a narrow split in a
+   maximised window or a wide one in a small window — two cases that want
+   opposite layouts and that the window cannot tell apart. */
+.video-editor {
+  container-type: inline-size;
+  container-name: video-editor;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+  outline: none;
+}
+
+/* ---- Header: which file, and whether there is an ffmpeg to cut it with --- */
+
+.video-editor .ve-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
+}
+
+.video-editor .ve-title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+  /* The filename is the one thing that can be arbitrarily long, so it is the
+     one thing allowed to shrink. */
+  flex: 1 1 6em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-badge {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-1) var(--size-4-1);
+  white-space: nowrap;
+}
+
+.video-editor .ve-badge:empty {
+  display: none;
+}
+
+.video-editor .ve-badge.is-ok {
+  color: var(--text-success, var(--color-green));
+  border-color: var(--text-success, var(--color-green));
+}
+
+/* Missing ffmpeg is the one state worth shouting about: nothing in this pane
+   can cut anything without it, and finding that out at the first export is
+   finding it out too late. */
+.video-editor .ve-badge.is-missing {
+  color: var(--text-error, var(--color-red));
+  border-color: var(--text-error, var(--color-red));
+}
+
+/* ---- Body: stage on the left, clip list on the right -------------------- */
+
+.video-editor .ve-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.video-editor .ve-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--background-primary-alt);
+}
+
+.video-editor .ve-video {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.video-editor .ve-media {
+  max-width: 100%;
+  max-height: 100%;
+  /* The pane is a fixed box and the video is whatever shape it is; letting it
+     grow to fill would crop the corner a click happened in. */
+  object-fit: contain;
+  background-color: #000;
+}
+
+/* ---- The floating action bar ------------------------------------------- */
+
+/* Over the video rather than under it: the stage keeps its height, and the
+   controls stay near where the eye already is. */
+.video-editor .ve-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--size-4-3) + 96px);
+  transform: translateX(-50%);
+  z-index: 2;
+
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-4-1);
+
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s, 0 4px 16px rgba(0, 0, 0, 0.4));
+
+  max-width: calc(100% - 2 * var(--size-4-3));
+  overflow-x: auto;
+  /* A toolbar that scrolls sideways in a narrow pane must not also grow a
+     scrollbar tall enough to hide the buttons. */
+  scrollbar-width: none;
+}
+
+.video-editor .ve-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.video-editor .ve-tool {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  flex: 0 0 auto;
+
+  border: none;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.video-editor .ve-tool:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.video-editor .ve-tool.is-primary {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.video-editor .ve-tool.is-primary:hover {
+  background-color: var(--interactive-accent-hover);
+  color: var(--text-on-accent);
+}
+
+.video-editor .ve-tool .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.video-editor .ve-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  background-color: var(--background-modifier-border);
+  margin: 0 var(--size-4-1);
+}
+
+/* ---- Transport and timeline -------------------------------------------- */
+
+.video-editor .ve-transport {
+  flex: 0 0 auto;
+  padding: var(--size-4-2) var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+}
+
+.video-editor .ve-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-3);
+  margin-bottom: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  /* Tabular figures, or the readout jitters sideways on every frame. */
+  font-variant-numeric: tabular-nums;
+}
+
+.video-editor .ve-times b {
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+}
+
+.video-editor .ve-timeline {
+  position: relative;
+  height: 56px;
+  user-select: none;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.video-editor .ve-strip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  background-color: var(--background-primary-alt);
+}
+
+.video-editor .ve-still {
+  flex: 1 1 0;
+  min-width: 0;
+  background-size: cover;
+  background-position: center;
+  border-right: 1px solid var(--background-primary);
+}
+
+.video-editor .ve-still:last-child {
+  border-right: none;
+}
+
+/* What is excluded is dimmed rather than hidden: you still have to see what
+   you are leaving out to know you left out the right thing. */
+.video-editor .ve-outside {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.62);
+  pointer-events: none;
+}
+
+.video-editor .ve-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 2px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  pointer-events: none;
+}
+
+.video-editor .ve-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background-color: var(--interactive-accent);
+  border-radius: 2px;
+  cursor: ew-resize;
+  z-index: 1;
+}
+
+.video-editor .ve-handle::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 2px;
+  height: 14px;
+  margin-top: -7px;
+  background-color: var(--text-on-accent);
+  opacity: 0.7;
+}
+
+.video-editor .ve-playhead {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background-color: var(--text-error, var(--color-red));
+  pointer-events: none;
+}
+
+.video-editor .ve-playhead::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  border: 5px solid transparent;
+  border-top-color: var(--text-error, var(--color-red));
+}
+
+.video-editor .ve-ruler {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--size-4-1);
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- The clip list: what will be exported, in order --------------------- */
+
+.video-editor .ve-clips {
+  flex: 0 0 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary);
+}
+
+.video-editor .ve-clips-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.video-editor .ve-clip-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+}
+
+.video-editor .ve-clip {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-primary);
+  cursor: grab;
+}
+
+.video-editor .ve-clip:hover {
+  border-color: var(--background-modifier-border-hover);
+}
+
+.video-editor .ve-clip.is-selected {
+  border-color: var(--interactive-accent);
+}
+
+.video-editor .ve-clip-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.video-editor .ve-clip-name {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-clip-span {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.video-editor .ve-clip-remove {
+  flex: 0 0 auto;
+  border: none;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0 var(--size-4-1);
+  line-height: 1;
+}
+
+.video-editor .ve-clip-remove:hover {
+  color: var(--text-error, var(--color-red));
+  background-color: transparent;
+}
+
+.video-editor .ve-clips-foot {
+  flex: 0 0 auto;
+  padding: var(--size-4-2) var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.video-editor .ve-export {
+  width: 100%;
+  padding: var(--size-4-2);
+  border: none;
+  border-radius: var(--radius-s);
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+
+.video-editor .ve-export:disabled {
+  background-color: var(--background-modifier-border);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.video-editor .ve-clear {
+  width: 100%;
+  padding: var(--size-2-1) var(--size-4-2);
+  border: none;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.video-editor .ve-clear:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* ---- Progress: an hour-long re-encode needs a number and a way out ------ */
+
+.video-editor .ve-progress {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+}
+
+/* Idle goes quiet rather than disappearing, so the layout does not jump every
+   time a job finishes. */
+.video-editor .ve-progress.is-idle {
+  opacity: 0.35;
+}
+
+.video-editor .ve-progress.is-idle .ve-cancel {
+  visibility: hidden;
+}
+
+.video-editor .ve-pct {
+  flex: 0 0 auto;
+  min-width: 12em;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.video-editor .ve-bar {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.video-editor .ve-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background-color: var(--interactive-accent);
+  transition: width 120ms linear;
+}
+
+.video-editor .ve-cancel {
+  flex: 0 0 auto;
+  border: 1px solid var(--background-modifier-border);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-1) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.video-editor .ve-cancel:hover {
+  color: var(--text-error, var(--color-red));
+  border-color: var(--text-error, var(--color-red));
+}
+
+/* ---- Narrow pane -------------------------------------------------------- */
+
+/* The clip list moves under the stage rather than squeezing it. Queried on the
+   pane's own width, which is the only width that means anything here. */
+@container video-editor (max-width: 820px) {
+  .video-editor .ve-body {
+    flex-direction: column;
+  }
+
+  .video-editor .ve-clips {
+    flex: 0 0 auto;
+    max-height: 172px;
+    border-left: none;
+    border-top: 1px solid var(--background-modifier-border);
+  }
+
+  .video-editor .ve-clip-list {
+    display: flex;
+    gap: var(--size-4-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .video-editor .ve-clip {
+    flex: 0 0 180px;
+    margin-bottom: 0;
+  }
+
+  .video-editor .ve-pct {
+    min-width: 8em;
+  }
+}
+
+/* Narrower still: the toolbar's labels go, leaving the icons. Losing a word is
+   better than losing a button off the end of a scroll. */
+@container video-editor (max-width: 560px) {
+  .video-editor .ve-tool .ve-tool-text {
+    display: none;
+  }
+
+  .video-editor .ve-tool.is-primary .ve-tool-text {
+    display: inline;
+  }
+}
+
+/* ---- The browser -------------------------------------------------------- */
+
+/* What the pane shows when nothing is open. It replaces the editor rather
+   than sitting beside it: with no video, the stage, the transport and the clip
+   list are all controls for something that does not exist. */
+.video-editor .ve-browser {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background-color: var(--background-primary);
+}
+
+.video-editor .is-hidden {
+  display: none !important;
+}
+
+.video-editor .ve-browse {
+  flex: 0 0 auto;
+  border: 1px solid var(--background-modifier-border);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-1) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.video-editor .ve-browse:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+.video-editor .ve-browser-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.video-editor .ve-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-ui-small);
+}
+
+.video-editor .ve-browser-count {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.video-editor .ve-browser-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* Folders on the left, and only folders that hold a video — this is a list of
+   places there is something to edit, not a directory tree. */
+.video-editor .ve-folders {
+  flex: 0 0 200px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+  border-right: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary);
+}
+
+.video-editor .ve-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.video-editor .ve-folder:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.video-editor .ve-folder.is-selected {
+  background-color: var(--background-modifier-active-hover, var(--background-modifier-hover));
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+}
+
+.video-editor .ve-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-folder-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.video-editor .ve-tiles {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--size-4-3);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--size-4-3);
+  align-content: start;
+}
+
+.video-editor .ve-tile {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  cursor: pointer;
+  background-color: var(--background-primary-alt);
+}
+
+.video-editor .ve-tile:hover {
+  border-color: var(--background-modifier-border-hover);
+}
+
+.video-editor .ve-tile.is-selected {
+  border-color: var(--interactive-accent);
+}
+
+.video-editor .ve-tile-poster {
+  aspect-ratio: 16 / 9;
+  background-color: var(--background-modifier-border);
+  background-size: cover;
+  background-position: center;
+}
+
+.video-editor .ve-tile-name {
+  padding: var(--size-4-1) var(--size-4-2) 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-tile-folder {
+  padding: 0 var(--size-4-2) var(--size-4-1);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-editor .ve-browser-empty {
+  grid-column: 1 / -1;
+  padding: var(--size-4-4, 16px);
+  color: var(--text-faint);
+  font-size: var(--font-ui-small);
+  max-width: 34em;
+}
+
+@container video-editor (max-width: 560px) {
+  .video-editor .ve-folders {
+    flex: 0 0 132px;
+  }
+
+  .video-editor .ve-tiles {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}
+
+/* The duration, on the poster, the way every video list does it. It is the one
+   fact you scan a grid of clips for, and a tooltip you have to wait for is not
+   scanning. */
+.video-editor .ve-tile-poster {
+  position: relative;
+}
+
+.video-editor .ve-tile-duration {
+  position: absolute;
+  right: var(--size-4-1);
+  bottom: var(--size-4-1);
+  padding: 0 var(--size-4-1);
+  border-radius: 2px;
+  background-color: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+/* Nothing measured yet, nothing shown — an empty black chip reads as a broken
+   file rather than a pending one. */
+.video-editor .ve-tile-duration:empty {
+  display: none;
+}

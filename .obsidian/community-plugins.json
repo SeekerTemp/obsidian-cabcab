@@ -10,5 +10,9 @@
   "editing-toolbar",
   "dataview",
   "mouse-tooltip-translator",
-  "dbml-visualizer"
+  "dbml-visualizer",
+  "metadata-menu",
+  "schema-sync",
+  "media-viewer",
+  "video-editor"
 ]

@@ -1,0 +1,9 @@
+{
+  "id": "video-editor",
+  "name": "Video Editor",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Trim, split, arrange and export vault video with ffmpeg, recording every cut as a MediaInstance record.",
+  "author": "cabcab",
+  "isDesktopOnly": true
+}

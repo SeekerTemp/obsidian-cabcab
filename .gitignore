@@ -1,0 +1,21 @@
+# main carries the whole vault: every plugin, snippet and theme.
+#
+# .gitignore is itself a tracked file, so each branch carries its own copy and
+# git switches these rules for you on checkout. The other branches narrow this:
+#
+#   feature/<plugin>   adds a `scope-branch` block that ignores every plugin
+#                      except the ones under development, plus the vault's own
+#                      content folders. Set it with .githooks/scope-branch.
+#   data/<project>     removes the /data/ line below, which is what makes a
+#                      project's notes trackable there.
+#
+# See "Version control" in .obsidian/plugins/schema-sync/README.md.
+# .githooks/pre-push is the safety net. Enable it once per clone:
+#
+#     git config core.hooksPath .githooks
+
+# Vault data lives on data/<name> branches only.
+/data/
+
+# A nested duplicate of the vault, left over from an earlier layout.
+/MyVault/

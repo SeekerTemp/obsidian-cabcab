@@ -1,0 +1,519 @@
+// Run with:  node .obsidian/plugins/schema-sync/tests/config-identity.test.js
+//
+// Covers the pure decisions behind README items 2, 3 and 6. See
+// docs/2026-09-08-config-identity-and-lifecycle.md.
+
+const Module = require("module");
+const assert = require("assert");
+
+// main.js does `require("obsidian")` at load time. Obsidian only exists inside
+// the app, so intercept the specifier and hand back inert class stubs.
+const obsidian = new Proxy({}, {
+  get: (_, name) => {
+    const Stub = class {};
+    Object.defineProperty(Stub, "name", { value: String(name) });
+    return Stub;
+  },
+});
+const load = Module._load;
+Module._load = function (request, parent, isMain) {
+  return request === "obsidian" ? obsidian : load.call(this, request, parent, isMain);
+};
+
+const { generators } = require(require("path").join(__dirname, "..", "main.js"));
+const { normalizeFieldName, fieldNameError } = generators;
+
+const tests = [];
+const test = (name, fn) => tests.push([name, fn]);
+
+// --- Task 1: field name normalisation --------------------------------------
+
+test("a bare name is returned trimmed", () => {
+  assert.strictEqual(normalizeFieldName("  trait  "), "trait");
+});
+
+test("a wikilink is reduced to its target", () => {
+  assert.strictEqual(normalizeFieldName("[[Planet]]"), "Planet");
+});
+
+test("a path-qualified aliased link reduces to the field name", () => {
+  assert.strictEqual(normalizeFieldName("[[LifeForm/trait|trait]]"), "trait");
+});
+
+test("a heading anchor is dropped", () => {
+  assert.strictEqual(normalizeFieldName("[[trait#Values]]"), "trait");
+});
+
+test("a trailing .config is stripped", () => {
+  // Asset Renamer used to derive property names from config filenames.
+  assert.strictEqual(normalizeFieldName("Cultures.config"), "Cultures");
+});
+
+test("null and undefined normalise to empty", () => {
+  assert.strictEqual(normalizeFieldName(null), "");
+  assert.strictEqual(normalizeFieldName(undefined), "");
+});
+
+test("a blank name is an error", () => {
+  assert.ok(fieldNameError(""));
+});
+
+test("a name that would escape the config folder is an error", () => {
+  assert.ok(fieldNameError("a/b"));
+  assert.ok(fieldNameError("a\\b"));
+  assert.ok(fieldNameError("a:b"));
+  assert.ok(fieldNameError("a|b"));
+});
+
+test("an ordinary name is not an error", () => {
+  assert.strictEqual(fieldNameError("trait"), null);
+  assert.strictEqual(fieldNameError("Realm"), null);
+});
+
+// --- Task 2: per-schema config folders -------------------------------------
+
+const { configPathFor } = generators;
+
+const STRING = { type: "string", bind: true };
+
+test("a bound string field gets a config under its schema's folder", () => {
+  assert.strictEqual(configPathFor("LifeForm", "trait", STRING), "data/config/LifeForm/trait.md");
+});
+
+test("two schemas with the same field name get separate notes", () => {
+  assert.strictEqual(configPathFor("Beast", "trait", STRING), "data/config/Beast/trait.md");
+  assert.notStrictEqual(configPathFor("Beast", "trait", STRING), configPathFor("LifeForm", "trait", STRING));
+});
+
+test("an unbound field has no config", () => {
+  assert.strictEqual(configPathFor("LifeForm", "attachment", { type: "string", bind: false }), null);
+});
+
+test("a relation field has no config of its own", () => {
+  assert.strictEqual(configPathFor("Verse", "Realm", { type: "string", bind: true, relation: { target: "Realm" } }), null);
+});
+
+test("an identity field gets a config — it is the list of instances", () => {
+  // A primary key's list is what a foreign key points at, and what ⤓ turns into
+  // records with id = the row's name.
+  assert.strictEqual(configPathFor("LifeForm", "id", { type: "string", bind: true, required: true }), "data/config/LifeForm/id.md");
+  assert.strictEqual(configPathFor("LifeForm", "name", STRING), "data/config/LifeForm/name.md");
+});
+
+test("a non-string field has no config", () => {
+  assert.strictEqual(configPathFor("LifeForm", "cover", { type: "attachment", bind: true }), null);
+  assert.strictEqual(configPathFor("LifeForm", "count", { type: "number", bind: true }), null);
+});
+
+test("the config note heading is the field name, not a plural", () => {
+  const note = generators.renderConfigNote("trait", ["LifeForm.trait"], ["bold"], "");
+  assert.ok(note.includes("# trait"), note.slice(0, 200));
+  assert.ok(!note.includes("# traits"));
+});
+
+test("pluralize is gone", () => {
+  assert.strictEqual(generators.pluralize, undefined);
+});
+
+// --- Task 3: Field Reference links -----------------------------------------
+
+const { fieldReferenceLink, renderFieldReference, parseFieldReference } = generators;
+
+const SCHEMAS = new Map([
+  ["Realm", { Realm: { type: "string", bind: true, required: true } }],
+  ["LifeForm", {
+    id: { type: "string", bind: true, required: true },
+    cover: { type: "attachment", bind: true },
+    trait: { type: "string", bind: true },
+    attachment: { type: "string", bind: false },
+  }],
+]);
+
+test("a field with a config links to it, path-qualified and aliased", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS), "[[LifeForm/trait\\|trait]]");
+});
+
+test("a relation links to the target schema's own-name config", () => {
+  const field = { type: "string", bind: false, relation: { target: "Realm" } };
+  assert.strictEqual(fieldReferenceLink("Verse", "Realm", field, SCHEMAS), "[[Realm/Realm\\|Realm]]");
+});
+
+test("a relation whose target has no own-name field links to its primary key", () => {
+  // LifeForm has no LifeForm field, so the first list wins — its `id`.
+  const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
+  assert.strictEqual(fieldReferenceLink("Pack", "owner", field, SCHEMAS), "[[LifeForm/id\\|owner]]");
+});
+
+test("a relation to an entity with no lists links to its schema note", () => {
+  const schemas = new Map([["Ghost", { cover: { type: "attachment" } }]]);
+  const field = { type: "string", bind: true, relation: { target: "Ghost" } };
+  assert.strictEqual(fieldReferenceLink("Pack", "haunt", field, schemas), "[[Ghost.schema\\|haunt]]");
+});
+
+test("a field with no config is plain text", () => {
+  // An attachment holds media, and an unbound field is written nowhere, so
+  // neither has a list. Everything else does.
+  assert.strictEqual(fieldReferenceLink("LifeForm", "cover", SCHEMAS.get("LifeForm").cover, SCHEMAS), "cover");
+  assert.strictEqual(fieldReferenceLink("LifeForm", "attachment", SCHEMAS.get("LifeForm").attachment, SCHEMAS), "attachment");
+});
+
+test("the primary key links to its own list", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "id", SCHEMAS.get("LifeForm").id, SCHEMAS), "[[LifeForm/id\\|id]]");
+});
+
+test("the rendered table round trips back to plain field names", () => {
+  const table = renderFieldReference("LifeForm", SCHEMAS.get("LifeForm"), SCHEMAS);
+  const parsed = parseFieldReference(table);
+  assert.deepStrictEqual(Object.keys(parsed), ["id", "cover", "trait", "attachment"]);
+});
+
+test("a linked row round trips without keeping the brackets", () => {
+  const table = renderFieldReference("Verse", { Realm: { type: "string", bind: false, relation: { target: "Realm" } } }, SCHEMAS);
+  assert.ok(table.includes("[[Realm/Realm\\|Realm]]"), table);
+  assert.deepStrictEqual(Object.keys(parseFieldReference(table)), ["Realm"]);
+});
+
+test("a linked row keeps its other columns intact", () => {
+  const table = renderFieldReference("LifeForm", SCHEMAS.get("LifeForm"), SCHEMAS);
+  const parsed = parseFieldReference(table);
+  assert.strictEqual(parsed.trait.type, "string");
+  assert.strictEqual(parsed.trait.bind, true);
+  assert.strictEqual(parsed.id.required, true);
+  assert.strictEqual(parsed.attachment.bind, false);
+});
+
+// --- Task 5: field rename ---------------------------------------------------
+
+const { configRenamePlan } = generators;
+
+test("renaming a field renames its config note", () => {
+  const paths = new Set(["data/config/LifeForm/trait.md"]);
+  assert.deepStrictEqual(configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: paths }), {
+    action: "rename",
+    from: "data/config/LifeForm/trait.md",
+    to: "data/config/LifeForm/feature.md",
+    configFor: "LifeForm.feature",
+  });
+});
+
+test("a field with no config note needs no action", () => {
+  assert.deepStrictEqual(configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: new Set() }), { action: "none" });
+});
+
+test("an occupied target is reported, never merged", () => {
+  const paths = new Set(["data/config/LifeForm/trait.md", "data/config/LifeForm/feature.md"]);
+  const plan = configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: paths });
+  assert.strictEqual(plan.action, "conflict");
+  assert.strictEqual(plan.to, "data/config/LifeForm/feature.md");
+});
+
+test("a rename inside one schema never touches another schema's note", () => {
+  const paths = new Set(["data/config/Beast/trait.md"]);
+  assert.deepStrictEqual(configRenamePlan({ schemaName: "LifeForm", oldName: "trait", newName: "feature", existingPaths: paths }), { action: "none" });
+});
+
+// --- Task 7: orphan cleanup -------------------------------------------------
+
+const { orphanedConfigs } = generators;
+
+const NOTES = [
+  { path: "data/config/LifeForm/trait.md", schemaName: "LifeForm", fieldName: "trait" },
+  { path: "data/config/LifeForm/gone.md", schemaName: "LifeForm", fieldName: "gone" },
+  { path: "data/config/Ghost/anything.md", schemaName: "Ghost", fieldName: "anything" },
+  { path: "data/config/LifeForm/attachment.md", schemaName: "LifeForm", fieldName: "attachment" },
+];
+
+test("a note whose field still exists is live", () => {
+  assert.ok(!orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/LifeForm/trait.md"));
+});
+
+test("a note whose field was deleted is an orphan", () => {
+  assert.ok(orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/LifeForm/gone.md"));
+});
+
+test("a note whose schema was deleted is an orphan", () => {
+  assert.ok(orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/Ghost/anything.md"));
+});
+
+test("an unbound field keeps its list, so unbinding stays reversible", () => {
+  assert.ok(!orphanedConfigs(NOTES, SCHEMAS).some((note) => note.path === "data/config/LifeForm/attachment.md"));
+});
+
+test("exactly two of the four are orphaned", () => {
+  assert.strictEqual(orphanedConfigs(NOTES, SCHEMAS).length, 2);
+});
+
+test("a stray copy is orphaned even though its field is alive", () => {
+  // Obsidian's " 1" suffix on a rename collision. configFor says
+  // LifeForm.attachment, but that field's note lives at attachment.md.
+  const stray = { path: "data/config/LifeForm/attachment 1.md", schemaName: "LifeForm", fieldName: "attachment" };
+  const found = orphanedConfigs([stray], SCHEMAS);
+  assert.strictEqual(found.length, 1);
+  assert.match(found[0].reason, /stray copy/);
+});
+
+test("the note at its own configFor's path is never a stray", () => {
+  const live = { path: "data/config/LifeForm/attachment.md", schemaName: "LifeForm", fieldName: "attachment" };
+  assert.deepStrictEqual(orphanedConfigs([live], SCHEMAS), []);
+});
+
+test("every orphan says why it is listed", () => {
+  for (const orphan of orphanedConfigs(NOTES, SCHEMAS)) {
+    assert.ok(orphan.reason && orphan.reason.length > 0, orphan.path);
+  }
+});
+
+// --- README item 9: attachment as an image column ---------------------------
+
+const { renderBaseYaml } = generators;
+
+test("an attachment field is shown through image(), not as a raw path", () => {
+  const yaml = renderBaseYaml("LifeForm", { id: { type: "string" }, cover: { type: "attachment" } }, "data/record/lifeforms");
+  assert.ok(yaml.includes("formulas:"), yaml);
+  assert.ok(yaml.includes("coverImage: image(cover)"), yaml);
+  assert.ok(yaml.includes("- formula.coverImage"), yaml);
+});
+
+test("the raw attachment column is replaced, not duplicated", () => {
+  const yaml = renderBaseYaml("LifeForm", { cover: { type: "attachment" } }, "data/record/lifeforms");
+  assert.ok(!/^ *- cover$/m.test(yaml), yaml);
+});
+
+test("a schema with no attachment field gets no formulas block", () => {
+  const yaml = renderBaseYaml("Realm", { Realm: { type: "string" } }, "data/record/realms");
+  assert.ok(!yaml.includes("formulas:"), yaml);
+});
+
+test("an unbound attachment is left out entirely", () => {
+  const yaml = renderBaseYaml("LifeForm", { cover: { type: "attachment", bind: false } }, "data/record/lifeforms");
+  assert.ok(!yaml.includes("formulas:"), yaml);
+  assert.ok(!yaml.includes("cover"), yaml);
+});
+
+// --- README item 8: config rows become records ------------------------------
+
+const { recordFromConfigValue, recordFileNameFor } = generators;
+
+test("a config row becomes a record carrying that value", () => {
+  const fields = { Realm: { type: "string", required: true } };
+  assert.deepStrictEqual(recordFromConfigValue("Realm", fields, "Realm", "Aetheria"), {
+    implements: "Realm",
+    Realm: "Aetheria",
+  });
+});
+
+test("the schema's identity field takes the item name too", () => {
+  const fields = { id: { type: "string", required: true }, trait: { type: "string" } };
+  const record = recordFromConfigValue("LifeForm", fields, "trait", "bold");
+  assert.strictEqual(record.id, "bold");
+  assert.strictEqual(record.trait, "bold");
+});
+
+test("unbound fields stay out of the new record", () => {
+  const fields = { Realm: { type: "string" }, note: { type: "string", bind: false } };
+  assert.ok(!("note" in recordFromConfigValue("Realm", fields, "Realm", "Umbra")));
+});
+
+test("other bound fields start empty", () => {
+  const fields = { Realm: { type: "string" }, size: { type: "number" } };
+  assert.strictEqual(recordFromConfigValue("Realm", fields, "Realm", "Umbra").size, 0);
+});
+
+test("a value becomes a file name, brackets stripped", () => {
+  assert.strictEqual(recordFileNameFor("Aetheria"), "Aetheria.md");
+  assert.strictEqual(recordFileNameFor("[[Umbra]]"), "Umbra.md");
+  assert.strictEqual(recordFileNameFor("  Spaced  "), "Spaced.md");
+});
+
+test("a value that cannot be a file name is refused", () => {
+  assert.strictEqual(recordFileNameFor("a/b"), null);
+  assert.strictEqual(recordFileNameFor("a:b"), null);
+  assert.strictEqual(recordFileNameFor(""), null);
+  assert.strictEqual(recordFileNameFor("   "), null);
+});
+
+// --- README item 7: foreign fields pulled through a relation ----------------
+
+const FK_SCHEMAS = new Map([
+  ["Realm", { Realm: { type: "string", required: true }, size: { type: "number" }, ruler: { type: "string", relation: { target: "LifeForm" } } }],
+  ["LifeForm", { id: { type: "string", required: true } }],
+]);
+
+test("a bound relation exposes the target's fields as formulas", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(yaml.includes("home_Realm: home.asFile().Realm"), yaml);
+  assert.ok(yaml.includes("home_size: home.asFile().size"), yaml);
+  assert.ok(yaml.includes("- formula.home_Realm"), yaml);
+});
+
+test("the target's own relations are not pulled through a second hop", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(!yaml.includes("home_ruler"), yaml);
+});
+
+test("an unbound relation pulls nothing", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", bind: false, relation: { target: "Realm" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(!yaml.includes("formulas:"), yaml);
+});
+
+test("a relation to an unknown schema pulls nothing", () => {
+  const yaml = renderBaseYaml("Verse", { home: { type: "string", relation: { target: "Ghost" } } }, "data/record/verses", FK_SCHEMAS);
+  assert.ok(!yaml.includes("formulas:"), yaml);
+});
+
+test("foreign fields do not become schema fields", () => {
+  // The whole point of item 7: query and labelling only, never bound back.
+  const fields = { home: { type: "string", relation: { target: "Realm" } } };
+  renderBaseYaml("Verse", fields, "data/record/verses", FK_SCHEMAS);
+  assert.deepStrictEqual(Object.keys(fields), ["home"]);
+});
+
+// --- The pipe inside a wikilink is a column separator -----------------------
+//
+// [[LifeForm/trait|trait]] makes its row 7 cells wide, not 6. Obsidian's table
+// editor then reformats the header to match and every column shifts right,
+// which is how a field ended up with `relation: yes` — the Bound cell landing
+// in the Relation slot. In a table the alias pipe has to be escaped.
+
+test("the alias pipe is escaped inside a table cell", () => {
+  assert.strictEqual(fieldReferenceLink("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS), "[[LifeForm/trait\\|trait]]");
+});
+
+test("a rendered row is exactly six cells wide", () => {
+  const table = renderFieldReference("LifeForm", SCHEMAS.get("LifeForm"), SCHEMAS);
+  for (const line of table.split("\n").filter((row) => row.startsWith("|"))) {
+    const cells = line.trim().slice(1, -1).split(/(?<!\\)\|/);
+    assert.strictEqual(cells.length, 6, `${cells.length} cells in: ${line}`);
+  }
+});
+
+test("an escaped row round trips", () => {
+  const table = renderFieldReference("Verse", { Realm: { type: "string", bind: false, relation: { target: "Realm" } } }, SCHEMAS);
+  const parsed = parseFieldReference(table);
+  assert.deepStrictEqual(Object.keys(parsed), ["Realm"]);
+  assert.strictEqual(parsed.Realm.relation.target, "Realm");
+});
+
+test("a legacy unescaped row is still recovered, not shifted", () => {
+  const raw = "## Field Reference\n\n| Field | Type | Default | Required | Bound | Relation |\n| --- | --- | --- | --- | --- | --- |\n| [[Realm.schema|LifeForm]] | string | - | no | yes | LifeForm |\n";
+  const parsed = parseFieldReference(raw);
+  assert.deepStrictEqual(Object.keys(parsed), ["LifeForm"]);
+  assert.strictEqual(parsed.LifeForm.relation.target, "LifeForm");
+  assert.strictEqual(parsed.LifeForm.bind, true);
+});
+
+test("a .schema suffix is not left in a field name", () => {
+  assert.strictEqual(normalizeFieldName("[[Realm.schema\\|owner]]"), "owner");
+  assert.strictEqual(normalizeFieldName("[[Realm.schema]]"), "Realm");
+});
+
+// --- Renaming a value list is renaming the attribute ------------------------
+
+const { configSourceOfPath, renameField } = generators;
+
+test("a config note's path names the schema and field it belongs to", () => {
+  assert.deepStrictEqual(configSourceOfPath("data/config/LifeForm/trait.md"), { schemaName: "LifeForm", fieldName: "trait" });
+});
+
+test("plugin bookkeeping is not a value list", () => {
+  assert.strictEqual(configSourceOfPath("data/config/schema-mappings.md"), null);
+});
+
+test("a note nested deeper than one schema folder is not a value list", () => {
+  assert.strictEqual(configSourceOfPath("data/config/LifeForm/deep/trait.md"), null);
+});
+
+test("a note outside data/config is not a value list", () => {
+  assert.strictEqual(configSourceOfPath("data/record/lifeforms/trait.md"), null);
+  assert.strictEqual(configSourceOfPath("data/config/LifeForm/trait.base"), null);
+});
+
+test("renaming a field keeps its position and definition", () => {
+  const fields = { id: { type: "string" }, trait: { type: "string", required: true }, cover: { type: "attachment" } };
+  const next = renameField(fields, "trait", "feature");
+  assert.deepStrictEqual(Object.keys(next), ["id", "feature", "cover"]);
+  assert.strictEqual(next.feature.required, true);
+});
+
+// --- ☰ always has somewhere to go -------------------------------------------
+
+const { fieldReferenceTarget } = generators;
+
+test("a field with a value list points at it, and links", () => {
+  const t = fieldReferenceTarget("LifeForm", "trait", SCHEMAS.get("LifeForm").trait, SCHEMAS);
+  assert.strictEqual(t.path, "data/config/LifeForm/trait.md");
+  assert.strictEqual(t.link, "LifeForm/trait");
+});
+
+test("a relation points at the target's own value list", () => {
+  const field = { type: "string", bind: false, relation: { target: "Realm" } };
+  const t = fieldReferenceTarget("Verse", "Realm", field, SCHEMAS);
+  assert.strictEqual(t.path, "data/config/Realm/Realm.md");
+  assert.strictEqual(t.link, "Realm/Realm");
+});
+
+test("a relation whose target has no same-named field falls to its primary key", () => {
+  // LifeForm has no LifeForm field. Its first list is `id`, the primary key,
+  // which is the set of LifeForm instances a foreign key can point at.
+  const field = { type: "string", bind: true, relation: { target: "LifeForm" } };
+  const t = fieldReferenceTarget("Pack", "owner", field, SCHEMAS);
+  assert.strictEqual(t.path, "data/config/LifeForm/id.md");
+  assert.strictEqual(t.link, "LifeForm/id");
+});
+
+test("a relation to an entity with no lists at all falls back to its schema", () => {
+  const schemas = new Map([["Ghost", { cover: { type: "attachment" } }]]);
+  const field = { type: "string", bind: true, relation: { target: "Ghost" } };
+  const t = fieldReferenceTarget("Pack", "haunt", field, schemas);
+  assert.strictEqual(t.path, "data/schema/Ghost.schema.md");
+  assert.strictEqual(t.link, "Ghost.schema");
+});
+
+test("a field with no list still has somewhere to open, but no link", () => {
+  for (const name of ["cover", "attachment"]) {
+    const t = fieldReferenceTarget("LifeForm", name, SCHEMAS.get("LifeForm")[name], SCHEMAS);
+    assert.strictEqual(t.path, "data/schema/LifeForm.schema.md", name);
+    assert.strictEqual(t.link, null, name);
+  }
+});
+
+test("every field of every schema opens somewhere", () => {
+  for (const [schemaName, fields] of SCHEMAS) {
+    for (const [fieldName, definition] of Object.entries(fields)) {
+      assert.ok(fieldReferenceTarget(schemaName, fieldName, definition, SCHEMAS).path, `${schemaName}.${fieldName}`);
+    }
+  }
+});
+
+// --- Which schema's lists apply to a note -----------------------------------
+
+const { schemaNameOfNote } = generators;
+
+test("a record says which schema it implements", () => {
+  assert.strictEqual(schemaNameOfNote({ implements: "LifeForm" }, "data/record/lifeforms/a.md"), "LifeForm");
+});
+
+test("a value list says which schema it belongs to", () => {
+  assert.strictEqual(schemaNameOfNote({ configFor: ["Realm.Realm"] }, "data/config/Realm/Realm.md"), "Realm");
+});
+
+test("a value list's own path says it too, with no frontmatter", () => {
+  assert.strictEqual(schemaNameOfNote(null, "data/config/Realm/Realm.md"), "Realm");
+});
+
+test("implements wins over the path", () => {
+  assert.strictEqual(schemaNameOfNote({ implements: "LifeForm" }, "data/config/Realm/Realm.md"), "LifeForm");
+});
+
+test("a note with none of the three belongs to no schema", () => {
+  assert.strictEqual(schemaNameOfNote({}, "notes/random.md"), null);
+  assert.strictEqual(schemaNameOfNote(null, "data/config/schema-mappings.md"), null);
+});
+
+let failed = 0;
+for (const [name, fn] of tests) {
+  try { fn(); console.log(`  ok    ${name}`); }
+  catch (error) { failed += 1; console.log(`  FAIL  ${name}\n        ${error.message}`); }
+}
+console.log(`\n${tests.length - failed}/${tests.length} passing`);
+process.exit(failed ? 1 : 0);
