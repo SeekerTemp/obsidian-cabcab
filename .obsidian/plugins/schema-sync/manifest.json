@@ -1,9 +1,0 @@
-{
-  "id": "schema-sync",
-  "name": "Schema Sync",
-  "version": "1.0.0",
-  "minAppVersion": "1.7.2",
-  "description": "Validate notes against markdown schemas and sync declared defaults automatically.",
-  "author": "cabcab",
-  "isDesktopOnly": false
-}

@@ -1,9 +1,67 @@
-.obsidian/plugins/media-viewer/debug.log
+# Vault data lives on data/<name> branches only — never on main or feature/*.
+#
+# .gitignore is itself a tracked file, so each branch carries its own copy and
+# git switches these rules for you on checkout. On a data/<name> branch the
+# /data/ line below is removed, which is what makes the notes trackable there.
+#
+# .githooks/pre-push is the safety net. Enable it once per clone:
+#
+#     git config core.hooksPath .githooks
+/data/
+
+# A nested duplicate of the vault, left over from an earlier layout.
+/MyVault/
+
+# Only the plugins this branch develops against are tracked here. main carries
+# every plugin; a feature branch carries the ones under development, so unrelated
+# plugin churn never lands in these commits.
+#
+# Do not edit the block below by hand — run, from the repo root:
+#
+#     .githooks/scope-branch <plugin> [<plugin>...]
+#
+# Like /data/ above, this list is per-branch: main's copy of .gitignore has no
+# such section. Because of that, a MERGE of this branch into main would carry
+# the untracking as deletions — integrate plugin work with cherry-pick, and see
+# .githooks/pre-push, which refuses a push that strips main.
+# >>> scope-branch >>>
+/.obsidian/plugins/*
+!/.obsidian/plugins/media-viewer/
+!/.obsidian/plugins/video-editor/
+# <<< scope-branch <<<
+
+# A feature branch carries the plugin and what runs it, nothing else. Vault
+# content and personal appearance live on main and on data/<project> branches.
+#
+# Per-branch, like every rule above, with the same consequence: these paths are
+# untracked here, so merging this branch into main would arrive as deletions.
+# Cherry-pick, and let .githooks/pre-push catch the mistake.
+/assets/
+/config/
+/doc/
+/Operon/
+/ref/
+/.obsidian/snippets/
+/.obsidian/themes/
+
+# The vault settings that say who is using it rather than what the plugins need.
+# Obsidian rewrites these every time it runs, so tracking them makes `git status`
+# noise out of moving a pane. app.json, community-plugins.json and
+# core-plugins.json stay: they are what makes a fresh clone open with both
+# plugins already enabled, which is the install in README.md.
+/.obsidian/appearance.json
+/.obsidian/graph.json
+/.obsidian/hotkeys.json
+/.obsidian/workspace.json
+
+# Written by the plugins as they run, or too large to carry. bin/ is ffmpeg —
+# 290 MB and platform-specific; its README is the instruction for filling it.
+# tests/ is a harness a clone re-creates, not something the vault ships.
 .obsidian/plugins/media-viewer/data.json
+.obsidian/plugins/media-viewer/debug.log
 .obsidian/plugins/media-viewer/crash.log
+.obsidian/plugins/media-viewer/tests/
 .obsidian/plugins/video-editor/data.json
+.obsidian/plugins/video-editor/tests/
 .obsidian/plugins/video-editor/bin/*
 !.obsidian/plugins/video-editor/bin/README.md
-ref/
-.obsidian/plugins/media-viewer/tests/
-.obsidian/plugins/video-editor/tests/

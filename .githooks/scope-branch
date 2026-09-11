@@ -1,0 +1,104 @@
+#!/bin/sh
+# Scope the current branch to the plugins being developed on it.
+#
+#     .githooks/scope-branch schema-sync metadata-menu dbml-visualizer
+#
+# Rewrites the allow-list in .gitignore, untracks every other plugin, and tracks
+# the named ones. Files are never touched on disk — untracked, not removed.
+#
+# The rule this implements: main carries the whole vault; a feature branch
+# carries the plugin under development and what it talks to, so a commit about
+# one plugin contains only that plugin. Run this once when a feature branch is
+# created, and again if the set changes.
+#
+# Because those plugins end up untracked here, MERGING a feature branch into
+# main would arrive as deletions. Cherry-pick instead; .githooks/pre-push is the
+# net that catches the mistake.
+
+set -e
+
+BEGIN='# >>> scope-branch >>>'
+END='# <<< scope-branch <<<'
+PLUGINS=.obsidian/plugins
+
+# Directories only: a stray archive sitting beside them is not a plugin.
+list_plugins() {
+	for dir in "$PLUGINS"/*/; do
+		[ -d "$dir" ] || continue
+		name=${dir%/}
+		echo "$1${name##*/}"
+	done
+}
+
+cd "$(git rev-parse --show-toplevel)"
+branch=$(git rev-parse --abbrev-ref HEAD)
+
+if [ $# -eq 0 ]; then
+	echo "usage: .githooks/scope-branch <plugin> [<plugin>...]" >&2
+	echo "" >&2
+	echo "installed:" >&2
+	list_plugins "  " >&2
+	exit 2
+fi
+
+# main is the branch that holds everything. Narrowing it is what the pre-push
+# hook exists to prevent, so refuse before anything is written rather than
+# leaving a half-scoped index behind.
+if [ "$branch" = "main" ]; then
+	echo "scope-branch: refusing to narrow main." >&2
+	echo "  main carries every plugin. Scope a feature/<name> branch instead." >&2
+	exit 1
+fi
+
+for name in "$@"; do
+	if [ ! -d "$PLUGINS/$name" ]; then
+		echo "scope-branch: no such plugin: $name" >&2
+		echo "  installed:" >&2
+		list_plugins "    " >&2
+		exit 1
+	fi
+done
+
+# Rebuild the marked block, leaving the rest of .gitignore exactly as it is.
+tmp=$(mktemp)
+awk -v begin="$BEGIN" -v end="$END" '
+	$0 == begin { skip = 1; print; next }
+	$0 == end   { skip = 0; print "@@KEEP@@"; print; next }
+	!skip       { print }
+' .gitignore > "$tmp"
+
+if ! grep -q '@@KEEP@@' "$tmp"; then
+	rm -f "$tmp"
+	echo "scope-branch: $BEGIN ... $END block not found in .gitignore." >&2
+	echo "  This branch predates the rule. Copy the block from another branch." >&2
+	exit 1
+fi
+
+allow=$(printf '%s\n' "$@" | sort -u | sed "s|^|!/$PLUGINS/|; s|\$|/|")
+block=$(printf '/%s/*\n%s\n' "$PLUGINS" "$allow")
+
+awk -v block="$block" '
+	$0 == "@@KEEP@@" { print block; next }
+	{ print }
+' "$tmp" > .gitignore
+rm -f "$tmp"
+
+# Untrack what is no longer wanted, track what now is. --cached leaves the
+# working tree alone: this changes what git watches, never what Obsidian loads.
+for path in $(git ls-files "$PLUGINS" | cut -d/ -f3 | sort -u); do
+	keep=no
+	for name in "$@"; do
+		[ "$path" = "$name" ] && keep=yes
+	done
+	[ "$keep" = no ] && git rm -r --cached --quiet "$PLUGINS/$path"
+done
+for name in "$@"; do
+	git add "$PLUGINS/$name"
+done
+git add .gitignore
+
+echo "scope-branch: $branch now tracks $# plugin(s):"
+printf '%s\n' "$@" | sort -u | sed 's/^/  /'
+echo ""
+echo "Staged. Review with 'git status', then commit."
+echo "Nothing was removed from disk — every other plugin is untracked, not gone."
