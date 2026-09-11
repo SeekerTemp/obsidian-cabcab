@@ -30,12 +30,11 @@
                 "file": "data/base/LifeForm.base",
                 "viewName": "LifeForm"
               },
-              "icon": "lucide-table",
+              "icon": "lucide-layout-grid",
               "title": "LifeForm"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       },
       {
         "id": "6faaa601951983b9",
@@ -56,31 +55,7 @@
             }
           },
           {
-            "id": "143043ea79a49332",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "data/config/LifeForm/attachment 1.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "attachment 1"
-            }
-          },
-          {
-            "id": "5ea9a0d1d1ceab71",
-            "type": "leaf",
-            "state": {
-              "type": "schema-sync-dashboard",
-              "state": {},
-              "icon": "workflow",
-              "title": "Schema Sync"
-            }
-          },
-          {
-            "id": "77fad271d4b66baf",
+            "id": "46fc63d5d04740b7",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -92,23 +67,9 @@
               "icon": "lucide-file",
               "title": "_placeholder.LifeForm"
             }
-          },
-          {
-            "id": "7f14b533171c2436",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "data/config/LifeForm/trait.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "trait"
-            }
           }
         ],
-        "currentTab": 3
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -274,21 +235,23 @@
       "schema-sync:Open schema dashboard": false
     }
   },
-  "active": "0dcabaccede3b352",
+  "active": "4f8cfead23c3d67f",
   "lastOpenFiles": [
-    "data/record/lifeforms/_placeholder.LifeForm.md",
     "data/base/LifeForm.base",
+    "data/record/lifeforms/_placeholder.LifeForm.md",
+    "config/categories.md",
+    "data/config/LifeForm/trait.md",
+    "Untitled.base",
+    "data/schema/LifeForm.schema.md",
+    "data/config/LifeForm/attachment 1.md",
     "data/AssetDatabase.base.md",
     "Pasted image 20260907162153.png",
-    "data/config/LifeForm/attachment 1.md",
     "data/config/LifeForm/attachment.md",
     "data/config/LifeForm/attachment3.md",
     "README.md",
     "data/config/LifeForm/attachment2.md",
-    "data/schema/LifeForm.schema.md",
     "data/record/verses/_placeholder.Verse.md",
     "data/config/Realm/Realm.md",
-    "data/config/LifeForm/trait.md",
     "data/config/LifeForm/id.md",
     "data/config/Realm",
     "README.md.tmp.25628.4c687263b3b3",
@@ -300,7 +263,6 @@
     "data/config",
     "data/record/lifeforms",
     "data/record/realms/_placeholder.Realm.md",
-    "data/record/realms",
     "data/schema/Verse.schema.md",
     "data/schema/Realm.schema.md",
     "data/config/Verse/LifeForm.md",
@@ -313,7 +275,6 @@
     "Excel 2026-09-07 17.05.19.univer.md",
     "Pasted image 20260907163318.png",
     "assets/generatedpaths_20260908_152040.jpg",
-    "Realm.md",
     "assets/FB_IMG_1695878841711.jpg",
     "assets/atompunk.jpg"
   ]

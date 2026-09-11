@@ -1,10 +1,31 @@
 {
   "presetFields": [
     {
-      "name": "Category",
       "type": "Select",
-      "id": "asset-renamer-categories",
-      "path": "",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[1_conceptSheet]]",
+          "1": "[[2_productDemo]]",
+          "2": "[[3_oufit]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      },
+      "name": "Asset_type",
+      "id": "asset-renamer-asset_types",
+      "path": ""
+    },
+    {
+      "type": "Select",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
@@ -43,13 +64,40 @@
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
-      }
+      },
+      "name": "Category",
+      "id": "asset-renamer-categories",
+      "path": ""
     },
     {
-      "name": "Era",
       "type": "Select",
-      "id": "asset-renamer-eras",
-      "path": "",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
+      "options": {
+        "sourceType": "ValuesList",
+        "valuesList": {
+          "0": "[[Entity]]",
+          "1": "[[Eras]]",
+          "2": "[[Weathers]]",
+          "3": "[[Roles]]",
+          "4": "[[Asset_types]]",
+          "5": "[[Outfit_types]]"
+        },
+        "valuesListNotePath": "",
+        "valuesFromDVQuery": ""
+      },
+      "name": "Entity",
+      "id": "asset-renamer-entities",
+      "path": ""
+    },
+    {
+      "type": "Select",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
@@ -71,31 +119,41 @@
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
-      }
+      },
+      "name": "Era",
+      "id": "asset-renamer-eras",
+      "path": ""
     },
     {
-      "name": "Weather",
       "type": "Select",
-      "id": "asset-renamer-weathers",
-      "path": "",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
-          "0": "[[Weather]]",
-          "1": "[[hidropunk]]",
-          "2": "[[desert]]",
-          "3": "[[blizzard]]",
-          "4": "[[postapoc]]"
+          "0": "[[Group]]",
+          "1": "[[casual]]",
+          "2": "[[formal]]",
+          "3": "[[theme]]",
+          "4": "[[underwear]]",
+          "5": "[[functional]]",
+          "6": "[[battle]]"
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
-      }
+      },
+      "name": "Outfit_type",
+      "id": "asset-renamer-outfit_types",
+      "path": ""
     },
     {
-      "name": "Role",
       "type": "Select",
-      "id": "asset-renamer-roles",
-      "path": "",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
@@ -146,58 +204,54 @@
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
-      }
+      },
+      "name": "Role",
+      "id": "asset-renamer-roles",
+      "path": ""
     },
     {
-      "name": "Asset_type",
       "type": "Select",
-      "id": "asset-renamer-asset_types",
-      "path": "",
+      "tagName": "single",
+      "icon": "pencil",
+      "tooltip": "Accepts any value",
+      "colorClass": "single",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
-          "0": "[[1_conceptSheet]]",
-          "1": "[[2_productDemo]]",
-          "2": "[[3_oufit]]"
+          "0": "[[Weather]]",
+          "1": "[[hidropunk]]",
+          "2": "[[desert]]",
+          "3": "[[blizzard]]",
+          "4": "[[postapoc]]"
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
-      }
+      },
+      "name": "Weather",
+      "id": "asset-renamer-weathers",
+      "path": ""
     },
     {
-      "name": "Outfit_type",
+      "name": "trait",
       "type": "Select",
-      "id": "asset-renamer-outfit_types",
+      "id": "schema-sync-trait",
       "path": "",
       "options": {
         "sourceType": "ValuesList",
         "valuesList": {
-          "0": "[[Group]]",
-          "1": "[[casual]]",
-          "2": "[[formal]]",
-          "3": "[[theme]]",
-          "4": "[[underwear]]",
-          "5": "[[functional]]",
-          "6": "[[battle]]"
-        },
-        "valuesListNotePath": "",
-        "valuesFromDVQuery": ""
-      }
-    },
-    {
-      "name": "Entity",
-      "type": "Select",
-      "id": "asset-renamer-entities",
-      "path": "",
-      "options": {
-        "sourceType": "ValuesList",
-        "valuesList": {
-          "0": "[[Entity]]",
-          "1": "[[Eras]]",
-          "2": "[[Weathers]]",
-          "3": "[[Roles]]",
-          "4": "[[Asset_types]]",
-          "5": "[[Outfit_types]]"
+          "0": "1",
+          "1": "100",
+          "2": "2",
+          "3": "3",
+          "4": "4",
+          "5": "5",
+          "6": "6",
+          "7": "7",
+          "8": "8",
+          "9": "99",
+          "10": "new",
+          "11": "new value",
+          "12": "Newer"
         },
         "valuesListNotePath": "",
         "valuesFromDVQuery": ""
