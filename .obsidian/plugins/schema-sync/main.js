@@ -62,16 +62,43 @@ function isScalarValue(value) {
   return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 }
 
+// Strip every [[ ]] layer, whatever it contains. A regex that required the
+// wrapper's contents to hold no "]" was the whole disaster: a value like
+// "[Arcade room](https://...)" never looked wrapped, so every sync wrapped it
+// again and the table filled with [[[[[[...]]]]]]. Unwinding has to be
+// structural, and it repairs a value already buried.
+function stripLinkWrappers(value) {
+  let text = String(value ?? "").trim();
+  while (text.length > 4 && text.startsWith("[[") && text.endsWith("]]")) {
+    text = text.slice(2, -2).trim();
+  }
+  return text;
+}
+
+// A wikilink target cannot hold brackets or a pipe. Wrapping something that does
+// never made a link — it made the mess above — so such a value stays plain.
+function isLinkableValue(value) {
+  const text = stripLinkWrappers(value);
+  return Boolean(text) && !/[[\]|]/.test(text);
+}
+
 function plainValue(value) {
   if (!isScalarValue(value)) return "";
-  const text = String(value).trim();
-  const link = text.match(/^\[\[([^#|\]]+)(?:#[^|\]]+)?(?:\|([^\]]+))?\]\]$/);
-  return link ? (link[2] || link[1]).trim() : text;
+  const raw = String(value).trim();
+  const text = stripLinkWrappers(raw);
+  // Never wrapped: taken exactly as written, so a value that happens to contain
+  // "#" keeps it.
+  if (text === raw) return raw;
+  if (/[[\]]/.test(text)) return text;
+  const alias = text.indexOf("|");
+  if (alias !== -1) return text.slice(alias + 1).trim() || text;
+  return text.split("#")[0].trim() || text;
 }
 
 function linkedValue(value) {
   const text = plainValue(value);
-  return text ? `[[${text}]]` : "";
+  if (!text) return "";
+  return isLinkableValue(text) ? `[[${text}]]` : text;
 }
 
 // The linked form of a stored value, or undefined when it already says that, so
@@ -434,8 +461,9 @@ function parseConfigRows(raw) {
   if (rows.length >= 2 && /^:?-{2,}:?$/.test(rows[1][0] || "")) rows.splice(0, 2);
   const parsed = new Map();
   for (const [first, ...rest] of rows) {
-    const link = String(first || "").match(/^\[\[([^\]|]+?)(?:\|[^\]]*)?\]\]$/);
-    const value = (link ? link[1] : first || "").trim();
+    // plainValue, not a regex that gives up on a "]": a cell holding a markdown
+    // link was read back wrapper and all, then written out wrapped again.
+    const value = plainValue(first || "");
     if (value) parsed.set(value, rest.join(" | ").trim());
   }
   return parsed;
@@ -463,7 +491,9 @@ function renderConfigNote(attributeName, sources, values, existingRaw) {
     "| --- | --- |",
     // The Notes cell is carried over. Rebuilding it empty each sync is what
     // destroyed anything written into this column.
-    ...merged.map((value) => `| [[${value}]] | ${existing.get(value) || ""} |`),
+    // A value that cannot be a wikilink target is written plain. Wrapping it
+    // produced a broken link and, worse, a cell this file could not read back.
+    ...merged.map((value) => `| ${isLinkableValue(value) ? `[[${value}]]` : value} | ${existing.get(value) || ""} |`),
     "",
   ].join("\n");
   return withUserNotes(body, existingRaw);
@@ -1036,15 +1066,22 @@ class MetadataMenuMapping {
     return true;
   }
 
-  // Values held by a preset this plugin created, plain. Metadata Menu can add an
-  // option to its own settings without touching any note — typing a new value
-  // into the dropdown does exactly that — so those values would otherwise live
-  // only in its config and vanish the next time sync rewrote the options.
-  valuesFrom(property) {
-    const preset = this.presetFor(property);
-    if (!preset || !String(preset.id || "").startsWith("schema-sync-")) return [];
-    if (!METADATA_MENU_LIST_TYPES.has(preset.type)) return [];
-    return Object.values(preset.options?.valuesList ?? {}).map(plainValue).filter(Boolean);
+  // One value list, straight from the file, straight into Metadata Menu. The
+  // file is the source and Metadata Menu is a copy of it — nothing reads back
+  // the other way, so a stale option cannot become a row.
+  async pushList(file) {
+    const source = configSourceOfPath(file.path);
+    if (!source) return;
+    const values = await this.loadListValues(file);
+    await this.onListsGenerated([{ ...source, property: source.fieldName, values }]);
+  }
+
+  async loadListValues(file) {
+    try {
+      return parseConfigValues(await this.plugin.app.vault.read(file));
+    } catch {
+      return [];
+    }
   }
 
   // Called after value lists are written, with one entry per list. Two narrow
@@ -1162,6 +1199,11 @@ class AssetRenamerModal extends Modal {
   async onOpen() {
     const { contentEl } = this;
     contentEl.empty();
+    // Reset, because "↻ Reload fields" calls this again on a live modal and
+    // these otherwise accumulate a second copy of every row.
+    this.valueSelects = [];
+    this.sourceEntries = [];
+    this.categorySelect = null;
     this.titleEl.setText(`Asset renamer: ${this.noteFile.basename}`);
     const root = contentEl.createDiv({ cls: "asset-renamer-modal" });
     // A schema with ten value lists is ten more rows than fit, and the modal
@@ -1220,7 +1262,27 @@ class AssetRenamerModal extends Modal {
   }
 
   createFilenameControls(root) {
-    root.createEl("h3", { text: "Filename builder" });
+    const header = root.createDiv({ cls: "asset-renamer-heading" });
+    header.createEl("h3", { text: "Filename builder" });
+    // A field added since this modal opened has no value list yet, and a modal
+    // built once never learns about it. Reloading the schemas and generating the
+    // lists is what makes a new field appear without closing Obsidian.
+    const reload = header.createEl("button", { text: "↻ Reload fields", cls: "asset-renamer-reload" });
+    reload.title = "Re-read the schemas, generate any missing value list, and rebuild these rows";
+    reload.addEventListener("click", async () => {
+      reload.disabled = true;
+      reload.textContent = "Reloading…";
+      try {
+        await this.plugin.loadSchemas();
+        await this.plugin.syncConfigLists();
+        this.sourceValues.clear();
+        await this.onOpen();
+      } catch (error) {
+        reload.disabled = false;
+        reload.textContent = "↻ Reload fields";
+        new Notice(`Could not reload fields: ${error.message}`);
+      }
+    });
     const row = root.createDiv({ cls: "asset-renamer-row" });
     row.createSpan({ text: "Preview" });
     this.filenamePreview = row.createEl("code", { text: `..._${this.timestamp()}` });
@@ -1889,6 +1951,9 @@ class SchemaSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile && (file.path.startsWith(`${ASSET_CONFIG_FOLDER}/`) || file.path.startsWith(`${CONFIG_FOLDER}/`) || file.path.startsWith(`${ROOT_CONFIG_FOLDER}/`)) && file.path !== SCHEMA_MAPPING_FILE && file.path !== LEGACY_MAPPING_FILE) {
         void this.checkImplementationColumns(file);
+        // The value list is the source. Editing one by hand has to reach
+        // Metadata Menu, or its dropdown is a stale copy of a file that moved on.
+        void this.metadataMenuMapping.pushList(file);
         return;
       }
       // A value typed into a record is a value its list should offer, so the
@@ -3521,11 +3586,7 @@ class SchemaSyncPlugin extends Plugin {
       await this.ensureFolder(`${CONFIG_FOLDER}/${entry.schemaName}`);
       const existing = this.app.vault.getAbstractFileByPath(normalizePath(path));
       const existingRaw = existing instanceof TFile ? await this.app.vault.read(existing) : "";
-      // A value typed into a Metadata Menu dropdown is added to its settings and
-      // nowhere else, so it is read back here before the note is rewritten —
-      // otherwise pushing the options out again would erase it.
-      const fromMenu = this.metadataMenuMapping.valuesFrom(entry.fieldName);
-      const text = renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values, ...fromMenu], existingRaw);
+      const text = renderConfigNote(entry.fieldName, [`${entry.schemaName}.${entry.fieldName}`], [...entry.values], existingRaw);
       await this.writeFile(normalizePath(path), text);
       // The note's own rows, not entry.values: renderConfigNote unions in rows
       // added by hand, and those are options too.

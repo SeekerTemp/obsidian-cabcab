@@ -149,6 +149,11 @@ Commands: **Open asset renamer for active note**, **Configure asset renamer
 sources**, **Bulk rename category dependencies**, **Bulk reload attachment names
 from metadata**.
 
+**↻ Reload fields**, beside the *Filename builder* heading, re-reads the schemas,
+generates any value list that does not exist yet, and rebuilds the rows. A field
+added since the modal opened has no list of its own, and a modal built once never
+learns about it — this is what makes the new field appear without restarting.
+
 ### Setting a field's Metadata Menu type
 
 When Metadata Menu is installed, every value-list row in the renamer's filename
@@ -250,21 +255,22 @@ never counted as a record, but a value typed into one still joins the list: for
 some schemas the template is the only note that ever exists, and a value is a
 value wherever it was written.
 
-This is also what makes Metadata Menu's **+** button stick. It adds the value to
-the field's options *in memory only* and never saves them, so on its own the
-value would be gone by the next reload. What makes it durable is the other half:
-it also writes the value into the note, the list picks it up from there, and the
-list is then pushed back into Metadata Menu's settings — which does save.
+That is also what makes Metadata Menu's **+** button stick: the value reaches the
+note, the list reads it from there, and the list is pushed back out.
 
-### A value added in Metadata Menu comes back
+### The value list is the source; Metadata Menu is a copy
 
-Typing a new value into a Metadata Menu dropdown adds it to *Metadata Menu's*
-settings and to no note at all. Sync reads those values back before it rewrites a
-list, so a value added that way lands in `data/config/<Schema>/<field>.md` like
-any other — and is not lost when the options are pushed out again.
+Everything flows one way: `data/config/<Schema>/<field>.md` → Metadata Menu.
+Nothing is ever read back out of Metadata Menu into the file. It is a projection
+of the list, not a store of its own, and it is refreshed whenever the list
+changes — including when you edit the note by hand.
 
-This only applies to a preset this plugin created. One you wrote yourself is read
-from and written to by nobody.
+This matters because Metadata Menu's **+** button adds a value to its own options
+*in memory only* and never saves them. Treating that as a source meant a
+half-formed option could become a row in your file. It cannot now. What makes
+**+** work is the other half of what it does: it writes the value into the note,
+so the value list picks it up from the record like any other, and the refreshed
+list goes back out to Metadata Menu.
 
 ## Settings
 

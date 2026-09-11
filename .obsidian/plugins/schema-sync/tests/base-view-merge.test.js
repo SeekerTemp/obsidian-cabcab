@@ -23,7 +23,7 @@ Module._load = function (request, parent, isMain) {
 };
 
 const { generators } = require(require("path").join(__dirname, "..", "main.js"));
-const { mergeBaseYaml, managedImageFormulas, renderBaseYaml, valuesListOptions, parseConfigValues, plainValue, linkedValue, castToLinks } = generators;
+const { mergeBaseYaml, managedImageFormulas, renderBaseYaml, valuesListOptions, parseConfigValues, plainValue, linkedValue, castToLinks, renderConfigNote } = generators;
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -275,6 +275,56 @@ test("a value survives menu, record and regeneration unchanged", () => {
   // What syncConfigLists does with a record's value when it rebuilds the list.
   const collected = stored.map((value) => value.trim().replace(/^\[\[|\]\]$/g, "").trim());
   assert.deepStrictEqual(collected, values);
+});
+
+// --- values that are not wikilink targets ------------------------------------
+//
+// The bug these exist for: a cell holding a markdown link contains "]", the old
+// unwrap regex refused to match it, so nothing ever looked already-wrapped and
+// every single sync added two more brackets. A Room list reached
+// [[[[[[[[[[...[Arcade room](https://...)...]]]]]]]]]].
+
+const MD_LINK = "[Arcade room](https://app.notion.com/p/7905a186?pvs=21)";
+
+test("a markdown link is never wrapped, so it cannot grow", () => {
+  assert.strictEqual(castToLinks(MD_LINK), undefined);
+  assert.strictEqual(linkedValue(MD_LINK), MD_LINK);
+});
+
+test("a value already buried in brackets unwinds at any depth", () => {
+  for (const depth of [2, 6, 20]) {
+    const buried = "[".repeat(depth) + MD_LINK + "]".repeat(depth);
+    assert.strictEqual(castToLinks(buried), MD_LINK, `depth ${depth}`);
+    assert.strictEqual(plainValue(buried), MD_LINK, `depth ${depth}`);
+  }
+});
+
+test("a value holding a pipe or a bracket stays plain", () => {
+  assert.strictEqual(linkedValue("a|b"), "a|b");
+  assert.strictEqual(linkedValue("see [1]"), "see [1]");
+  assert.strictEqual(linkedValue("plain"), "[[plain]]");
+});
+
+test("the table writes an unlinkable value plain, and reads it back whole", () => {
+  const note = `| Room | Notes |\n| --- | --- |\n| ${MD_LINK} | keep |\n`;
+  const out = renderConfigNote("Room", ["Room.Room"], [], note);
+  assert.ok(out.includes(`| ${MD_LINK} | keep |`), out);
+  assert.deepStrictEqual(parseConfigValues(out), [MD_LINK]);
+  // Regenerating from its own output changes nothing — the loop is closed.
+  assert.strictEqual(renderConfigNote("Room", ["Room.Room"], [], out), out);
+});
+
+test("a buried row is repaired by one regeneration, keeping its note", () => {
+  const note = `| Room | Notes |\n| --- | --- |\n| [[[[[[${MD_LINK}]]]]]] | keep |\n`;
+  const out = renderConfigNote("Room", ["Room.Room"], [], note);
+  assert.ok(out.includes(`| ${MD_LINK} | keep |`), out);
+  assert.ok(!out.includes("[[["), out);
+});
+
+test("an ordinary value is still written as a link", () => {
+  const out = renderConfigNote("trait", ["LifeForm.trait"], ["Newer"], "");
+  assert.ok(out.includes("| [[Newer]] |"), out);
+  assert.strictEqual(renderConfigNote("trait", ["LifeForm.trait"], ["Newer"], out), out);
 });
 
 // --- runner ------------------------------------------------------------------

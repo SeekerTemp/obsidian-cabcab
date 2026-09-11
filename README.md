@@ -352,11 +352,24 @@ Design notes for the current implementation are in [`.obsidian/plugins/schema-sy
 
 Three kinds of branch, and what each one carries:
 
-| Branch | Carries | `data/` |
-| --- | --- | --- |
-| `main` | `.obsidian/` — settings and every plugin | ignored |
-| `feature/<plugin>` | Plugin work, branched from and merged back to `main` | ignored |
-| `data/<project>` | One project's notes. Plugins come from `main` | tracked |
+| Branch | Carries | `.obsidian/plugins/` | `data/` |
+| --- | --- | --- | --- |
+| `main` | Settings and every plugin | all | ignored |
+| `feature/<plugin>` | One plugin's development | that plugin and what it talks to | ignored |
+| `data/<project>` | One project's notes. Plugins come from `main` | all | tracked |
+
+`feature/db-schema-sync` tracks `schema-sync`, `metadata-menu` and
+`dbml-visualizer` — the plugin being built and the two it integrates with.
+Everything else under `.obsidian/plugins/` is ignored there, so an unrelated
+plugin's settings churn never lands in a commit about the schema system.
+
+**Integrate plugin work with `cherry-pick`, not `merge`.** A feature branch has
+those other plugins *untracked*, so merging one into `main` arrives as "every
+other plugin deleted" — the same asymmetry that makes a data branch cherry-pick
+its fixes onto `main`. [`.githooks/pre-push`](.githooks/pre-push) refuses a push
+to `main` that removes files under `.obsidian/plugins/`, which is the net for
+doing it by accident. Genuinely uninstalling a plugin is a push of its own,
+with `--no-verify`.
 
 `.gitignore` is itself a tracked file, so each branch carries its own copy and git
 swaps the rules on checkout. `main` and `feature/*` ignore `/data/`; a
