@@ -40,6 +40,26 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 		echo "  cherry-pick the commit rather than merging the branch." >&2
 		exit 1
 	fi
+
+	# The mirror of the rule above, in the other direction. A feature branch
+	# tracks only the plugins it develops against, so merging one into main would
+	# arrive as "every other plugin deleted". main is the only branch holding the
+	# full set, and nothing is allowed to thin it out by accident.
+	[ "$remote_ref" = "refs/heads/main" ] || continue
+	[ "$remote_sha" = "$ZERO" ] && continue
+
+	gone=$(git diff --name-only --diff-filter=D "$remote_sha" "$local_sha" -- .obsidian/plugins)
+	if [ -n "$gone" ]; then
+		count=$(printf '%s\n' "$gone" | wc -l | tr -d ' ')
+		echo "pre-push: refusing to remove plugins from main." >&2
+		echo "  $count file(s) under .obsidian/plugins/ are deleted by this push:" >&2
+		printf '%s\n' "$gone" | head -5 | sed 's/^/    /' >&2
+		echo "" >&2
+		echo "  A feature branch tracks only the plugins it needs, so merging one" >&2
+		echo "  into main deletes the rest. Cherry-pick the plugin commits instead." >&2
+		echo "  Really uninstalling a plugin? Push that on its own with --no-verify." >&2
+		exit 1
+	fi
 done
 
 exit 0
