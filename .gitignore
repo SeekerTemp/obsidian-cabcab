@@ -10,18 +10,24 @@
 # A nested duplicate of the vault, left over from an earlier layout.
 /MyVault/
 
-# Only the plugins this branch actually develops against are tracked here.
-# main carries every plugin; a feature branch carries the one under development
-# plus what it talks to, so unrelated plugin churn never lands in these commits.
+# Only the plugins this branch develops against are tracked here. main carries
+# every plugin; a feature branch carries the ones under development, so unrelated
+# plugin churn never lands in these commits.
+#
+# Do not edit the block below by hand — run, from the repo root:
+#
+#     .githooks/scope-branch <plugin> [<plugin>...]
 #
 # Like /data/ above, this list is per-branch: main's copy of .gitignore has no
 # such section. Because of that, a MERGE of this branch into main would carry
 # the untracking as deletions — integrate plugin work with cherry-pick, and see
-# .githooks/pre-push, which refuses a push that removes plugins from main.
+# .githooks/pre-push, which refuses a push that strips main.
+# >>> scope-branch >>>
 /.obsidian/plugins/*
-!/.obsidian/plugins/schema-sync/
 !/.obsidian/plugins/dbml-visualizer/
 !/.obsidian/plugins/metadata-menu/
+!/.obsidian/plugins/schema-sync/
+# <<< scope-branch <<<
 
 # A feature branch carries the plugin and what runs it, nothing else. Vault
 # content and personal appearance live on main and on data/<project> branches.

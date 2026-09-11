@@ -369,6 +369,27 @@ and `data/`.
 The point is that a commit about the schema system contains only the schema
 system. Personal appearance and vault content are not part of a plugin's history.
 
+### Scoping a branch
+
+The plugin list is not hand-edited. From the repo root, on the branch you want to
+scope:
+
+```bash
+.githooks/scope-branch <plugin> [<plugin>...]
+# e.g.
+.githooks/scope-branch schema-sync metadata-menu dbml-visualizer
+```
+
+It rewrites the marked block in `.gitignore`, untracks every other plugin, tracks
+the named ones, and stages the lot for you to review and commit. Run it once when
+a feature branch is created, and again whenever the set changes — it is
+idempotent, and switching the set untracks the old and tracks the new in one go.
+
+**Nothing is removed from disk.** Plugins go untracked, not away, so Obsidian
+loads exactly what it did before. Run it with no arguments to list what is
+installed. It refuses to run on `main`, which is the branch that carries
+everything.
+
 **Integrate plugin work with `cherry-pick`, not `merge`.** A feature branch has
 all of that *untracked*, so merging one into `main` arrives as "every other
 plugin, every snippet, every theme and the vault's folders deleted" — the same
